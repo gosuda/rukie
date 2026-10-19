@@ -45,3 +45,4 @@ Rules for agents that change this repository. Ruk is the only repository backend
 
 - Write user-facing text (README, CLI help, API reference, tutorials, UI text) in ISO 24495-1 plain language: short sentences, active voice, common words. [Milton Erickson]
 - Write maintainer text (doc comments, ADRs, commit bodies, design notes, these rules) in ASD-STE100: one meaning per word, one instruction per sentence. [J.R.R. Tolkien]
+Per-task goals live in .agent-tasks/task-0e2cc1171807/GOALS.md.

@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test vuln check
+.PHONY: fmt vet lint test vuln check goals
 
 fmt:
 	gofmt -w .
@@ -20,3 +20,6 @@ check: vet lint test vuln
 	test -z "$$(gofmt -l .)"
 	go mod tidy -diff
 	go mod verify
+
+goals:
+	go test -count=1 -v ./.agent-tasks/task-0e2cc1171807/tests

@@ -1,7 +1,17 @@
 version: "2"
 run:
+  timeout: 5m
+  go: "1.27"
   build-tags: [integration, e2e, perf, render]
 linters:
   default: standard
+  enable: [errcheck, errorlint, exhaustive, gocritic, gosec, govet, ineffassign, revive, staticcheck, unused, wastedassign]
+  settings:
+    errorlint: {errorf: true, asserts: true, comparison: true}
+    exhaustive: {default-signifies-exhaustive: false}
+    govet: {enable-all: true}
+    staticcheck: {checks: ["all"]}
+  exclusions:
+    presets: [comments]
 formatters:
   enable: [gofmt, goimports]
