@@ -1,2 +1,0 @@
-#!/bin/bash
-exec /app/gitea/gitea config edit-ini --in-place --apply-env "$@"
