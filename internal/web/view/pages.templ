@@ -1,0 +1,39 @@
+package view
+
+import (
+	"strconv"
+
+	"github.com/gosuda/rukie/internal/web/ui"
+	"github.com/gosuda/rukie/internal/web/vm"
+)
+
+templ ErrorContent(prob vm.Problem) {
+	@ui.ErrorPanel("E-"+strconv.Itoa(prob.Status), prob.Title, prob.Detail)
+	if prob.TraceID != "" {
+		<p>Trace <span class="mono copy">{ prob.TraceID }</span>. Quote it when asking for help.</p>
+	}
+}
+
+templ APIIndexContent(idx vm.APIIndex) {
+	<h1>API operations</h1>
+	<p>{ strconv.Itoa(idx.Count) } operations. One table serves humans as HTML and agents as JSON and Markdown.</p>
+	@ui.OpTable(idx.Ops)
+}
+
+templ ProblemContent(prob vm.Problem, traceID string) {
+	@ui.ErrorPanel(prob.Type, prob.Title, prob.Detail)
+	<dl>
+		<dt>Status</dt>
+		<dd class="mono">{ strconv.Itoa(prob.Status) }</dd>
+		<dt>Trace</dt>
+		<dd class="mono copy">{ traceID }</dd>
+		if prob.Recovery.Next != "" {
+			<dt>Next</dt>
+			<dd class="mono copy">{ prob.Recovery.Next }</dd>
+		}
+		if prob.Recovery.Docs != "" {
+			<dt>Docs</dt>
+			<dd><a href={ prob.Recovery.Docs }>{ prob.Recovery.Docs }</a></dd>
+		}
+	</dl>
+}
