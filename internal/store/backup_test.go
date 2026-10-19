@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 )
 
 func seedWords(t *testing.T, s *Store, words ...string) {
@@ -92,24 +94,103 @@ func TestBackupCleansPartial(t *testing.T) {
 	}
 }
 
-func TestBackupFromQueryOnlyReaderFails(t *testing.T) {
+func TestBackupSnapshotUnderQueuedWrites(t *testing.T) {
 	src := openTest(t, Options{})
-	seedWords(t, src, "alpha")
-	dst := filepath.Join(t.TempDir(), "reader.sqlite")
-	db, err := sqlOpenRaw(src.path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
+	const pre = 20
+	wantBackup := make([]string, pre)
+	for i := range pre {
+		wantBackup[i] = tagFor("pre", i)
+		if err := src.Write(t.Context(), func(tx *WriteTx) error {
+			return insertProbe(tx, wantBackup[i], "seed")
+		}); err != nil {
+			t.Fatalf("seed %s: %v", wantBackup[i], err)
+		}
 	}
-	defer func() { _ = db.Close() }()
-	conn, err := db.Conn(t.Context())
-	if err != nil {
-		t.Fatalf("conn: %v", err)
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	gateDone := make(chan error, 1)
+	go func() {
+		gateDone <- src.Write(t.Context(), func(*WriteTx) error {
+			close(started)
+			<-gate
+			return nil
+		})
+	}()
+	<-started
+	const queued = 10
+	wantQueued := make([]string, queued)
+	for i := range queued {
+		wantQueued[i] = tagFor("qb", i)
 	}
-	defer func() { _ = conn.Close() }()
-	if _, err = conn.ExecContext(t.Context(), `PRAGMA query_only = ON`); err != nil {
-		t.Fatalf("query_only: %v", err)
+	results := make([]error, queued)
+	var wg sync.WaitGroup
+	for i := range queued {
+		wg.Go(func() {
+			results[i] = src.Write(t.Context(), func(tx *WriteTx) error {
+				return insertProbe(tx, wantQueued[i], "queued")
+			})
+		})
 	}
-	if _, err = conn.ExecContext(t.Context(), sqlVacuumInto, dst); err == nil {
-		t.Fatal("VACUUM INTO on a query_only connection succeeded; the backup connection design is unnecessary")
+	filled := false
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if src.Stats().QueueLen == queued {
+			filled = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	dst := filepath.Join(t.TempDir(), "queued.sqlite")
+	info, berr := src.Backup(t.Context(), dst)
+	close(gate)
+	if err := <-gateDone; err != nil {
+		t.Fatalf("gate write: %v", err)
+	}
+	wg.Wait()
+	if !filled {
+		t.Fatalf("queue never held %d writes behind the gate", queued)
+	}
+	if berr != nil {
+		t.Fatalf("Backup under queued writes: %v", berr)
+	}
+	if info.SchemaVersion != 2 || info.Bytes <= 0 || len(info.SHA256) != 64 {
+		t.Fatalf("BackupInfo = %+v", info)
+	}
+	for i, err := range results {
+		if err != nil {
+			t.Errorf("queued write %d: %v", i, err)
+		}
+	}
+	collectTags := func(s *Store) []string {
+		t.Helper()
+		var out []string
+		err := s.Read(t.Context(), func(tx *ReadTx) error {
+			rows, err := tx.tx.QueryContext(tx.ctx, `SELECT tag FROM probe_rows ORDER BY tag`)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var tag string
+				if err := rows.Scan(&tag); err != nil {
+					return err
+				}
+				out = append(out, tag)
+			}
+			return rows.Err()
+		})
+		if err != nil {
+			t.Fatalf("tags: %v", err)
+		}
+		return out
+	}
+	copied := openWith(t, info.Path, fixtureFS(t), Options{})
+	slices.Sort(wantBackup)
+	if got := collectTags(copied); !slices.Equal(got, wantBackup) {
+		t.Errorf("backup tags = %v, want committed prefix %v", got, wantBackup)
+	}
+	wantSource := slices.Sorted(slices.Values(slices.Concat(wantBackup, wantQueued)))
+	if got := collectTags(src); !slices.Equal(got, wantSource) {
+		t.Errorf("source tags = %v, want %v", got, wantSource)
 	}
 }

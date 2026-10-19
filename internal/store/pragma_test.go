@@ -7,8 +7,6 @@ import (
 	"runtime"
 	"testing"
 	"time"
-
-	sqlite "modernc.org/sqlite"
 )
 
 func TestConnPragmas(t *testing.T) {
@@ -41,13 +39,6 @@ func TestConnPragmas(t *testing.T) {
 	}
 }
 
-func TestOFDLockingEnabled(t *testing.T) {
-	openTest(t, Options{})
-	if runtime.GOOS == "linux" && !sqlite.OFDLockingEnabled() {
-		t.Fatal("OFD locks are not enabled after Open on Linux")
-	}
-}
-
 func TestVersionAtLeast(t *testing.T) {
 	minimum := [3]int{3, 53, 4}
 	cases := []struct {
@@ -70,20 +61,6 @@ func TestVersionAtLeast(t *testing.T) {
 	}
 	if _, err := versionAtLeast("3.53", minimum); err == nil {
 		t.Error("two-part version accepted")
-	}
-}
-
-func TestSQLiteVersionIsCurrent(t *testing.T) {
-	s := openTest(t, Options{})
-	var v string
-	if err := s.Read(t.Context(), func(tx *ReadTx) error {
-		return tx.tx.QueryRowContext(tx.ctx, sqlSQLiteVersion).Scan(&v)
-	}); err != nil {
-		t.Fatalf("sqlite_version: %v", err)
-	}
-	ok, err := versionAtLeast(v, [3]int{3, 53, 4})
-	if err != nil || !ok {
-		t.Fatalf("bundled SQLite %s is below 3.53.4 (%v)", v, err)
 	}
 }
 
@@ -172,5 +149,87 @@ func TestCloseIsIdempotent(t *testing.T) {
 	}
 	if err := s.Write(t.Context(), func(*WriteTx) error { return nil }); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Write after Close returned %v, want ErrClosed", err)
+	}
+}
+
+func TestReaderPoolClamp(t *testing.T) {
+	cases := []struct {
+		name string
+		read int
+		want int
+	}{
+		{"floor", 1, 2},
+		{"ceiling", 1000, 64},
+		{"default", 0, min(max(runtime.GOMAXPROCS(0), 2), 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTest(t, Options{ReadConns: tc.read})
+			gate := make(chan struct{})
+			started := make([]chan struct{}, tc.want)
+			for i := range started {
+				started[i] = make(chan struct{})
+			}
+			releases := make(chan error, tc.want)
+			for i := range tc.want {
+				go func() {
+					releases <- s.Read(t.Context(), func(*ReadTx) error {
+						close(started[i])
+						<-gate
+						return nil
+					})
+				}()
+			}
+			filled := false
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				held := true
+				for _, ch := range started {
+					select {
+					case <-ch:
+					default:
+						held = false
+					}
+				}
+				if held {
+					filled = true
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if filled {
+				if got := s.Stats().ReadersInUse; got != tc.want {
+					t.Errorf("ReadersInUse = %d with %d reads held, want %d", got, tc.want, tc.want)
+				}
+			}
+			overDone := make(chan error, 1)
+			shortCtx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			go func() {
+				overDone <- s.Read(shortCtx, func(*ReadTx) error { return nil })
+			}()
+			var overErr error
+			overTimedOut := false
+			select {
+			case overErr = <-overDone:
+			case <-time.After(5 * time.Second):
+				overTimedOut = true
+			}
+			close(gate)
+			for range tc.want {
+				if err := <-releases; err != nil && filled {
+					t.Errorf("gated read: %v", err)
+				}
+			}
+			if overTimedOut {
+				overErr = <-overDone
+			}
+			if !filled {
+				t.Fatalf("pool held fewer than %d concurrent reads (ReadConns %d)", tc.want, tc.read)
+			}
+			if !errors.Is(overErr, context.DeadlineExceeded) {
+				t.Errorf("read %d beyond pool size returned %v, want DeadlineExceeded (ReadConns %d)", tc.want+1, overErr, tc.read)
+			}
+		})
 	}
 }

@@ -392,3 +392,148 @@ func TestErrorCodeConstants(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteQueueDepthDefault256(t *testing.T) {
+	s := openTest(t, Options{})
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	gateDone := make(chan error, 1)
+	go func() {
+		gateDone <- s.Write(t.Context(), func(*WriteTx) error {
+			close(started)
+			<-gate
+			return nil
+		})
+	}()
+	<-started
+	const n = 256
+	results := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			results[i] = s.Write(t.Context(), func(tx *WriteTx) error {
+				return insertProbe(tx, tagFor("q", i), "q")
+			})
+		})
+	}
+	filled := false
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.Stats().QueueLen == n {
+			filled = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	var overErr error
+	overProbed := false
+	overTimedOut := false
+	if filled {
+		overProbed = true
+		overDone := make(chan error, 1)
+		shortCtx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer cancel()
+		go func() {
+			overDone <- s.Write(shortCtx, func(tx *WriteTx) error {
+				return insertProbe(tx, "q-over", "q")
+			})
+		}()
+		select {
+		case overErr = <-overDone:
+		case <-time.After(5 * time.Second):
+			overTimedOut = true
+		}
+		if overTimedOut {
+			close(gate)
+			if err := <-gateDone; err != nil {
+				t.Fatalf("gate write: %v", err)
+			}
+			wg.Wait()
+			if err := <-overDone; err != nil {
+				t.Logf("probe write returned %v while checking capacity", err)
+			}
+			t.Errorf("257th write was accepted past a full 256-deep queue; default QueueDepth exceeds 256")
+			return
+		}
+	}
+	close(gate)
+	if err := <-gateDone; err != nil {
+		t.Fatalf("gate write: %v", err)
+	}
+	wg.Wait()
+	if !filled {
+		t.Fatalf("queue never held 256 requests behind the gate; default QueueDepth is below 256")
+	}
+	if !overProbed {
+		t.Fatalf("over-capacity probe never ran")
+	}
+	if !errors.Is(overErr, context.DeadlineExceeded) {
+		t.Errorf("257th write returned %v, want DeadlineExceeded (default queue depth 256)", overErr)
+		return
+	}
+	for i, err := range results {
+		if err != nil {
+			t.Errorf("queued write %d: %v", i, err)
+		}
+	}
+	if got := readInt(t, s, `SELECT count(*) FROM probe_rows WHERE tag LIKE 'q-%'`); got != n {
+		t.Errorf("queued rows = %d, want %d", got, n)
+	}
+	if got := readInt(t, s, `SELECT count(*) FROM probe_rows WHERE tag = 'q-over'`); got != 0 {
+		t.Errorf("over-capacity write persisted %d rows", got)
+	}
+}
+
+func TestBatchDefaultCap64(t *testing.T) {
+	s := openTest(t, Options{})
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	gateDone := make(chan error, 1)
+	go func() {
+		gateDone <- s.Write(t.Context(), func(*WriteTx) error {
+			close(started)
+			<-gate
+			return nil
+		})
+	}()
+	<-started
+	const n = 65
+	results := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			results[i] = s.Write(t.Context(), func(tx *WriteTx) error {
+				return insertProbe(tx, tagFor("cap", i), "cap")
+			})
+		})
+	}
+	filled := false
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.Stats().QueueLen == n {
+			filled = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(gate)
+	if err := <-gateDone; err != nil {
+		t.Fatalf("gate write: %v", err)
+	}
+	wg.Wait()
+	if !filled {
+		t.Fatalf("queue never held %d requests behind the gate", n)
+	}
+	for i, err := range results {
+		if err != nil {
+			t.Errorf("queued write %d: %v", i, err)
+		}
+	}
+	if got := readInt(t, s, `SELECT count(*) FROM probe_rows WHERE tag LIKE 'cap-%'`); got != n {
+		t.Errorf("queued rows = %d, want %d", got, n)
+	}
+	st := s.Stats()
+	if st.Batches != 3 || st.Requests != n+1 || st.LastBatchSize != 1 {
+		t.Errorf("batches=%d requests=%d last=%d; want 3, %d, 1", st.Batches, st.Requests, st.LastBatchSize, n+1)
+	}
+}
