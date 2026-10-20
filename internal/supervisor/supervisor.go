@@ -276,7 +276,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			s.ready.Store(false)
-			_ = s.drainChildWithSingleWaiter(child, exit)
+			_ = s.terminateChildWithSingleWaiter(child, exit)
 			return nil
 		case werr := <-exit:
 			s.ready.Store(false)
@@ -307,7 +307,7 @@ func daemonLossAgainstBudget(werr error) error {
 	return werr
 }
 
-func (s *Supervisor) drainChildWithSingleWaiter(child Proc, exit <-chan error) error {
+func (s *Supervisor) terminateChildWithSingleWaiter(child Proc, exit <-chan error) error {
 	_ = child.Signal(terminateSignal())
 	grace, cancel := context.WithTimeout(context.Background(), s.stopGrace())
 	defer cancel()

@@ -18,10 +18,10 @@ import (
 )
 
 const (
-	exitOK      = 0
-	exitRuntime = 1
-	exitUsage   = 2
-	exitGuarded = 3
+	exitOK           = 0
+	exitRuntime      = 1
+	exitUsage        = 2
+	exitOfflineGuard = 3
 )
 
 func adminExit(err error) int {
@@ -31,7 +31,7 @@ func adminExit(err error) int {
 	case sysops.IsDowngrade(err):
 		return sysops.ExitDowngradeRefused
 	case isLiveGuard(err):
-		return exitGuarded
+		return exitOfflineGuard
 	default:
 		return exitRuntime
 	}

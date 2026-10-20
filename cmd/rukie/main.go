@@ -299,9 +299,10 @@ func runServe(argv []string) int {
 	}()
 	code := serveHTTP(ctx, logger, app.handler, cfg.HTTP, halveCh, ownedDrainRunners, supervisorDeathStopsServing)
 	supStop()
+	finalErr := waitSupervisorOnce()
 	shutdownHalved := halveCtx.Err() != nil
-	if serr := waitSupervisorOnce(); serr != nil && !shutdownHalved {
-		logger.Error("supervisor exited", slog.Any("err", serr))
+	if finalErr != nil && !shutdownHalved {
+		logger.Error("supervisor exited", slog.Any("err", finalErr))
 		return 1
 	}
 	return code
