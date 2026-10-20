@@ -91,6 +91,7 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{
 		Authenticator: auth.NewAuthenticator(svc),
+		IsSiteSegment: api.SiteSegment,
 		Idempotency:   op.NewMemoryIdempotency(),
 		Audit:         op.FuncAuditor(func(context.Context, op.AuditRow) error { return nil }),
 		Limiter:       deps.Limiter,

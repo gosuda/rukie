@@ -75,6 +75,7 @@ func buildLLMSEnv(t *testing.T) *llmsEnv {
 		Views:         views,
 		Title:         "test",
 		Version:       "0",
+		IsSiteSegment: api.SiteSegment,
 	})
 	if err != nil {
 		t.Fatalf("mount: %v", err)

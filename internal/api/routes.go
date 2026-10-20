@@ -4,7 +4,16 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/gosuda/rukie/internal/auth"
 )
+
+func SiteSegment(seg string) bool {
+	if auth.ReservedName(seg) {
+		return true
+	}
+	return slices.Contains(Reserved(), seg)
+}
 
 type Route struct {
 	Pattern  string

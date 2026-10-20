@@ -260,8 +260,9 @@ type Config struct {
 	Idempotency   IdempotencyStore
 	Audit         Auditor
 	Limiter       Limiter
-	Clock         func() time.Time
 	Views         *Views
+	Clock         func() time.Time
+	IsSiteSegment func(string) bool
 	PublicOrigin  string
 	Title         string
 	Version       string
@@ -272,7 +273,7 @@ type Config struct {
 
 type Server struct {
 	api     huma.API
-	mux     *http.ServeMux
+	mux     *splitMux
 	byRoute map[string]int
 	allow   map[string][]string
 	doc     *Document
@@ -703,6 +704,15 @@ func Mount(mux *http.ServeMux, t *Table, c Config) (*Server, error) {
 	if err := t.Validate(); err != nil {
 		return nil, err
 	}
+	if c.IsSiteSegment == nil {
+		for _, spec := range t.Specs() {
+			if isOwnerPattern(spec.Method + " " + spec.Path) {
+				return nil, fmt.Errorf("mount: table has owner pattern %s %s but Config.IsSiteSegment is nil", spec.Method, spec.Path)
+			}
+		}
+	}
+	split := newSplitMux(c.IsSiteSegment)
+	_ = mux
 	if c.MaxBody <= 0 {
 		c.MaxBody = 1 << 20
 	}
@@ -721,10 +731,10 @@ func Mount(mux *http.ServeMux, t *Table, c Config) (*Server, error) {
 	humaCfg.DocsPath = ""
 	humaCfg.SchemasPath = ""
 	humaCfg.DefaultFormat = "application/json"
-	api := humago.New(mux, humaCfg)
+	api := humago.New(split, humaCfg)
 	s := &Server{
 		cfg:     c,
-		mux:     mux,
+		mux:     split,
 		api:     api,
 		specs:   t.Specs(),
 		byRoute: map[string]int{},
@@ -882,7 +892,14 @@ func matchPath(tmpl, path string) bool {
 }
 
 func (s *Server) lookup(path string) (matches []int, methods []string) {
+	site := true
+	if s.cfg.IsSiteSegment != nil {
+		site = s.cfg.IsSiteSegment(firstPathSegment(path))
+	}
 	for i, spec := range s.specs {
+		if isOwnerPattern(spec.Method+" "+spec.Path) == site {
+			continue
+		}
 		if matchPath(spec.Path, path) {
 			matches = append(matches, i)
 			methods = append(methods, spec.Method)

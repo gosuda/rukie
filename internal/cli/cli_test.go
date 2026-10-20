@@ -66,6 +66,7 @@ func buildCLIServer(t *testing.T) (*op.Server, *auth.Service, string) {
 		Views:         views,
 		Title:         "test",
 		Version:       "0",
+		IsSiteSegment: api.SiteSegment,
 	})
 	if err != nil {
 		t.Fatalf("mount: %v", err)

@@ -237,6 +237,7 @@ func liveStack(t *testing.T, bin string) *liveHarness {
 		Views:         views,
 		Title:         "bench",
 		Version:       "0",
+		IsSiteSegment: api.SiteSegment,
 	})
 	if err != nil {
 		t.Fatalf("mount: %v", err)
