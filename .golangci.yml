@@ -13,5 +13,9 @@ linters:
     staticcheck: {checks: ["all"]}
   exclusions:
     presets: [comments]
+    rules:
+      - path: ^internal/rukproc/
+        text: G204|G703
+        linters: [gosec]
 formatters:
   enable: [gofmt, goimports]

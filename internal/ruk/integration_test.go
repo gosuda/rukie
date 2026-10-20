@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -18,6 +17,7 @@ import (
 	jsonv2 "encoding/json/v2"
 
 	"github.com/gosuda/rukie/internal/ruk/wire"
+	"github.com/gosuda/rukie/internal/rukproc"
 )
 
 func rukBin(t *testing.T) string {
@@ -29,7 +29,7 @@ func rukBin(t *testing.T) string {
 }
 
 type daemon struct {
-	cmd    *exec.Cmd
+	child  *rukproc.Child
 	logs   *bytes.Buffer
 	socket string
 }
@@ -53,14 +53,11 @@ func spawnDaemon(t *testing.T, allowedUID int) *daemon {
 		t.Fatalf("config: %v", err)
 	}
 	var logs bytes.Buffer
-	//nolint:gosec // G204: bin is RUK_BIN or the pinned debug binary; args are fixed serve flags plus a temp config.
-	cmd := exec.Command(bin, "serve", "--config", configPath)
-	cmd.Stdout = &logs
-	cmd.Stderr = &logs
-	if err := cmd.Start(); err != nil {
+	child, err := rukproc.StartServe(bin, configPath, os.Environ(), &logs, &logs)
+	if err != nil {
 		t.Fatalf("daemon start: %v\n%s", err, logs.String())
 	}
-	d := &daemon{socket: socket, cmd: cmd, logs: &logs}
+	d := &daemon{socket: socket, child: child, logs: &logs}
 	t.Cleanup(d.kill)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -76,20 +73,15 @@ func spawnDaemon(t *testing.T, allowedUID int) *daemon {
 }
 
 func (d *daemon) kill() {
-	if d.cmd.Process == nil {
-		return
-	}
-	_ = d.cmd.Process.Kill()
-	_, _ = d.cmd.Process.Wait()
+	_ = d.child.Kill()
 }
 
 func seedStore(t *testing.T, dir string) {
 	t.Helper()
 	bin := rukBin(t)
-	//nolint:gosec // G204: bin is RUK_BIN or the pinned debug binary; args are fixed git init flags.
-	cmd := exec.Command(bin, "git", "init", dir)
-	cmd.Env = append(os.Environ(), "RUK_COORDINATOR=off")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if out, err := rukproc.Run(ctx, bin, []string{"git", "init", dir}, append(os.Environ(), "RUK_COORDINATOR=off")); err != nil {
 		t.Fatalf("seed store: %v\n%s", err, out)
 	}
 }
@@ -257,14 +249,11 @@ func spawnDaemonOn(t *testing.T, socket, dir string, allowedUID int) *daemon {
 		t.Fatalf("config: %v", err)
 	}
 	var logs bytes.Buffer
-	//nolint:gosec // G204: bin is RUK_BIN or the pinned debug binary; args are fixed serve flags plus a temp config.
-	cmd := exec.Command(bin, "serve", "--config", configPath)
-	cmd.Stdout = &logs
-	cmd.Stderr = &logs
-	if err := cmd.Start(); err != nil {
+	child, err := rukproc.StartServe(bin, configPath, os.Environ(), &logs, &logs)
+	if err != nil {
 		t.Fatalf("daemon restart: %v\n%s", err, logs.String())
 	}
-	d := &daemon{socket: socket, cmd: cmd, logs: &logs}
+	d := &daemon{socket: socket, child: child, logs: &logs}
 	t.Cleanup(d.kill)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -284,8 +273,9 @@ func TestModelCLIMatchesSnapshot(t *testing.T) {
 	if _, err := os.Stat(bin); err != nil {
 		t.Fatalf("ruk binary missing at %s", bin)
 	}
-	//nolint:gosec // G204: bin is RUK_BIN or the pinned debug binary; args are fixed model flags.
-	out, cmdErr := exec.Command(bin, "model", "--format", "json").Output()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	out, cmdErr := rukproc.Run(ctx, bin, []string{"model", "--format", "json"}, os.Environ())
 	if cmdErr != nil {
 		t.Fatalf("ruk model: %v", cmdErr)
 	}
