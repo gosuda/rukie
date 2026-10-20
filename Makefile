@@ -18,6 +18,7 @@ vuln:
 
 check: vet lint test vuln
 	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)"
+	go run ./tools/commentcheck
 	go mod tidy -diff
 	go mod verify
 
