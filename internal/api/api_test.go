@@ -53,6 +53,9 @@ func buildEnv(t *testing.T) *testEnv {
 	if regErr := api.RegisterAdmin(table, deps); regErr != nil {
 		t.Fatalf("register admin: %v", regErr)
 	}
+	if regErr := api.RegisterF12(table, deps); regErr != nil {
+		t.Fatalf("register f12: %v", regErr)
+	}
 	if validErr := table.Validate(); validErr != nil {
 		t.Fatalf("validate: %v", validErr)
 	}
@@ -60,6 +63,7 @@ func buildEnv(t *testing.T) *testEnv {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterF12Views(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()
@@ -167,6 +171,9 @@ func TestAuthOpRegistration(t *testing.T) {
 		"auth.login", "auth.logout", "auth.password.change",
 		"auth.token.list", "auth.token.create", "auth.token.revoke",
 		"auth.session.list", "auth.session.revoke",
+		"auth.totp.verify", "auth.totp.enroll", "auth.totp.disable",
+		"auth.recovery.regenerate", "auth.oidc.start", "auth.oidc.callback",
+		"auth.oidc.link", "admin.user.totp-reset",
 		"user.get", "user.self.update", "user.self.delete",
 		"admin.user.create", "admin.user.reset-password", "admin.user.unlock",
 		"admin.user.update", "admin.user.list",
@@ -175,13 +182,13 @@ func TestAuthOpRegistration(t *testing.T) {
 			t.Fatalf("op %q not registered", want)
 		}
 	}
-	for _, want := range []string{"auth.login.page", "auth.logout.page", "settings.page"} {
+	for _, want := range []string{"auth.login.page", "auth.logout.page", "settings.page", "auth.totpverify.page", "auth.totp.page"} {
 		if !hidden[want] {
 			t.Fatalf("page op %q missing or not hidden", want)
 		}
 	}
-	if len(specs) != 19 {
-		t.Fatalf("ops = %d, want 19", len(specs))
+	if len(specs) != 29 {
+		t.Fatalf("ops = %d, want 29", len(specs))
 	}
 	tools, err := op.BuildTools(specs, e.server.Document(), op.ToolFilter{Principal: op.Principal{Kind: op.PrincipalHuman, Grants: adminGrants()}})
 	if err != nil {

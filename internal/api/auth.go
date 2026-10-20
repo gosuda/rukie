@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strings"
@@ -26,6 +27,7 @@ type LoginOut struct {
 	Username           string `json:"username"`
 	UserID             int64  `json:"user_id"`
 	MustChangePassword bool   `json:"must_change_password"`
+	TOTPRequired       bool   `json:"totp_required,omitzero"`
 }
 
 type LoginPageOut struct {
@@ -96,7 +98,10 @@ type TokenRevokeIn struct {
 type TokenRevokeOut struct{}
 
 type SessionListOut struct {
-	Sessions []SessionItem `json:"sessions"`
+	Sessions      []SessionItem `json:"sessions"`
+	OIDCProviders []string      `json:"oidc_providers,omitempty"`
+	OIDCLinked    []string      `json:"oidc_linked,omitempty"`
+	TOTPEnabled   bool          `json:"totp_enabled,omitzero"`
 }
 
 type SessionItem struct {
@@ -144,7 +149,12 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 		Scope: op.ScopePublicRead, Summary: "Sign in with a password",
 		Description: "Verifies an argon2id password, rotates the session, and sets the session cookie.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeRateLimited},
-		Location:    func(LoginOut) string { return "/settings" },
+		Location: func(out LoginOut) string {
+			if out.TOTPRequired {
+				return "/login/totp"
+			}
+			return "/settings"
+		},
 		Handler: func(ctx context.Context, _ op.Principal, in LoginIn) (LoginOut, error) {
 			res, err := deps.Service.Login(ctx, auth.LoginInput{Username: in.Body.Username, Password: in.Body.Password})
 			if err != nil {
@@ -154,7 +164,7 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 				return LoginOut{}, mapAuthError(err)
 			}
 			op.SetCookie(ctx, auth.SessionCookie(res.Secret, time.UnixMilli(res.Session.AbsoluteExpiresAt), deps.now()))
-			return LoginOut{Username: res.User.Name, UserID: res.User.ID, MustChangePassword: res.User.MustChangePassword}, nil
+			return LoginOut{Username: res.User.Name, UserID: res.User.ID, MustChangePassword: res.User.MustChangePassword, TOTPRequired: res.TOTPRequired}, nil
 		},
 	}); err != nil {
 		return err
@@ -331,6 +341,13 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 				return SessionListOut{}, mapAuthError(err)
 			}
 			out := SessionListOut{}
+			if enabled, _, serr := deps.Service.TOTPStatus(ctx, userID); serr == nil {
+				out.TOTPEnabled = enabled
+			}
+			out.OIDCProviders = deps.Service.OIDCProviders()
+			if linked, lerr := deps.Service.OIDCLinkedProviders(ctx, userID); lerr == nil {
+				out.OIDCLinked = linked
+			}
 			for _, s := range sessions {
 				prefix := s.IDHash
 				if len(prefix) > 12 {
@@ -415,6 +432,29 @@ func RegisterAuthViews(v *op.Views) {
 			textField("current", "Current password", "", true) +
 			textField("next", "New password (12+ characters)", "", true) +
 			submitField("Change password"))
+		b.WriteString("<h2>Second factor</h2>\n")
+		if out.TOTPEnabled {
+			b.WriteString(para("A second factor is enabled on this account."))
+		} else {
+			b.WriteString(para("No second factor is enrolled."))
+		}
+		b.WriteString("<p><a href=\"/settings/security/totp\">Manage second factor and recovery codes</a></p>\n")
+		b.WriteString(formOpen("/settings/security/totp", c.CSRF) + submitField("Enroll a second factor"))
+		if out.TOTPEnabled {
+			b.WriteString(formOpen("/settings/security/totp/disable", c.CSRF) + submitField("Disable second factor"))
+			b.WriteString(formOpen("/settings/security/recovery", c.CSRF) + submitField("Regenerate recovery codes"))
+		}
+		b.WriteString("<h2>Linked identities</h2>\n<ul>\n")
+		for _, issuer := range out.OIDCLinked {
+			b.WriteString("<li>" + html.EscapeString(issuer) + "</li>\n")
+		}
+		b.WriteString("</ul>\n")
+		for _, provider := range out.OIDCProviders {
+			b.WriteString("<p><a href=\"/login/oidc/" + html.EscapeString(provider) + "\">Log in via " + html.EscapeString(provider) + "</a></p>\n")
+			b.WriteString(formOpen("/settings/security/oidc/link", c.CSRF) +
+				hiddenField("provider", provider) +
+				submitField("Link "+provider))
+		}
 		b.WriteString("<h2>Sessions</h2>\n<ul>\n")
 		for _, s := range out.Sessions {
 			mark := ""

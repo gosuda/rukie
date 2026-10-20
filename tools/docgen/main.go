@@ -101,6 +101,7 @@ func buildDocTable(dbPath string) (*op.Table, *op.Document, error) {
 		func() error { return api.RegisterAuth(table, deps) },
 		func() error { return api.RegisterUser(table, deps) },
 		func() error { return api.RegisterAdmin(table, deps) },
+		func() error { return api.RegisterF12(table, deps) },
 	} {
 		if serr := step(); serr != nil {
 			return nil, nil, fmt.Errorf("buildDocTable: %w", serr)
@@ -115,6 +116,7 @@ func buildDocTable(dbPath string) (*op.Table, *op.Document, error) {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterF12Views(views)
 	api.RegisterLLMSViews(views)
 	key := make([]byte, 32)
 	mux := http.NewServeMux()

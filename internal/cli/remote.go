@@ -51,6 +51,9 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	if err := api.RegisterAdmin(table, deps); err != nil {
 		return nil, err
 	}
+	if err := api.RegisterF12(table, deps); err != nil {
+		return nil, err
+	}
 	fillLLMS, err := api.RegisterLLMS(table, "")
 	if err != nil {
 		return nil, err
@@ -60,6 +63,7 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterF12Views(views)
 	api.RegisterLLMSViews(views)
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{

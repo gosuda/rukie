@@ -26,6 +26,7 @@ import (
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/rukproc"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/sysops"
 )
 
 var devSeedExtras []func(context.Context, string) error
@@ -379,6 +380,10 @@ func (d *devRun) serve(ctx context.Context) int {
 		return 78
 	}
 	slog.SetDefault(logger)
+	if _, gerr := sysops.GenerateSecretKey(cfg.SecretKeyFile); gerr != nil {
+		emitDevErr(d.std, gerr.Error())
+		return 1
+	}
 	app, cleanup, err := setupApp(ctx, cfg, logger, nil)
 	defer cleanup()
 	if err != nil {

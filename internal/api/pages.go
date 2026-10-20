@@ -60,7 +60,17 @@ func textField(name, label, value string, password bool) string {
 		kind = "password"
 	}
 	return "<label>" + html.EscapeString(label) + "\n" +
-		"<input type=\"" + kind + "\" name=\"" + html.EscapeString(name) + "\" value=\"" + html.EscapeString(value) + "\">\n</label>\n"
+		"<input type=\"" + kind + "\" name=\"" + html.EscapeString(name) + "\" value=\"" + html.EscapeString(value) + "\"" + passwordComplete(name, password) + ">\n</label>\n"
+}
+
+func passwordComplete(name string, password bool) string {
+	if !password {
+		return ""
+	}
+	if name == "next" {
+		return " autocomplete=\"new-password\""
+	}
+	return " autocomplete=\"current-password\""
 }
 
 func hiddenField(name, value string) string {

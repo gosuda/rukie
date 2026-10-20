@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -462,6 +463,31 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
+	key, kerr := sysops.LoadSecretKey(cfg.SecretKeyFile)
+	if kerr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", kerr)
+	}
+	authSvc.SetSealKey(key)
+	var oidcCfgs []auth.OIDCProviderConfig
+	for _, p := range cfg.OIDC {
+		secretRaw, serr := os.ReadFile(filepath.Clean(p.ClientSecretFile))
+		if serr != nil {
+			cleanup()
+			return nil, cleanup, fmt.Errorf("setupApp: oidc %s: %w", p.Name, serr)
+		}
+		oidcCfgs = append(oidcCfgs, auth.OIDCProviderConfig{
+			ID: p.Name, Issuer: p.Issuer, ClientID: p.ClientID,
+			ClientSecret: strings.TrimSpace(string(secretRaw)),
+			Scopes:       p.Scopes, AllowSignup: p.AllowSignup, RedirectURL: p.RedirectURL,
+		})
+	}
+	if len(oidcCfgs) > 0 {
+		if serr := authSvc.SetOIDCProviders(ctx, oidcCfgs); serr != nil {
+			cleanup()
+			return nil, cleanup, fmt.Errorf("setupApp: %w", serr)
+		}
+	}
 	cleanup = func() {
 		_ = authSvc.Close()
 		_ = st.Close(context.Background())
@@ -480,6 +506,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	if regErr := api.RegisterF12(table, authDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	fillLLMS, regErr := api.RegisterLLMS(table, llmsBase(cfg))
 	if regErr != nil {
 		cleanup()
@@ -490,6 +520,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterF12Views(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
 	idem.StartSweeper(ctx, time.Minute)
