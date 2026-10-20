@@ -69,4 +69,3 @@ Every operation in the table. Regenerate with `go run ./tools/docgen`.
 | `user.get` | `GET` | `/{owner}` | [user.get](./user.get.md) |
 | `user.self.delete` | `POST` | `/settings/delete` | [user.self.delete](./user.self.delete.md) |
 | `user.self.update` | `POST` | `/settings` | [user.self.update](./user.self.update.md) |
-// weave: run 'weave explain docs/reference/operations/README.md' for per-hunk detail, 'weave check' to verify your resolution
