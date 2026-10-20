@@ -738,6 +738,103 @@ func TestGitChunkedOverflowRefused413(t *testing.T) {
 	}
 }
 
+func TestGitIngestLimitsRefuseTightPush(t *testing.T) {
+	withLimits := func(t *testing.T, mutate func(*wire.GitLimits)) (*stack, userRec) {
+		t.Helper()
+		limits := wire.DefaultGitLimits()
+		mutate(&limits)
+		s := newStack(t, &limits)
+		ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+		s.addRepo(t, "ada", "hello", "private")
+		return s, ada
+	}
+	pushMain := func(t *testing.T, s *stack, ada userRec, work string) (string, error) {
+		t.Helper()
+		pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		return gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main")
+	}
+	refAbsent := func(t *testing.T, s *stack, ada userRec) {
+		t.Helper()
+		adaPush := s.repoURL("ada", "hello", "ada", ada.token)
+		if refs := s.lsRemote(t, adaPush); refs["refs/heads/main"] != "" {
+			t.Fatalf("tight push landed: %q", refs["refs/heads/main"])
+		}
+	}
+	t.Run("pack_bytes", func(t *testing.T) {
+		s, ada := withLimits(t, func(l *wire.GitLimits) { l.MaxPackBytes = 64 })
+		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		if out, err := pushMain(t, s, ada, work); err == nil {
+			t.Fatalf("pack-bytes-tight push succeeded\n%s", out)
+		}
+		refAbsent(t, s, ada)
+	})
+	t.Run("objects", func(t *testing.T) {
+		s, ada := withLimits(t, func(l *wire.GitLimits) { l.MaxObjects = 2 })
+		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		if out, err := pushMain(t, s, ada, work); err == nil {
+			t.Fatalf("object-tight push succeeded\n%s", out)
+		}
+		refAbsent(t, s, ada)
+	})
+	t.Run("object_bytes", func(t *testing.T) {
+		s, ada := withLimits(t, func(l *wire.GitLimits) { l.MaxObjectBytes = 1 })
+		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		if out, err := pushMain(t, s, ada, work); err == nil {
+			t.Fatalf("object-bytes-tight push succeeded\n%s", out)
+		}
+		refAbsent(t, s, ada)
+	})
+	t.Run("delta_depth", func(t *testing.T) {
+		s, ada := withLimits(t, func(l *wire.GitLimits) { l.MaxDeltaDepth = 0 })
+		pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+		ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+		defer cancel()
+		work, _ := s.localRepo(t, map[string]string{"big.txt": strings.Repeat("lorem ipsum dolor sit amet\n", 800)})
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
+			t.Fatalf("delta-free base push failed: %v\n%s", err, out)
+		}
+		changed := strings.Repeat("lorem ipsum dolor sit amet\n", 400) + "lorem IPSUM changed\n" + strings.Repeat("lorem ipsum dolor sit amet\n", 399)
+		if err := os.WriteFile(filepath.Join(work, "big.txt"), []byte(changed), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if out, err := gitRun(ctx, t, work, "add", "-A"); err != nil {
+			t.Fatalf("add: %v\n%s", err, out)
+		}
+		if out, err := gitRun(ctx, t, work, "commit", "-m", "tweak"); err != nil {
+			t.Fatalf("commit: %v\n%s", err, out)
+		}
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err == nil {
+			t.Fatalf("delta-depth-tight push succeeded\n%s", out)
+		}
+	})
+	t.Run("push_options_zero_refuses", func(t *testing.T) {
+		s, ada := withLimits(t, func(l *wire.GitLimits) { l.MaxPushOptions = 0 })
+		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		if out, err := gitRun(ctx, t, work, "push", "--push-option=ci.skip", pushURL, "HEAD:refs/heads/main"); err == nil {
+			t.Fatalf("zero-option-quota push succeeded\n%s", out)
+		}
+		refAbsent(t, s, ada)
+	})
+	t.Run("push_options_one_lands", func(t *testing.T) {
+		s, ada := withLimits(t, func(l *wire.GitLimits) { l.MaxPushOptions = 1 })
+		work, oid := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
+			t.Fatalf("at-limit push failed: %v\n%s", err, out)
+		}
+		if refs := s.lsRemote(t, pushURL); refs["refs/heads/main"] != oid {
+			t.Fatalf("main = %q, want %q", refs["refs/heads/main"], oid)
+		}
+	})
+}
+
 func TestRefsForRejectedUntilReview(t *testing.T) {
 	s := newStack(t, nil)
 	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
