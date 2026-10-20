@@ -129,9 +129,9 @@ type TokenSecret struct {
 }
 
 type CreateTokenInput struct {
-	Repos      []int64
 	Name       string
 	IP         string
+	Repos      []int64
 	Scopes     op.Scopes
 	TTL        time.Duration
 	UserID     int64

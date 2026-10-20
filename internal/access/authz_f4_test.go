@@ -24,34 +24,34 @@ func TestAuthzWorkedResolutions(t *testing.T) {
 	m := teamFixture()
 	rows := []struct {
 		name   string
-		caller Caller
 		action string
-		res    Resource
-		allow  bool
 		reason string
+		res    Resource
+		caller Caller
+		allow  bool
 	}{
-		{"owner-team admin pushes private org repo", sessCaller(uOrgOwner), "repo.push", repoResource(rOrgPriv), true, ""},
-		{"owner-team admin deletes private org repo", sessCaller(uOrgOwner), "repo.delete", repoResource(rOrgPriv), true, ""},
-		{"team write pushes granted repo", sessCaller(uMember), "repo.push", repoResource(rOrgPriv), true, ""},
-		{"team write views granted repo", sessCaller(uMember), "repo.view", repoResource(rOrgPriv), true, ""},
-		{"maintain team pushes granted repo", sessCaller(uOutsider), "repo.push", repoResource(rOrgPriv), true, ""},
-		{"member views via own-org team", sessCaller(uMember), "repo.view", repoResource(rOrgPriv), true, ""},
-		{"stranger cannot view private org repo", sessCaller(uOutsider), "repo.view", repoResource(rUserPriv), false, "invisible"},
-		{"anon cannot view private org", anonCaller(), "org.get", orgResource(org7), false, "invisible"},
-		{"member views private org", sessCaller(uMember), "org.get", orgResource(org7), true, ""},
-		{"owner views private org", sessCaller(uOrgOwner), "org.get", orgResource(org7), true, ""},
-		{"token cannot create team", tokenCaller(uOrgOwner, adminScopes(), false), "team.create", teamResource(org7, 9), false, "session-required"},
-		{"token cannot list teams", tokenCaller(uMember, readScopes(), false), "team.list", teamResource(org7, 9), false, "session-required"},
-		{"token cannot create org", tokenCaller(uMember, adminScopes(), false), "org.create", orgResource(org7), false, "session-required"},
-		{"session creates org", sessCaller(uMember), "org.create", orgResource(org7), true, ""},
-		{"session creates org site-scoped", sessCaller(uMember), "org.create", Resource{Kind: KindSite}, true, ""},
-		{"session lists orgs site-scoped", sessCaller(uMember), "org.list", Resource{Kind: KindSite}, true, ""},
-		{"member lists teams", sessCaller(uMember), "team.list", teamResource(org7, 9), true, ""},
-		{"nonmember cannot list teams", sessCaller(uOwner), "team.list", teamResource(org7, 9), false, "invisible"},
-		{"owner manages team", sessCaller(uOrgOwner), "team.member.add", teamResource(org7, 9), true, ""},
-		{"member cannot manage team", sessCaller(uMember), "team.member.add", teamResource(org7, 9), false, "precondition"},
-		{"owner leaves guard allows member", sessCaller(uMember), "org.leave", orgResource(org7), true, ""},
-		{"nonmember cannot leave", sessCaller(uOwner), "org.leave", orgResource(org7), false, "invisible"},
+		{allow: true, name: "owner-team admin pushes private org repo", action: "repo.push", caller: sessCaller(uOrgOwner), res: repoResource(rOrgPriv)},
+		{allow: true, name: "owner-team admin deletes private org repo", action: "repo.delete", caller: sessCaller(uOrgOwner), res: repoResource(rOrgPriv)},
+		{allow: true, name: "team write pushes granted repo", action: "repo.push", caller: sessCaller(uMember), res: repoResource(rOrgPriv)},
+		{allow: true, name: "team write views granted repo", action: "repo.view", caller: sessCaller(uMember), res: repoResource(rOrgPriv)},
+		{allow: true, name: "maintain team pushes granted repo", action: "repo.push", caller: sessCaller(uOutsider), res: repoResource(rOrgPriv)},
+		{allow: true, name: "member views via own-org team", action: "repo.view", caller: sessCaller(uMember), res: repoResource(rOrgPriv)},
+		{allow: false, name: "stranger cannot view private org repo", action: "repo.view", reason: "invisible", caller: sessCaller(uOutsider), res: repoResource(rUserPriv)},
+		{allow: false, name: "anon cannot view private org", action: "org.get", reason: "invisible", caller: anonCaller(), res: orgResource(org7)},
+		{allow: true, name: "member views private org", action: "org.get", caller: sessCaller(uMember), res: orgResource(org7)},
+		{allow: true, name: "owner views private org", action: "org.get", caller: sessCaller(uOrgOwner), res: orgResource(org7)},
+		{allow: false, name: "token cannot create team", action: "team.create", reason: "session-required", caller: tokenCaller(uOrgOwner, adminScopes(), false), res: teamResource(org7, 9)},
+		{allow: false, name: "token cannot list teams", action: "team.list", reason: "session-required", caller: tokenCaller(uMember, readScopes(), false), res: teamResource(org7, 9)},
+		{allow: false, name: "token cannot create org", action: "org.create", reason: "session-required", caller: tokenCaller(uMember, adminScopes(), false), res: orgResource(org7)},
+		{allow: true, name: "session creates org", action: "org.create", caller: sessCaller(uMember), res: orgResource(org7)},
+		{allow: true, name: "session creates org site-scoped", action: "org.create", caller: sessCaller(uMember), res: Resource{Kind: KindSite}},
+		{allow: true, name: "session lists orgs site-scoped", action: "org.list", caller: sessCaller(uMember), res: Resource{Kind: KindSite}},
+		{allow: true, name: "member lists teams", action: "team.list", caller: sessCaller(uMember), res: teamResource(org7, 9)},
+		{allow: false, name: "nonmember cannot list teams", action: "team.list", reason: "invisible", caller: sessCaller(uOwner), res: teamResource(org7, 9)},
+		{allow: true, name: "owner manages team", action: "team.member.add", caller: sessCaller(uOrgOwner), res: teamResource(org7, 9)},
+		{allow: false, name: "member cannot manage team", action: "team.member.add", reason: "precondition", caller: sessCaller(uMember), res: teamResource(org7, 9)},
+		{allow: true, name: "owner leaves guard allows member", action: "org.leave", caller: sessCaller(uMember), res: orgResource(org7)},
+		{allow: false, name: "nonmember cannot leave", action: "org.leave", reason: "invisible", caller: sessCaller(uOwner), res: orgResource(org7)},
 	}
 	for _, row := range rows {
 		d := Check(m, row.caller, row.action, row.res)

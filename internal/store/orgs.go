@@ -37,9 +37,9 @@ type TeamRow struct {
 }
 
 type OrgMemberRow struct {
-	Teams    []string
 	Username string
 	Role     string
+	Teams    []string
 	UserID   int64
 }
 

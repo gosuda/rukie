@@ -219,7 +219,7 @@ func TestTokenLimitedToOneRepoAndOpSet(t *testing.T) {
 	rec := odo(t, e, "POST", "/settings/tokens", adaCookie,
 		`{"name":"scoped","scopes":"repo:read","repos":[`+itoa(r1)+`]}`)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("token create with repos = %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("token create with repos = %d", rec.Code)
 	}
 	_ = r2
 }
@@ -289,11 +289,12 @@ func TestTeamMemberAddImpliesOrgMember(t *testing.T) {
 		t.Fatalf("bob missing owner role: %s", body)
 	}
 	bobCookie := ologin(t, e, "bob", "long-test-password-01")
-	if rec := odo(t, e, "GET", "/settings/orgs", bobCookie, ""); rec.Code != http.StatusOK {
-		t.Fatalf("bob lists orgs = %d: %s", rec.Code, rec.Body.String())
+	orl := odo(t, e, "GET", "/settings/orgs", bobCookie, "")
+	if orl.Code != http.StatusOK {
+		t.Fatalf("bob lists orgs = %d: %s", orl.Code, orl.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "acme") {
-		t.Fatalf("acme missing from bob orgs: %s", rec.Body.String())
+	if !strings.Contains(orl.Body.String(), "acme") {
+		t.Fatalf("acme missing from bob orgs: %s", orl.Body.String())
 	}
 	var outbox int64
 	if err := e.st.Read(t.Context(), func(tx *store.ReadTx) error {

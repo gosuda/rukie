@@ -20,9 +20,9 @@ type OrgJSON struct {
 	Website     string `json:"website,omitempty"`
 	Name        string `json:"name"`
 	Visibility  string `json:"visibility"`
+	Role        string `json:"role,omitempty"`
 	CreatedAt   int64  `json:"created_at"`
 	UpdatedAt   int64  `json:"updated_at"`
-	Role        string `json:"role,omitempty"`
 }
 
 func orgJSON(row store.OrgRow, role string) OrgJSON {
@@ -106,6 +106,21 @@ func resolveOrgByName(ctx context.Context, d Deps, name string) (store.OrgRow, e
 	return row, nil
 }
 
+func siteAccess(d Deps, rq requester, action string) error {
+	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
+	decision := access.Check(resolver, rq.caller, action, access.Resource{Kind: access.KindSite})
+	if !decision.Allow {
+		if decision.Reason == "session-required" {
+			return op.Errorf(op.CodeUnauthorized, "session authentication is required")
+		}
+		if decision.Reason == "scope" {
+			return op.Errorf(op.CodeForbidden, "token lacks the required scope")
+		}
+		return op.Errorf(op.CodeForbidden, "organization access was denied")
+	}
+	return nil
+}
+
 func orgAccess(d Deps, rq requester, orgID int64, action string) error {
 	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
 	decision := access.Check(resolver, rq.caller, action, access.Resource{Kind: access.KindOrg, OrgID: orgID})
@@ -178,9 +193,9 @@ type OrgGetIn struct {
 }
 
 type OrgGetOut struct {
-	Org      OrgJSON    `json:"org"`
 	OrgRepos []RepoJSON `json:"repos,omitempty"`
 	Teams    []TeamJSON `json:"teams,omitempty"`
+	Org      OrgJSON    `json:"org"`
 }
 
 type OrgListIn struct {
@@ -201,10 +216,10 @@ type OrgUpdateBody struct {
 }
 
 type OrgUpdateIn struct {
+	Body           OrgUpdateBody
 	IdempotencyKey string `header:"Idempotency-Key"`
 	IfMatch        string `header:"If-Match"`
 	Org            string `path:"org"`
-	Body           OrgUpdateBody
 }
 
 type OrgUpdateOut struct {
@@ -244,21 +259,21 @@ type OrgSettingsPageIn struct {
 }
 
 type OrgSettingsPageOut struct {
-	Org  OrgJSON `json:"org"`
 	ETag string  `json:"etag"`
+	Org  OrgJSON `json:"org"`
 }
 
 type OrgMemberJSON struct {
-	Teams    []string `json:"teams,omitempty"`
 	Username string   `json:"username"`
 	Role     string   `json:"role"`
+	Teams    []string `json:"teams,omitempty"`
 }
 
 type OrgMemberListIn struct {
 	Role   string `query:"role"`
 	Cursor string `query:"cursor"`
-	Limit  int    `query:"limit"`
 	Org    string `path:"org"`
+	Limit  int    `query:"limit"`
 }
 
 type OrgMemberListOut struct {
@@ -311,8 +326,8 @@ type TeamGetOut struct {
 
 type TeamListIn struct {
 	Cursor string `query:"cursor"`
-	Limit  int    `query:"limit"`
 	Org    string `path:"org"`
+	Limit  int    `query:"limit"`
 }
 
 type TeamListOut struct {
@@ -328,11 +343,11 @@ type TeamUpdateBody struct {
 }
 
 type TeamUpdateIn struct {
+	Body           TeamUpdateBody
 	IdempotencyKey string `header:"Idempotency-Key"`
 	IfMatch        string `header:"If-Match"`
 	Org            string `path:"org"`
 	Team           string `path:"team"`
-	Body           TeamUpdateBody
 }
 
 type TeamUpdateOut struct {
@@ -350,9 +365,9 @@ type TeamDeleteOut struct{}
 
 type TeamMemberListIn struct {
 	Cursor string `query:"cursor"`
-	Limit  int    `query:"limit"`
 	Org    string `path:"org"`
 	Team   string `path:"team"`
+	Limit  int    `query:"limit"`
 }
 
 type TeamMemberListOut struct {
@@ -384,9 +399,9 @@ type TeamMemberRemoveOut struct{}
 
 type TeamRepoListIn struct {
 	Cursor string `query:"cursor"`
-	Limit  int    `query:"limit"`
 	Org    string `path:"org"`
 	Team   string `path:"team"`
+	Limit  int    `query:"limit"`
 }
 
 type TeamRepoListOut struct {
@@ -466,7 +481,7 @@ func checkVisibilityValue(visibility string) error {
 	return nil
 }
 
-func orgRoleOf(ctx context.Context, d Deps, orgID, userID int64) string {
+func orgRoleOf(d Deps, orgID, userID int64) string {
 	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
 	if resolver.IsOrgOwner(orgID, userID) {
 		return "owner"
@@ -486,6 +501,13 @@ func createOrgHandler(d Deps) func(context.Context, op.Principal, OrgCreateIn) (
 		user, uerr := requireSessionUser(ctx, d, p)
 		if uerr != nil {
 			return OrgCreateOut{}, uerr
+		}
+		rq, rerr := d.requester(ctx, p)
+		if rerr != nil {
+			return OrgCreateOut{}, rerr
+		}
+		if derr := siteAccess(d, rq, "org.create"); derr != nil {
+			return OrgCreateOut{}, derr
 		}
 		body := in.Body
 		name := strings.ToLower(strings.TrimSpace(body.Name))
@@ -550,7 +572,7 @@ func getOrgHandler(d Deps) func(context.Context, op.Principal, OrgGetIn) (OrgGet
 		}
 		role := ""
 		if rq.authed {
-			role = orgRoleOf(ctx, d, row.ID, rq.userID)
+			role = orgRoleOf(d, row.ID, rq.userID)
 		}
 		out := OrgGetOut{Org: orgJSON(row, role)}
 		serr = st.Read(ctx, func(tx *store.ReadTx) error {
@@ -582,6 +604,13 @@ func listOrgHandler(d Deps) func(context.Context, op.Principal, OrgListIn) (OrgL
 		user, uerr := requireSessionUser(ctx, d, p)
 		if uerr != nil {
 			return OrgListOut{}, uerr
+		}
+		rq, rerr := d.requester(ctx, p)
+		if rerr != nil {
+			return OrgListOut{}, rerr
+		}
+		if derr := siteAccess(d, rq, "org.list"); derr != nil {
+			return OrgListOut{}, derr
 		}
 		limit := in.Limit
 		if limit <= 0 {
@@ -672,7 +701,7 @@ func updateOrgHandler(d Deps) func(context.Context, op.Principal, OrgUpdateIn) (
 			}
 			return OrgUpdateOut{}, op.Wrap(op.CodeInternal, werr, "organization update failed")
 		}
-		return OrgUpdateOut{Org: orgJSON(updated, orgRoleOf(ctx, d, updated.ID, rq.userID))}, nil
+		return OrgUpdateOut{Org: orgJSON(updated, orgRoleOf(d, updated.ID, rq.userID))}, nil
 	}
 }
 
@@ -729,7 +758,7 @@ func renameOrgHandler(d Deps) func(context.Context, op.Principal, OrgRenameIn) (
 			}
 			return OrgRenameOut{}, op.Wrap(op.CodeInternal, werr, "organization rename failed")
 		}
-		return OrgRenameOut{Org: orgJSON(updated, orgRoleOf(ctx, d, updated.ID, rq.userID))}, nil
+		return OrgRenameOut{Org: orgJSON(updated, orgRoleOf(d, updated.ID, rq.userID))}, nil
 	}
 }
 
@@ -1703,7 +1732,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Create a team",
 		Description: "Session-only, organization owners. One permission covers every selected repository.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict},
-		Location:    func(out TeamCreateOut) string { return "" },
+		Location:    func(TeamCreateOut) string { return "" },
 		ETag: func(out TeamCreateOut) string {
 			return fmt.Sprintf("\"team-%s-%d\"", out.Team.Name, out.Team.UpdatedAt)
 		},
@@ -1732,7 +1761,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		ETag: func(out TeamUpdateOut) string {
 			return fmt.Sprintf("\"team-%s-%d\"", out.Team.Name, out.Team.UpdatedAt)
 		},
-		Location: func(out TeamUpdateOut) string { return "" },
+		Location: func(TeamUpdateOut) string { return "" },
 		Handler:  updateTeamHandler(deps),
 	}); err != nil {
 		return err
@@ -2114,7 +2143,7 @@ func orgProfileForOwner(ctx context.Context, deps Deps, p op.Principal, owner st
 	}
 	role := ""
 	if rq.authed {
-		role = orgRoleOf(ctx, deps, row.ID, rq.userID)
+		role = orgRoleOf(deps, row.ID, rq.userID)
 	}
 	return UserGetOut{
 		Kind: "org", Role: role, Name: row.Name, DisplayName: row.DisplayName,
