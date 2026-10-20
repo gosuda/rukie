@@ -380,9 +380,15 @@ func (d *devRun) serve(ctx context.Context) int {
 		return 78
 	}
 	slog.SetDefault(logger)
-	if _, gerr := sysops.GenerateSecretKey(cfg.SecretKeyFile); gerr != nil {
-		emitDevErr(d.std, gerr.Error())
-		return 1
+	if _, serr := os.Stat(cfg.SecretKeyFile); serr != nil {
+		if !os.IsNotExist(serr) {
+			emitDevErr(d.std, serr.Error())
+			return 1
+		}
+		if _, gerr := sysops.GenerateSecretKey(cfg.SecretKeyFile); gerr != nil {
+			emitDevErr(d.std, gerr.Error())
+			return 1
+		}
 	}
 	app, cleanup, err := setupApp(ctx, cfg, logger, nil)
 	defer cleanup()

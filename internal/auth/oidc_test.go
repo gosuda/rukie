@@ -171,7 +171,7 @@ func (o *stubOP) issueCode(challenge, nonce, sub, username, email string, verifi
 	return code
 }
 
-func startStubLogin(t *testing.T, svc *Service, _ *stubOP, linkUser int64) (state, challenge, nonce string) {
+func startStubLogin(t *testing.T, svc *Service, linkUser int64) (state, challenge, nonce string) {
 	t.Helper()
 	redirect, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", ReturnTo: "/", IP: "127.0.0.1", LinkUserID: linkUser})
 	if err != nil {
@@ -209,7 +209,7 @@ func TestOIDCStubProviderLogin(t *testing.T) {
 	svc.SetSealKey(testSealKey())
 	op := newStubOP(t)
 	configureStub(t, svc, op, true)
-	state, challenge, nonce := startStubLogin(t, svc, op, 0)
+	state, challenge, nonce := startStubLogin(t, svc, 0)
 	code := op.issueCode(challenge, nonce, "user-1", "oidcuser", "oidcuser@example.com", true)
 	res, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: code, State: state, IP: "127.0.0.1", UserAgent: "test",
@@ -230,7 +230,7 @@ func TestOIDCStubProviderLogin(t *testing.T) {
 	if err != nil || len(linked) != 1 || linked[0] != op.issuer {
 		t.Fatalf("links = %v, err = %v", linked, err)
 	}
-	state2, challenge2, nonce2 := startStubLogin(t, svc, op, 0)
+	state2, challenge2, nonce2 := startStubLogin(t, svc, 0)
 	code2 := op.issueCode(challenge2, nonce2, "user-1", "oidcuser", "oidcuser@example.com", true)
 	res2, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: code2, State: state2, IP: "127.0.0.1", UserAgent: "test",
@@ -246,7 +246,7 @@ func TestOIDCStubProviderLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bob login: %v", err)
 	}
-	state3, challenge3, nonce3 := startStubLogin(t, svc, op, bob.ID)
+	state3, challenge3, nonce3 := startStubLogin(t, svc, bob.ID)
 	code3 := op.issueCode(challenge3, nonce3, "user-9", "boboidc", "bob@example.com", true)
 	linkRes, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: code3, State: state3, IP: "127.0.0.1",
@@ -269,7 +269,7 @@ func TestOIDCPKCEAndNonce(t *testing.T) {
 	svc.SetSealKey(testSealKey())
 	op := newStubOP(t)
 	configureStub(t, svc, op, true)
-	state, _, _ := startStubLogin(t, svc, op, 0)
+	state, _, _ := startStubLogin(t, svc, 0)
 	foreign := oauth2.S256ChallengeFromVerifier(strings.Repeat("z", 64))
 	badCode := op.issueCode(foreign, "irrelevant", "user-x", "mallory", "m@example.com", true)
 	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
@@ -280,7 +280,7 @@ func TestOIDCPKCEAndNonce(t *testing.T) {
 	if _, err := svc.userByOIDCLink(t.Context(), op.issuer, "user-x"); err == nil {
 		t.Fatal("user row created from a failed exchange")
 	}
-	state2, challenge2, _ := startStubLogin(t, svc, op, 0)
+	state2, challenge2, _ := startStubLogin(t, svc, 0)
 	tampered := op.issueCode(challenge2, "tampered-nonce", "user-y", "mallory2", "m2@example.com", true)
 	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: tampered, State: state2, IP: "127.0.0.1", UserAgent: "test",
@@ -324,5 +324,29 @@ func TestOIDCStateAbuseBlock(t *testing.T) {
 	if _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.7"}); err != nil {
 		t.Fatalf("start after block expiry: %v", err)
 	}
-	_ = op
+	windowBad := OIDCCallbackInput{ProviderID: "stub", Code: "nope", State: "bogus-state", IP: "10.9.8.9", UserAgent: "test"}
+	setNow(now.Add(2 * time.Hour))
+	for i := range oidcBadStateLimit - 1 {
+		if _, err := svc.HandleOIDCCallback(t.Context(), windowBad); !errors.Is(err, errOIDCBadState) {
+			t.Fatalf("window attempt %d err = %v", i+1, err)
+		}
+	}
+	setNow(now.Add(2*time.Hour + oidcBadStateWindow + time.Minute))
+	if _, err := svc.HandleOIDCCallback(t.Context(), windowBad); !errors.Is(err, errOIDCBadState) {
+		t.Fatalf("after window slide err = %v, want bad-state", err)
+	}
+	for i := range oidcBadStateLimit - 2 {
+		if _, err := svc.HandleOIDCCallback(t.Context(), windowBad); !errors.Is(err, errOIDCBadState) {
+			t.Fatalf("fresh window attempt %d err = %v", i+1, err)
+		}
+	}
+	if _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.9"}); err != nil {
+		t.Fatalf("start at fresh N-1 blocked: %v", err)
+	}
+	if _, err := svc.HandleOIDCCallback(t.Context(), windowBad); !errors.Is(err, errOIDCBadState) {
+		t.Fatalf("fresh attempt N err = %v", err)
+	}
+	if _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.9"}); !errors.Is(err, errOIDCIPBlocked) {
+		t.Fatalf("start at fresh N+1 err = %v, want blocked", err)
+	}
 }

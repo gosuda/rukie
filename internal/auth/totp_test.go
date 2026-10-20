@@ -174,6 +174,41 @@ func TestTOTPLockoutKillsPending(t *testing.T) {
 	}
 }
 
+func TestTOTPFailuresFeedLockout(t *testing.T) {
+	svc, setNow := openTestService(t)
+	svc.SetSealKey(testSealKey())
+	now := time.Unix(1754000000, 0).UTC()
+	setNow(now)
+	u := mustCreateWithPassword(t, svc, "totplock", false)
+	enrollEnabled(t, svc, u, now)
+	res, err := svc.Login(t.Context(), LoginInput{Username: u.Name, Password: testPasswords[u.Name], IP: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	pending := res.Secret
+	for i := range lockoutThreshold - 1 {
+		if _, verr := svc.VerifyTOTP(t.Context(), VerifyTOTPInput{SessionSecret: pending, Code: "000000", IP: "127.0.0.1"}); verr == nil {
+			t.Fatalf("bad code %d accepted", i)
+		}
+		if _, _, serr := svc.LookupSession(t.Context(), pending); serr != nil {
+			t.Fatalf("pending challenge died at totp failure %d of %d", i+1, lockoutThreshold)
+		}
+	}
+	if _, verr := svc.VerifyTOTP(t.Context(), VerifyTOTPInput{SessionSecret: pending, Code: "000000", IP: "127.0.0.1"}); verr == nil {
+		t.Fatal("fifth bad code accepted")
+	}
+	fresh, _, err := svc.userByName(t.Context(), svc.db, u.LowerName)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if fresh.LockedUntil <= millis(now) {
+		t.Fatal("account is not locked at the fifth totp failure")
+	}
+	if _, _, err := svc.LookupSession(t.Context(), pending); err == nil {
+		t.Fatal("pending challenge survived the totp-driven lockout")
+	}
+}
+
 func TestRecoveryCodesSingleUse(t *testing.T) {
 	svc, setNow := openTestService(t)
 	svc.SetSealKey(testSealKey())

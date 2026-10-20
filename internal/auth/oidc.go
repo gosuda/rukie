@@ -62,6 +62,7 @@ type OIDCCallbackInput struct {
 	UserAgent     string
 	SessionSecret string
 	SessionUserID int64
+	SessionFresh  bool
 }
 
 // OIDCCallbackResult carries the login outcome.
@@ -274,9 +275,10 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 	}
 	var current User
 	var haveSession bool
+	var sess Session
 	var serr error
 	if in.SessionSecret != "" {
-		_, current, serr = s.LookupSession(ctx, in.SessionSecret)
+		sess, current, serr = s.LookupSession(ctx, in.SessionSecret)
 		if serr != nil {
 			return OIDCCallbackResult{}, errInvalidCredentials
 		}
@@ -312,6 +314,13 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		return res, nil
 	}
 	if haveSession {
+		fresh := in.SessionFresh
+		if in.SessionSecret != "" {
+			fresh = SessionFresh(sess.AuthedAt, now)
+		}
+		if !fresh {
+			return OIDCCallbackResult{}, errInvalidCredentials
+		}
 		if lerr := s.linkIdentity(ctx, rt.config.Issuer, idToken.Subject, current.ID, now); lerr != nil {
 			return OIDCCallbackResult{}, lerr
 		}

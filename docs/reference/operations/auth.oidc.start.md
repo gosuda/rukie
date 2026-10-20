@@ -16,6 +16,7 @@ Mints single-use state with PKCE S256 and nonce. The page links on to the provid
 
 | Name | In | Required | Type |
 | --- | --- | --- | --- |
+| `next` | query | no | `string` |
 | `provider` | path | yes | `string` |
 
 ## Errors

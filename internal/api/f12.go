@@ -75,6 +75,7 @@ type TOTPPageOut struct {
 
 type OIDCStartIn struct {
 	Provider string `path:"provider"`
+	Next     string `query:"next"`
 }
 
 type OIDCStartOut struct {
@@ -324,7 +325,7 @@ func RegisterF12(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeNotFound, op.CodeForbidden},
 		Handler: func(ctx context.Context, _ op.Principal, in OIDCStartIn) (OIDCStartOut, error) {
 			redirect, serr := deps.Service.StartOIDCLogin(ctx, auth.StartOIDCLoginInput{
-				ProviderID: in.Provider, ReturnTo: "/", IP: op.ClientIP(ctx),
+				ProviderID: in.Provider, ReturnTo: cmp.Or(in.Next, "/"), IP: op.ClientIP(ctx),
 			})
 			if serr != nil {
 				return OIDCStartOut{}, mapF12Error(serr)
@@ -343,9 +344,16 @@ func RegisterF12(t *op.Table, deps Deps) error {
 			if in.Code == "" || in.State == "" {
 				return OIDCCallbackOut{}, op.Errorf(op.CodeValidation, "code and state are required")
 			}
+			userID := oidcSessionUser(ctx, deps.Service, p)
+			fresh := false
+			if userID != 0 {
+				if _, ferr := auth.RequireFresh(ctx, deps.Service, p, deps.now()); ferr == nil {
+					fresh = true
+				}
+			}
 			res, cerr := deps.Service.HandleOIDCCallback(ctx, auth.OIDCCallbackInput{
 				ProviderID: in.Provider, Code: in.Code, State: in.State,
-				IP: op.ClientIP(ctx), SessionUserID: oidcSessionUser(ctx, deps.Service, p),
+				IP: op.ClientIP(ctx), SessionUserID: userID, SessionFresh: fresh,
 			})
 			if cerr != nil {
 				return OIDCCallbackOut{}, mapF12Error(cerr)

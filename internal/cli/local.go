@@ -14,6 +14,7 @@ import (
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/sysops"
 )
 
 func dispatchLocal(ctx context.Context, std IO, inv *op.Invocation, configPath string, w wrapperOpts) int {
@@ -38,6 +39,12 @@ func dispatchLocal(ctx context.Context, std IO, inv *op.Invocation, configPath s
 		return 1
 	}
 	defer func() { _ = svc.Close() }()
+	sealKey, serr := sysops.LoadSecretKey(cfg.SecretKeyFile)
+	if serr != nil {
+		emit(std.Stderr, "rukie:", serr.Error())
+		return 2
+	}
+	svc.SetSealKey(sealKey)
 	principal, code := localPrincipal(ctx, std, svc, inv, w)
 	if code != 0 {
 		return code

@@ -22,6 +22,7 @@ linters:
       - path: ^internal/op/mount_huma\.go$
         text: G705
         linters: [gosec]
+      # RFC 6238 mandates HMAC-SHA-1 for TOTP; totp.go is its only user here.
       - path: ^internal/auth/totp\.go$
         text: G505
         linters: [gosec]

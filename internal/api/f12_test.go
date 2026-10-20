@@ -26,7 +26,7 @@ func f12SealKey() []byte {
 	return []byte("f12-test-seal-key-0123456789abcd")
 }
 
-func f12Enroll(t *testing.T, e *testEnv, cookie string) (secret string) {
+func f12Enroll(t *testing.T, e *testEnv, cookie string) (secret, revealBody string) {
 	t.Helper()
 	e.svc.SetSealKey(f12SealKey())
 	rec := postForm(t, e, "/settings/security/totp", "/settings/security", cookie, "")
@@ -42,7 +42,10 @@ func f12Enroll(t *testing.T, e *testEnv, cookie string) (secret string) {
 		t.Fatalf("enroll page = %d", page.Code)
 	}
 	body := page.Body.String()
-	if strings.Contains(strings.ToLower(body), "qr") || strings.Contains(body, "<img") {
+	lowered := strings.ToLower(body)
+	if strings.Contains(body, "<img") || strings.Contains(lowered, "qrcode") ||
+		strings.Contains(lowered, "qr-code") || strings.Contains(body, "<svg") ||
+		strings.Contains(body, "<canvas") {
 		t.Fatal("enrollment page carries a QR image")
 	}
 	idx := strings.Index(body, "Manual key: <code>")
@@ -57,7 +60,7 @@ func f12Enroll(t *testing.T, e *testEnv, cookie string) (secret string) {
 	if !strings.Contains(body, "otpauth://totp/") {
 		t.Fatal("no otpauth URI on enrollment page")
 	}
-	return rest[:end]
+	return rest[:end], body
 }
 
 func f12Code(t *testing.T, secretBase32 string, at time.Time) string {
@@ -74,7 +77,7 @@ func TestF12EnrollVerifyDisableFlow(t *testing.T) {
 	pw := randomPW(t)
 	createAdmin(t, e, "ada", pw)
 	cookie := loginCookie(t, e, "ada", pw)
-	secret := f12Enroll(t, e, cookie)
+	secret, _ := f12Enroll(t, e, cookie)
 	rec := postForm(t, e, "/login/totp", "/login/totp", cookie, "code="+f12Code(t, secret, time.Now()))
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("verify = %d: %s", rec.Code, rec.Body.String())
@@ -111,7 +114,7 @@ func TestF12RecoveryRegenerateFlow(t *testing.T) {
 	pw := randomPW(t)
 	createAdmin(t, e, "ada", pw)
 	cookie := loginCookie(t, e, "ada", pw)
-	secret := f12Enroll(t, e, cookie)
+	secret, _ := f12Enroll(t, e, cookie)
 	rec := postForm(t, e, "/login/totp", "/login/totp", cookie, "code="+f12Code(t, secret, time.Now()))
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("verify = %d", rec.Code)
@@ -138,7 +141,7 @@ func TestF12AdminResetFlow(t *testing.T) {
 		t.Fatalf("create bob: %v", err)
 	}
 	bobCookie := loginCookie(t, e, "bob", bobPW)
-	secret := f12Enroll(t, e, bobCookie)
+	secret, _ := f12Enroll(t, e, bobCookie)
 	if rec := postForm(t, e, "/login/totp", "/login/totp", bobCookie, "code="+f12Code(t, secret, time.Now())); rec.Code != http.StatusSeeOther {
 		t.Fatalf("bob verify = %d", rec.Code)
 	}
