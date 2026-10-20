@@ -90,7 +90,7 @@ func TestMCPStdioArgs(t *testing.T) {
 
 func TestCLIStubsNameTheirStep(t *testing.T) {
 	for path, step := range map[string]string{
-		"dev": "K9", "runner": "F6", "job-exec": "F6", "backup": "K10",
+		"runner": "F6", "job-exec": "F6", "backup": "K10",
 		"admin status": "K10", "admin repo import": "F14",
 	} {
 		msg, ok := cli.StubFor(strings.Split(path, " "))
@@ -101,16 +101,16 @@ func TestCLIStubsNameTheirStep(t *testing.T) {
 			t.Fatalf("stub %q = %q, want step %s", path, msg, step)
 		}
 	}
-	for _, live := range [][]string{{"serve"}, {"bootstrap"}, {"mcp"}, {"auth", "login"}, {"api", "index"}} {
+	for _, live := range [][]string{{"serve"}, {"bootstrap"}, {"dev"}, {"mcp"}, {"auth", "login"}, {"api", "index"}} {
 		if _, ok := cli.StubFor(live); ok {
 			t.Fatalf("%v must not be a stub", live)
 		}
 	}
 	c := newIO()
-	if code := runCLI(t, []string{"dev"}, c); code == 0 {
+	if code := runCLI(t, []string{"runner"}, c); code == 0 {
 		t.Fatalf("stub must exit non-zero")
 	}
-	if !strings.Contains(c.stdout.String(), "K9") {
+	if !strings.Contains(c.stdout.String(), "F6") {
 		t.Fatalf("stub output = %q, want the owning step", c.stdout.String())
 	}
 }

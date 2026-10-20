@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,12 +36,14 @@ func stdIO() cli.IO {
 
 func run(argv []string) int {
 	if len(argv) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rukie <command> [flags]\ncommands: serve, bootstrap, mcp, auth, user, admin, api")
+		fmt.Fprintln(os.Stderr, "usage: rukie <command> [flags]\ncommands: serve, bootstrap, dev, mcp, auth, user, admin, api")
 		return 64
 	}
 	switch argv[0] {
 	case "serve":
 		return runServe(argv[1:])
+	case "dev":
+		return runDev(argv[1:])
 	case "bootstrap":
 		return runBootstrap(argv[1:])
 	case "mcp":
@@ -144,47 +147,81 @@ func runServe(argv []string) int {
 	slog.SetDefault(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, Logger: logger})
+	app, cleanup, err := setupApp(ctx, cfg, logger)
+	defer cleanup()
 	if err != nil {
-		logger.Error("open store", slog.Any("err", err))
+		logger.Error("setup app", slog.Any("err", err))
 		return 1
 	}
-	defer func() {
-		_ = st.Close(ctx)
-	}()
+	return serveHTTP(ctx, logger, app.server, cfg.HTTP)
+}
+
+type app struct {
+	server *op.Server
+	store  *store.Store
+	auth   *auth.Service
+	docs   *api.DocStore
+}
+
+func llmsBase(cfg config.Config) string {
+	if cfg.HTTP.ExternalURL != "" {
+		return strings.TrimSuffix(cfg.HTTP.ExternalURL, "/")
+	}
+	if len(cfg.HTTP.Listen) > 0 {
+		return "http://" + cfg.HTTP.Listen[0]
+	}
+	return ""
+}
+
+func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, func(), error) {
+	cleanup := func() {}
+	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, Logger: logger})
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
+	}
+	cleanup = func() {
+		_ = st.Close(context.Background())
+	}
 	table := op.NewTable()
 	docs := &api.DocStore{}
 	if regErr := api.RegisterAll(table, docs); regErr != nil {
-		logger.Error("register ops", slog.Any("err", regErr))
-		return 1
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
 	authSvc, err := auth.Open(cfg.Store.SQLite.Path)
 	if err != nil {
-		logger.Error("open auth", slog.Any("err", err))
-		return 1
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
-	defer func() {
+	cleanup = func() {
 		_ = authSvc.Close()
-	}()
+		_ = st.Close(context.Background())
+	}
 	limiter := access.NewLimiter()
 	authDeps := api.Deps{Service: authSvc, Limiter: limiter, Reveals: auth.NewRevealCache()}
 	if regErr := api.RegisterAuth(table, authDeps); regErr != nil {
-		logger.Error("register auth ops", slog.Any("err", regErr))
-		return 1
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
 	if regErr := api.RegisterUser(table, authDeps); regErr != nil {
-		logger.Error("register user ops", slog.Any("err", regErr))
-		return 1
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
 	if regErr := api.RegisterAdmin(table, authDeps); regErr != nil {
-		logger.Error("register admin ops", slog.Any("err", regErr))
-		return 1
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
+	fillLLMS, regErr := api.RegisterLLMS(table, llmsBase(cfg))
+	if regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
 	views := op.NewViews()
 	api.RegisterViews(views)
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
 	idem.StartSweeper(ctx, time.Minute)
 	auditor := op.FuncAuditor(func(_ context.Context, row op.AuditRow) error {
@@ -195,8 +232,8 @@ func runServe(argv []string) int {
 	})
 	csrfKey := make([]byte, 32)
 	if _, rerr := rand.Read(csrfKey); rerr != nil {
-		logger.Error("csrf key", slog.Any("err", rerr))
-		return 1
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", rerr)
 	}
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{
@@ -212,29 +249,34 @@ func runServe(argv []string) int {
 		Version:       "0.0.0",
 	})
 	if err != nil {
-		logger.Error("mount ops", "err", err)
-		return 1
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
 	docs.Set(server.OpenAPI())
+	fillLLMS(server.Document())
 	server.Handle("GET /healthz", api.Healthz())
 	server.Handle("GET /readyz", api.Readiness{Store: st, Daemon: api.NotReadyDaemon}.Handler())
 	mcpMount, err := mcp.NewMount(authSvc, server, cfg.HTTP.ExternalURL)
 	if err != nil {
-		logger.Error("mount mcp", slog.Any("err", err))
-		return 1
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
 	server.Handle("POST /-/mcp", mcpMount.Authenticated())
 	server.Handle("GET /-/mcp", mcpMount.MethodNotAllowed())
 	server.Handle("DELETE /-/mcp", mcpMount.MethodNotAllowed())
+	return &app{server: server, store: st, auth: authSvc, docs: docs}, cleanup, nil
+}
+
+func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, httpCfg config.HTTPConfig) int {
 	httpServer := &http.Server{
-		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeoutMs) * time.Millisecond,
-		ReadHeaderTimeout: time.Duration(cfg.HTTP.ReadHeaderTimeoutMs) * time.Millisecond,
-		WriteTimeout:      time.Duration(cfg.HTTP.WriteTimeoutMs) * time.Millisecond,
-		IdleTimeout:       time.Duration(cfg.HTTP.IdleTimeoutMs) * time.Millisecond,
-		Handler:           server,
+		ReadTimeout:       time.Duration(httpCfg.ReadTimeoutMs) * time.Millisecond,
+		ReadHeaderTimeout: time.Duration(httpCfg.ReadHeaderTimeoutMs) * time.Millisecond,
+		WriteTimeout:      time.Duration(httpCfg.WriteTimeoutMs) * time.Millisecond,
+		IdleTimeout:       time.Duration(httpCfg.IdleTimeoutMs) * time.Millisecond,
+		Handler:           handler,
 	}
-	errCh := make(chan error, len(cfg.HTTP.Listen))
-	for _, addr := range cfg.HTTP.Listen {
+	errCh := make(chan error, len(httpCfg.Listen))
+	for _, addr := range httpCfg.Listen {
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			logger.Error("listen", slog.String("addr", addr), slog.Any("err", err))

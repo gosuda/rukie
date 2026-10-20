@@ -32,7 +32,6 @@ var ReservedPaths = [][]string{
 var StubSteps = map[string]string{
 	"runner":            "F6",
 	"job-exec":          "F6",
-	"dev":               "K9",
 	"backup":            "K10",
 	"restore":           "K10",
 	"admin secret-gen":  "K10",
