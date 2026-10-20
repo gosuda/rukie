@@ -50,6 +50,7 @@ func buildOrgsEnv(t *testing.T) *orgEnv {
 		func() error { return api.RegisterAuth(table, deps) },
 		func() error { return api.RegisterUser(table, deps) },
 		func() error { return api.RegisterAdmin(table, deps) },
+		func() error { return api.RegisterRepos(table, deps) },
 		func() error { return api.RegisterOrgs(table, deps) },
 	} {
 		if serr := step(); serr != nil {
@@ -64,6 +65,7 @@ func buildOrgsEnv(t *testing.T) *orgEnv {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterReposViews(views)
 	api.RegisterOrgsViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
@@ -77,6 +79,7 @@ func buildOrgsEnv(t *testing.T) *orgEnv {
 		Views:         views,
 		Title:         "test",
 		Version:       "0",
+		IsSiteSegment: api.SiteSegment,
 	})
 	if err != nil {
 		t.Fatalf("mount: %v", err)
@@ -199,19 +202,24 @@ func TestTokenLimitedToOneRepoAndOpSet(t *testing.T) {
 	r1 := oseedRepo(t, e, ada.ID, 0, "one")
 	r2 := oseedRepo(t, e, ada.ID, 0, "two")
 	narrow := otoken(t, e, ada, []int64{r1}, "repo:read")
-	if rec := odo(t, e, "GET", "/ada/one", narrow, ""); rec.Code != http.StatusOK {
+	if rec := odo(t, e, "GET", "/ada/one/settings/collaborators", narrow, ""); rec.Code != http.StatusOK {
 		t.Fatalf("narrow token reads r1 = %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec := odo(t, e, "GET", "/ada/two", narrow, ""); rec.Code != http.StatusNotFound {
+	if rec := odo(t, e, "GET", "/ada/two/settings/collaborators", narrow, ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("narrow token reads r2 = %d, want 404: %s", rec.Code, rec.Body.String())
 	}
 	wide := otoken(t, e, ada, nil, "repo:read")
-	if rec := odo(t, e, "GET", "/ada/two", wide, ""); rec.Code != http.StatusOK {
+	if rec := odo(t, e, "GET", "/ada/two/settings/collaborators", wide, ""); rec.Code != http.StatusOK {
 		t.Fatalf("open token reads r2 = %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec := odo(t, e, "POST", "/ada/one/settings/general", narrow,
-		`{"description":"x"}`); rec.Code != http.StatusForbidden {
-		t.Fatalf("read token mutates = %d, want 403: %s", rec.Code, rec.Body.String())
+	ouser(t, e, ada.ID, "bob")
+	if rec := odo(t, e, "POST", "/ada/one/settings/collaborators/bob", narrow,
+		`{"permission":"read"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("read token grants = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	createOnly := otoken(t, e, ada, nil, "repo:create")
+	if rec := odo(t, e, "GET", "/ada/one/settings/collaborators", createOnly, ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("create-only token reads = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 	if rec := odo(t, e, "POST", "/settings/tokens", adaCookie,
 		`{"name":"scoped","scopes":"repo:read","repos":[999999]}`); rec.Code != http.StatusNotFound {
@@ -249,11 +257,11 @@ func TestOrgOwnersTeamAdmin(t *testing.T) {
 		t.Fatalf("create team = %d: %s", rec.Code, rec.Body.String())
 	}
 	grantBody, _ := jsonv2.Marshal(map[string]any{"repo": "widget"}, jsonv1.DefaultOptionsV1())
-	if rec := odo(t, e, "POST", "/acme/-/teams/devs/repos", adaCookie, string(grantBody)); rec.Code != http.StatusOK {
+	if rec := odo(t, e, "POST", "/acme/-/teams/devs/repos", adaCookie, string(grantBody)); rec.Code != http.StatusNoContent {
 		t.Fatalf("grant repo = %d: %s", rec.Code, rec.Body.String())
 	}
 	addBody, _ := jsonv2.Marshal(map[string]any{"user": "bob"}, jsonv1.DefaultOptionsV1())
-	if rec := odo(t, e, "POST", "/acme/-/teams/devs/members", adaCookie, string(addBody)); rec.Code != http.StatusOK {
+	if rec := odo(t, e, "POST", "/acme/-/teams/devs/members", adaCookie, string(addBody)); rec.Code != http.StatusNoContent {
 		t.Fatalf("add member = %d: %s", rec.Code, rec.Body.String())
 	}
 	bobCookie := ologin(t, e, "bob", "long-test-password-01")
@@ -275,7 +283,7 @@ func TestTeamMemberAddImpliesOrgMember(t *testing.T) {
 	ocreateOrg(t, e, adaCookie, "acme", "public")
 	ouser(t, e, ada.ID, "bob")
 	addBody, _ := jsonv2.Marshal(map[string]any{"user": "bob"}, jsonv1.DefaultOptionsV1())
-	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members", adaCookie, string(addBody)); rec.Code != http.StatusOK {
+	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members", adaCookie, string(addBody)); rec.Code != http.StatusNoContent {
 		t.Fatalf("add to owners = %d: %s", rec.Code, rec.Body.String())
 	}
 	rec := odo(t, e, "GET", "/acme/-/members", adaCookie, "")
@@ -319,7 +327,7 @@ func TestTeamMemberAddImpliesOrgMember(t *testing.T) {
 	if countNotices() == 0 {
 		t.Fatal("no membership outbox row")
 	}
-	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members", adaCookie, string(addBody)); rec.Code != http.StatusOK {
+	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members", adaCookie, string(addBody)); rec.Code != http.StatusNoContent {
 		t.Fatalf("re-add member = %d: %s", rec.Code, rec.Body.String())
 	}
 	if countNotices() != 1 {
@@ -341,7 +349,7 @@ func TestLastOwnerGuard(t *testing.T) {
 		t.Fatalf("leave as sole owner = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
 	addBody, _ := jsonv2.Marshal(map[string]any{"user": "bob"}, jsonv1.DefaultOptionsV1())
-	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members", adaCookie, string(addBody)); rec.Code != http.StatusOK {
+	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members", adaCookie, string(addBody)); rec.Code != http.StatusNoContent {
 		t.Fatalf("add bob to owners = %d: %s", rec.Code, rec.Body.String())
 	}
 	if rec := odo(t, e, "POST", "/acme/-/members/ada/remove", adaCookie, ""); rec.Code != http.StatusNoContent {
@@ -361,8 +369,8 @@ func TestAuthzWorkedResolutions(t *testing.T) {
 	ouser(t, e, ada.ID, "bob")
 	bobCookie := ologin(t, e, "bob", "long-test-password-01")
 	bobToken := otoken(t, e, ada, nil, "repo:read", "repo:write", "repo:create", "intents:read", "intents:write")
-	if rec := odo(t, e, "POST", "/new/org", bobToken, `{"name":"x"}`); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("token creates org = %d, want 401: %s", rec.Code, rec.Body.String())
+	if rec := odo(t, e, "POST", "/new/org", bobToken, `{"name":"x"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("token creates org = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 	_ = bobCookie
 	_ = adaCookie
@@ -377,23 +385,23 @@ func TestAuthzWorkedResolutions(t *testing.T) {
 	if rec := odo(t, e, "GET", "/orgs/open", "", ""); rec.Code != http.StatusOK {
 		t.Fatalf("anon views public org = %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec := odo(t, e, "POST", "/new/org", "", `{"name":"anon"}`); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("anon creates org = %d, want 401: %s", rec.Code, rec.Body.String())
+	if rec := odo(t, e, "POST", "/new/org", "", `{"name":"anon"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("anon creates org = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 	dup := odo(t, e, "POST", "/new/org", adaCookie, `{"name":"open"}`)
 	if dup.Code != http.StatusConflict {
 		t.Fatalf("duplicate org = %d, want 409: %s", dup.Code, dup.Body.String())
 	}
 	empty := odo(t, e, "POST", "/new/org", adaCookie, `{"name":""}`)
-	if empty.Code != http.StatusBadRequest {
-		t.Fatalf("empty org name = %d, want 400: %s", empty.Code, empty.Body.String())
+	if empty.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("empty org name = %d, want 422: %s", empty.Code, empty.Body.String())
 	}
 	reserved := odo(t, e, "POST", "/new/org", adaCookie, `{"name":"new"}`)
 	if reserved.Code != http.StatusBadRequest && reserved.Code != http.StatusUnprocessableEntity && reserved.Code != http.StatusConflict {
 		t.Fatalf("reserved org name = %d, want 4xx: %s", reserved.Code, reserved.Body.String())
 	}
-	if rec := odo(t, e, "POST", "/priv/-/teams/owners/members", bobToken, `{"user":"bob"}`); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("token adds team member = %d, want 401: %s", rec.Code, rec.Body.String())
+	if rec := odo(t, e, "POST", "/priv/-/teams/owners/members", bobToken, `{"user":"bob"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("token adds team member = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 }
 

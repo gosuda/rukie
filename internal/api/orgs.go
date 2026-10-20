@@ -141,6 +141,9 @@ func orgAccess(d Deps, rq requester, orgID int64, action string) error {
 }
 
 func teamAccess(d Deps, rq requester, orgID, teamID int64, action string) error {
+	if teamID == 0 {
+		return orgAccess(d, rq, orgID, action)
+	}
 	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
 	decision := access.Check(resolver, rq.caller, action, access.Resource{Kind: access.KindTeam, OrgID: orgID, TeamID: teamID})
 	if !decision.Allow {
@@ -1686,7 +1689,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Remove an organization member",
 		Description: "Session-only, organization owners. Removes the user from every team. Refuses the last owner.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound, op.CodeConflict},
-		Status:      http.StatusOK,
+		Status:      http.StatusNoContent,
 		Location:    func(OrgMemberRemoveOut) string { return "" },
 		Handler:     removeOrgMemberHandler(deps),
 	}); err != nil {
@@ -1697,7 +1700,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Leave an organization",
 		Description: "Session-only. Removes the caller from every team. Refuses the last owner.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound, op.CodeConflict},
-		Status:      http.StatusOK,
+		Status:      http.StatusNoContent,
 		Location:    func(OrgLeaveOut) string { return "/settings/orgs" },
 		Handler:     leaveOrgHandler(deps),
 	}); err != nil {
@@ -1802,7 +1805,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Add a team member",
 		Description: "Session-only, organization owners. Membership implies organization membership and sends a notice.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound},
-		Status:      http.StatusOK,
+		Status:      http.StatusNoContent,
 		Location:    func(TeamMemberAddOut) string { return "" },
 		Handler:     addTeamMemberHandler(deps),
 	}); err != nil {
@@ -1813,7 +1816,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Remove a team member",
 		Description: "Session-only, organization owners. Refuses the last organization owner.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound, op.CodeConflict},
-		Status:      http.StatusOK,
+		Status:      http.StatusNoContent,
 		Location:    func(TeamMemberRemoveOut) string { return "" },
 		Handler:     removeTeamMemberHandler(deps),
 	}); err != nil {
@@ -1845,7 +1848,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Grant a repository to a team",
 		Description: "Session-only, organization owners. Rejected for all-scope teams and cross-org repositories.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict},
-		Status:      http.StatusOK,
+		Status:      http.StatusNoContent,
 		Location:    func(TeamRepoAddOut) string { return "" },
 		Handler:     addTeamRepoHandler(deps),
 	}); err != nil {
@@ -1856,7 +1859,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Revoke a team repository grant",
 		Description: "Session-only, organization owners. Rejected for all-scope teams.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound, op.CodeConflict},
-		Status:      http.StatusOK,
+		Status:      http.StatusNoContent,
 		Location:    func(TeamRepoRemoveOut) string { return "" },
 		Handler:     removeTeamRepoHandler(deps),
 	}); err != nil {
