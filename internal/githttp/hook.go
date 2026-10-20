@@ -71,7 +71,7 @@ func (s *Server) answerPostReceive(ctx context.Context, caller access.Caller, re
 }
 
 func (s *Server) recordPushAttempt(ctx context.Context, caller access.Caller, repoID int64, invocationID string, call wire.HookCall, verdicts []wire.HookRefVerdict) {
-	if s.feed == nil || invocationID == "" {
+	if invocationID == "" {
 		return
 	}
 	landed := make([]events.LandedRef, 0, len(call.Commands))
@@ -82,6 +82,16 @@ func (s *Server) recordPushAttempt(ctx context.Context, caller access.Caller, re
 		landed = append(landed, events.LandedRef{Name: cmd.Name, Old: cmd.Old, New: cmd.New})
 	}
 	if len(landed) == 0 {
+		return
+	}
+	// Remember the accepted targets even without a feed sink: an
+	// unknown-outcome receive-pack reconciles against them.
+	want := make(map[string]string, len(landed))
+	for _, ref := range landed {
+		want[ref.Name] = ref.New
+	}
+	s.stashWant(invocationID, want)
+	if s.feed == nil {
 		return
 	}
 	_, _ = s.feed.Record(ctx, events.PushRecord{

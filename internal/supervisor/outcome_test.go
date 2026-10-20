@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -90,5 +91,33 @@ func TestGitServiceStreamReconcileRespectsCancel(t *testing.T) {
 		tips(map[string]string{"refs/heads/main": "abc123"}),
 		map[string]string{"refs/heads/main": "abc123"}); err == nil {
 		t.Fatal("reconcile under a cancelled context returned nil error")
+	}
+}
+
+func TestGitServiceStreamReconcileDeletionTarget(t *testing.T) {
+	landed := "abc123"
+	for _, tc := range []struct {
+		name    string
+		want    map[string]string
+		current map[string]string
+		verdict Verdict
+	}{
+		{"empty want target with absent tip commits", map[string]string{"refs/heads/gone": ""}, map[string]string{}, VerdictCommitted},
+		{"zero want target with absent tip commits", map[string]string{"refs/heads/gone": strings.Repeat("0", 40)}, map[string]string{}, VerdictCommitted},
+		{"empty want target with present tip stays unknown", map[string]string{"refs/heads/gone": ""}, map[string]string{"refs/heads/gone": landed}, VerdictUnknown},
+		{"zero current tip counts as absent", map[string]string{"refs/heads/gone": ""}, map[string]string{"refs/heads/gone": strings.Repeat("0", 40)}, VerdictCommitted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ReconcileUnknownOutcome(context.Background(),
+				func(context.Context) (LookupResult, error) { return LookupResult{}, nil },
+				tips(tc.current),
+				tc.want)
+			if err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if got != tc.verdict {
+				t.Fatalf("verdict = %v, want %v", got, tc.verdict)
+			}
+		})
 	}
 }

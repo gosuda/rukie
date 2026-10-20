@@ -28,7 +28,9 @@ type LookupResult struct {
 // ReconcileUnknownOutcome settles a git-service stream of unknown fate
 // without ever re-running it: first an outcome Lookup on the request id,
 // then a tip comparison of the pushed refs against current daemon tips.
-// want holds the ref name to target OID map the stream intended to land.
+// want holds the ref name to target OID map the stream intended to land;
+// an empty (or all-zero) target is a deletion, where an absent tip means
+// the push landed.
 //
 // The lookup wins when it records a clean exit. Otherwise the tips
 // decide: every wanted ref at its wanted target means the push landed
@@ -55,9 +57,27 @@ func ReconcileUnknownOutcome(
 			return VerdictUnknown, fmt.Errorf("supervisor: reconcile: %w", ctx.Err())
 		}
 		current, ok := tips[name]
+		if zeroTarget(target) {
+			if !ok || zeroTarget(current) {
+				continue
+			}
+			return VerdictUnknown, lerr
+		}
 		if !ok || current != target {
 			return VerdictUnknown, lerr
 		}
 	}
 	return VerdictCommitted, nil
+}
+
+func zeroTarget(target string) bool {
+	if target == "" {
+		return true
+	}
+	for i := range len(target) {
+		if target[i] != '0' {
+			return false
+		}
+	}
+	return true
 }

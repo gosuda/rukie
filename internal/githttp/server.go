@@ -21,6 +21,7 @@ import (
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/supervisor"
 )
 
 const (
@@ -58,6 +59,74 @@ type Server struct {
 	limits      wire.GitLimits
 	hookTimeout time.Duration
 	mu          sync.Mutex
+	// wants remembers the accepted pre-receive targets per push
+	// request id, so an unknown-outcome receive-pack reconciles
+	// against a tip comparison instead of resending the stream.
+	wants map[string]map[string]string
+}
+
+// stashWant records the accepted pre-receive targets for one push.
+func (s *Server) stashWant(invocation string, want map[string]string) {
+	if invocation == "" || len(want) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wants == nil {
+		s.wants = map[string]map[string]string{}
+	}
+	s.wants[invocation] = want
+}
+
+// takeWant consumes the recorded targets for one push, if any.
+func (s *Server) takeWant(invocation string) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := s.wants[invocation]
+	delete(s.wants, invocation)
+	return want
+}
+
+// currentDaemonTips lists the daemon's current tips for one repo path.
+func (s *Server) currentDaemonTips(ctx context.Context, client *ruk.Client, path string) (map[string]string, error) {
+	repo, oerr := client.OpenRepo(ctx, path)
+	if oerr != nil {
+		return nil, oerr
+	}
+	reply, lerr := ruk.RefsList(ctx, client, repo, ruk.RefsListArgs{})
+	if lerr != nil {
+		return nil, lerr
+	}
+	out := make(map[string]string, len(reply.Refs.Items))
+	for _, ref := range reply.Refs.Items {
+		out[ref.Name] = ref.Target.Hex()
+	}
+	return out, nil
+}
+
+// reconcileUnknownPush settles a receive-pack stream the daemon lost
+// track of: one Lookup by request id, then a tip comparison against the
+// accepted pre-receive targets. The stream is never resent.
+//
+// Protocol gap, with evidence: no served method returns a stored
+// ServiceReceipt for a git-service request id. The 61-method table
+// (internal/ruk/testdata/ruk-model.json) has no receipt query; the only
+// reconcile-shaped method is push.reconcile, which observes a mirror
+// remote for a plan id (PushReconcileArgs{plan}), not a receipt for a
+// request id. CS-R10's durable receipts exist daemon-side but expose no
+// read path in this wave, so the lookup leg reports absent — exactly
+// once, per the helper contract — and the served, read-only refs.list
+// tip comparison decides. A future receipt-query method plugs into the
+// lookup parameter with no wiring change.
+func (s *Server) reconcileUnknownPush(ctx context.Context, client *ruk.Client, path, requestID string) (supervisor.Verdict, error) {
+	return supervisor.ReconcileUnknownOutcome(ctx,
+		func(context.Context) (supervisor.LookupResult, error) {
+			return supervisor.LookupResult{}, nil
+		},
+		func(tctx context.Context) (map[string]string, error) {
+			return s.currentDaemonTips(tctx, client, path)
+		},
+		s.takeWant(requestID))
 }
 
 func New(cfg Config) (*Server, error) {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
+	"github.com/gosuda/rukie/internal/supervisor"
 )
 
 func advertisementType(service string) string {
@@ -227,6 +228,7 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		Limits:       s.limits,
 	}
 	var handle ruk.HookHandler
+	requestID := ""
 	if name == receiveServiceName {
 		session, request, ok := s.openPushSession(ctx, client, path, w)
 		if !ok {
@@ -234,6 +236,7 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		}
 		open.SessionID = &session
 		open.RequestID = &request
+		requestID = request
 		handle = s.hookHandler(id.caller, repoID, request)
 	}
 	w.Header().Set("Content-Type", resultType(name))
@@ -249,6 +252,18 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		return
 	}
 	if err != nil {
+		// An unknown outcome never resends the stream: reconcile one
+		// Lookup plus a tip comparison against the accepted
+		// pre-receive targets, then report uncertainty.
+		if name == receiveServiceName && errors.Is(err, ruk.ErrOutcomeUnknown) {
+			verdict, verr := s.reconcileUnknownPush(ctx, client, path, requestID)
+			if verr == nil && verdict == supervisor.VerdictCommitted {
+				out.fail(http.StatusOK, "push reconciled as landed; verify with ls-remote before retrying")
+			} else {
+				out.fail(http.StatusBadGateway, "push outcome unknown; verify with ls-remote before retrying")
+			}
+			return
+		}
 		status, msg := mapCommandError(err)
 		if len(stderr) > 0 && status == http.StatusInternalServerError {
 			msg = firstLine(stderr)
