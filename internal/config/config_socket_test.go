@@ -51,9 +51,6 @@ func TestRukSocketResolvesRelative(t *testing.T) {
 }
 
 func TestRukSocketMayMatchSocketPath(t *testing.T) {
-	// A non-empty socket means external: the child never binds, so
-	// sharing the default supervised path with the external daemon is
-	// coherent and loads.
 	cfg, err := Load(writeSocketConfig(t, "[ruk]\nsocket = \"/tmp/rukie-socktest/run/ruk.sock\"\n"+
 		"socket_path = \"/tmp/rukie-socktest/run/ruk.sock\"\n"))
 	if err != nil {

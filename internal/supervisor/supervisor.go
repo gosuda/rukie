@@ -34,9 +34,7 @@ type Proc interface {
 	Kill() error
 }
 
-// Starter launches one child. The production starter wraps
-// rukproc.StartServe; it is the only spawn path for the daemon.
-func productionStarter(bin, configPath string, env []string, stdout, stderr io.Writer) (Proc, error) {
+func soleDaemonStarter(bin, configPath string, env []string, stdout, stderr io.Writer) (Proc, error) {
 	return rukproc.StartServe(bin, configPath, env, stdout, stderr)
 }
 
@@ -190,7 +188,7 @@ func (s *Supervisor) starter() func(string, string, []string, io.Writer, io.Writ
 	if s.cfg.Starter != nil {
 		return s.cfg.Starter
 	}
-	return productionStarter
+	return soleDaemonStarter
 }
 
 // Ready reports whether the daemon is currently serving. It is false
@@ -225,8 +223,7 @@ func (s *Supervisor) stderr() io.Writer {
 	return io.Discard
 }
 
-// waitReady polls the probe until success or the startup timeout.
-func (s *Supervisor) waitReady(ctx context.Context) error {
+func (s *Supervisor) pollDaemonProbeUntilTimeout(ctx context.Context) error {
 	probe := s.cfg.Probe
 	if probe == nil {
 		return fmt.Errorf("supervisor: no daemon probe configured")
@@ -252,7 +249,7 @@ func (s *Supervisor) waitReady(ctx context.Context) error {
 // budget returns a non-nil error so the process exits non-zero.
 func (s *Supervisor) Run(ctx context.Context) error {
 	if s.cfg.ExternalSocket != "" {
-		if err := s.waitReady(ctx); err != nil {
+		if err := s.pollDaemonProbeUntilTimeout(ctx); err != nil {
 			return err
 		}
 		s.ready.Store(true)
@@ -268,7 +265,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			return fmt.Errorf("supervisor: start ruk serve: %w", err)
 		}
 		s.starts.Add(1)
-		if err := s.waitReady(ctx); err != nil {
+		if err := s.pollDaemonProbeUntilTimeout(ctx); err != nil {
 			s.ready.Store(false)
 			_ = child.Kill()
 			return err
@@ -279,18 +276,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			s.ready.Store(false)
-			_ = s.terminateChild(child, exit)
+			_ = s.drainChildWithSingleWaiter(child, exit)
 			return nil
 		case werr := <-exit:
 			s.ready.Store(false)
 			if ctx.Err() != nil {
 				return nil
 			}
-			if werr == nil {
-				// A clean child exit outside shutdown is still a loss
-				// of the daemon: count it against the budget.
-				werr = fmt.Errorf("ruk serve exited 0 outside shutdown")
-			}
+			werr = daemonLossAgainstBudget(werr)
 			n := s.restarts.Load()
 			if int(n) >= s.maxRestarts() {
 				return fmt.Errorf("supervisor: ruk serve failed after %d restarts: %w", n, werr)
@@ -307,12 +300,14 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-// terminateChild drains one child with exactly one waiter: the exit
-// channel already owns Wait, so shutdown signals and reuses it instead
-// of starting a second Wait. Every wait is bounded; after SIGKILL the
-// parent gives up reaping and returns so shutdown never hangs. It
-// returns the child's exit cause, which shutdown callers report.
-func (s *Supervisor) terminateChild(child Proc, exit <-chan error) error {
+func daemonLossAgainstBudget(werr error) error {
+	if werr == nil {
+		return fmt.Errorf("ruk serve exited 0 outside shutdown")
+	}
+	return werr
+}
+
+func (s *Supervisor) drainChildWithSingleWaiter(child Proc, exit <-chan error) error {
 	_ = child.Signal(terminateSignal())
 	grace, cancel := context.WithTimeout(context.Background(), s.stopGrace())
 	defer cancel()

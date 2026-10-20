@@ -118,7 +118,6 @@ func TestRestoreRoundTrip(t *testing.T) {
 	if cerr := st.Close(context.Background()); cerr != nil {
 		t.Fatalf("Close: %v", cerr)
 	}
-	// Simulate loss: wipe metadata and repos, keep the key.
 	if rerr := os.Remove(cfg.Store.SQLite.Path); rerr != nil {
 		t.Fatalf("remove db: %v", rerr)
 	}

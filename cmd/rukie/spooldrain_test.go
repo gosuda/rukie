@@ -68,8 +68,6 @@ func TestSpoolDrainCommitOrLeft(t *testing.T) {
 		t.Fatalf("OpenSpool: %v", err)
 	}
 
-	// Committed path: the drain's spool step replays with the real
-	// production attempt and the record disappears.
 	if serr := sp.Store(spoolRecord("commit-one")); serr != nil {
 		t.Fatalf("Store: %v", serr)
 	}
@@ -102,8 +100,6 @@ func TestSpoolDrainCommitOrLeft(t *testing.T) {
 		t.Fatalf("pending row = %+v, want the replayed invocation", row)
 	}
 
-	// Left path: a failing attempt keeps the record on disk and the
-	// drain reports the failure without dropping it.
 	if serr := sp.Store(spoolRecord("leave-one")); serr != nil {
 		t.Fatalf("Store: %v", serr)
 	}

@@ -17,8 +17,6 @@ import (
 	"github.com/gosuda/rukie/internal/sysops"
 )
 
-// Admin exit codes follow ops-design §8: 0 ok, 2 config/usage,
-// 3 downgrade-refused/offline-guard, 1 runtime.
 const (
 	exitOK      = 0
 	exitRuntime = 1
@@ -60,21 +58,15 @@ func loadAdminConfig(flagValue string) (config.Config, string, error) {
 	return cfg, path, nil
 }
 
-// ownedAdminLeaves are the hand-written K10 runtimes. Every other
-// admin leaf belongs to the derived op tree and falls through to the
-// CLI dispatcher. ssh-keygen and gc stay stubs for their later owners:
-// the brief scopes K10 to secret-gen, migrate, status, and reconcile.
-var ownedAdminLeaves = map[string]bool{
+var handWrittenAdminLeaves = map[string]bool{
 	"secret-gen": true,
 	"migrate":    true,
 	"status":     true,
 	"reconcile":  true,
 }
 
-// runAdmin serves the hand-written admin leaves. It reports false for
-// any other leaf so the caller falls through to the derived tree.
-func runAdmin(argv []string) (int, bool) {
-	if len(argv) == 0 || !ownedAdminLeaves[argv[0]] {
+func tryHandWrittenAdmin(argv []string) (int, bool) {
+	if len(argv) == 0 || !handWrittenAdminLeaves[argv[0]] {
 		return 0, false
 	}
 	var code int
@@ -293,16 +285,13 @@ func runBackup(argv []string) int {
 	return exitOK
 }
 
-// hoistFlags moves --name[=value] forms to the front so invocations
-// with positionals first parse the same as flags first. Value flags
-// travel with their separate argument; bool flags move as one token.
-func hoistFlags(argv []string, valued []string, bools []string) []string {
+func hoistFlags(argv []string, flagsWithSeparateValue []string, flagsWithoutValue []string) []string {
 	isValued := map[string]bool{}
-	for _, name := range valued {
+	for _, name := range flagsWithSeparateValue {
 		isValued[name] = true
 	}
 	isBool := map[string]bool{}
-	for _, name := range bools {
+	for _, name := range flagsWithoutValue {
 		isBool[name] = true
 	}
 	var flags, rest []string

@@ -83,7 +83,6 @@ func TestReadyzFalseWhileChildDown(t *testing.T) {
 	if ready, reason := s.DaemonProbe(); !ready || reason != "" {
 		t.Fatalf("DaemonProbe = (%v, %q), want (true, \"\")", ready, reason)
 	}
-	// Crash the child; the restart must wait behind the gate.
 	first.waitGate <- context.DeadlineExceeded
 	waitFor(t, "unreadiness during restart", func() bool { return !s.Ready() })
 	if ready, reason := s.DaemonProbe(); ready || reason == "" {

@@ -10,10 +10,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	// modernc.org/sqlite registers the "sqlite" driver behind the
-	// readonly schema reads below; the store engine owns all writes.
-	_ "modernc.org/sqlite"
-
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/store"
 )

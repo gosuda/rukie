@@ -12,9 +12,7 @@ import (
 	"github.com/gosuda/rukie/internal/config"
 )
 
-// daemonFile mirrors the daemon's required and tuned keys. The rendered
-// file always sets both required keys explicitly; nothing is hand-edited.
-type daemonFile struct {
+type renderedDaemonFile struct {
 	SocketPath          string   `toml:"socket_path"`
 	RepoRoots           []string `toml:"repo_roots"`
 	AllowedUIDs         []uint32 `toml:"allowed_uids"`
@@ -34,7 +32,7 @@ func RenderDaemonConfig(cfg config.Config, fallbackUIDs []uint32) (string, error
 	if len(allowed) == 0 {
 		allowed = fallbackUIDs
 	}
-	doc := daemonFile{
+	doc := renderedDaemonFile{
 		SocketPath:          cfg.Ruk.SocketPath,
 		RepoRoots:           []string{cfg.Ruk.RepoRoot},
 		AllowedUIDs:         allowed,
@@ -64,7 +62,7 @@ func WriteDaemonConfig(cfg config.Config) (string, error) {
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return "", fmt.Errorf("supervisor: create run dir: %w", err)
 	}
-	fallback, err := currentUID()
+	fallback, err := fallbackUIDForAllowedUIDs()
 	if err != nil {
 		return "", err
 	}
@@ -79,9 +77,7 @@ func WriteDaemonConfig(cfg config.Config) (string, error) {
 	return path, nil
 }
 
-// currentUID returns the process UID for the allowed_uids fallback,
-// refusing values outside the daemon's uint32 range.
-func currentUID() (uint32, error) {
+func fallbackUIDForAllowedUIDs() (uint32, error) {
 	uid := os.Getuid()
 	if uid < 0 || uid > math.MaxUint32 {
 		return 0, fmt.Errorf("supervisor: uid %d is outside the uint32 range", uid)

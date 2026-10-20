@@ -10,8 +10,6 @@ import (
 
 func TestBackupSkipsKeyInsideRepoRoot(t *testing.T) {
 	cfg := testConfig(t)
-	// Misconfiguration drill: the key lives under the repo root. O36
-	// is unconditional, so the traversal must skip it by path.
 	nested := filepath.Join(cfg.Ruk.RepoRoot, "secret.key")
 	raw, rerr := os.ReadFile(cfg.SecretKeyFile)
 	if rerr != nil {
@@ -59,8 +57,6 @@ func TestMigrateDryRunListsNothingOnCurrent(t *testing.T) {
 
 func TestMigrateAppliesAndReports(t *testing.T) {
 	cfg := testConfig(t)
-	// A missing database has every migration pending; applying must
-	// create it at the code version.
 	res, err := PendingMigrations(cfg)
 	if err != nil {
 		t.Fatalf("PendingMigrations: %v", err)
@@ -90,7 +86,7 @@ func TestMigrateAppliesAndReports(t *testing.T) {
 func TestStatusWorksDuringDowngrade(t *testing.T) {
 	cfg := testConfig(t)
 	path := cfg.Store.SQLite.Path
-	fabricateNewerDB(t, path)
+	fabricateDowngradeDB(t, path)
 	rep, err := Status(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Status on a newer database: %v; read-only status must survive downgrade", err)
@@ -145,8 +141,6 @@ func TestReconcileFindsDrift(t *testing.T) {
 	if len(clean.Orphaned) != 0 || len(clean.Created) != 0 || len(clean.Mismatched) != 0 {
 		t.Fatalf("clean reconcile reports drift: %+v", clean)
 	}
-	// Drift in three directions: delete a tracked file, add an
-	// untracked one, rewrite a tracked one.
 	if rerr := os.Remove(filepath.Join(cfg.Ruk.RepoRoot, "ada", "hello", "HEAD")); rerr != nil {
 		t.Fatalf("remove tracked: %v", rerr)
 	}

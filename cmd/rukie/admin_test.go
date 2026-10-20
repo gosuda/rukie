@@ -115,8 +115,6 @@ func TestAdminSecretGenRoundTrip(t *testing.T) {
 func TestRestoreAcceptsFlagAfterDir(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := writeTestConfig(t, dir, "")
-	// No backup dir exists: both orders must reach the restore runtime
-	// (and fail on the missing manifest), never die in flag parsing.
 	missing := filepath.Join(dir, "no-backup")
 	if code := run([]string{"restore", "--config", cfgPath, missing, "--force"}); code == exitUsage {
 		t.Fatal("restore <dir> --force died in flag parsing, want the runtime to judge the missing dir")
@@ -127,13 +125,13 @@ func TestRestoreAcceptsFlagAfterDir(t *testing.T) {
 }
 
 func TestAdminLeavesFallThrough(t *testing.T) {
-	if code, ok := runAdmin([]string{"user", "list"}); ok {
-		t.Fatalf("runAdmin claimed the derived leaf admin user list with code %d", code)
+	if code, ok := tryHandWrittenAdmin([]string{"user", "list"}); ok {
+		t.Fatalf("tryHandWrittenAdmin claimed the derived leaf admin user list with code %d", code)
 	}
-	if code, ok := runAdmin(nil); ok {
-		t.Fatalf("runAdmin claimed bare admin with code %d", code)
+	if code, ok := tryHandWrittenAdmin(nil); ok {
+		t.Fatalf("tryHandWrittenAdmin claimed bare admin with code %d", code)
 	}
-	if _, ok := runAdmin([]string{"status"}); !ok {
-		t.Fatal("runAdmin did not claim the owned leaf admin status")
+	if _, ok := tryHandWrittenAdmin([]string{"status"}); !ok {
+		t.Fatal("tryHandWrittenAdmin did not claim the owned leaf admin status")
 	}
 }

@@ -60,7 +60,7 @@ func run(argv []string) int {
 	case "restore":
 		return runRestore(argv[1:])
 	case "admin":
-		if code, ok := runAdmin(argv[1:]); ok {
+		if code, ok := tryHandWrittenAdmin(argv[1:]); ok {
 			return code
 		}
 		return cli.Run(context.Background(), stdIO(), argv)
@@ -208,15 +208,11 @@ func runServe(argv []string) int {
 		case <-ctx.Done():
 		}
 	}()
-	// waitFinal consumes the supervisor result exactly once. A second
-	// signal halves the wait through halveCtx; a 30 s backstop covers
-	// a wedged child. Drain steps and the final wait share it so a
-	// consumed result never blocks the shutdown.
 	var supOnce sync.Once
 	var supFinal error
-	waitFinal := func() error {
+	waitSupervisorOnce := func() error {
 		supOnce.Do(func() {
-			timer := time.NewTimer(30 * time.Second)
+			timer := time.NewTimer(supervisorWaitBackstop)
 			defer timer.Stop()
 			select {
 			case supFinal = <-supDone:
@@ -228,11 +224,11 @@ func runServe(argv []string) int {
 		})
 		return supFinal
 	}
-	watchHUP(cfg, logger, configPath(*configFlag))
-	if rerr := waitSupervisorReady(ctx, sup, waitFinal, cfg); rerr != nil {
+	reloadLogLevelOnSIGHUP(cfg, logger, configPath(*configFlag))
+	if rerr := waitSupervisorReady(ctx, sup, waitSupervisorOnce, cfg); rerr != nil {
 		fmt.Fprintln(os.Stderr, rerr.Error())
 		supStop()
-		if serr := waitFinal(); serr != nil {
+		if serr := waitSupervisorOnce(); serr != nil {
 			fmt.Fprintln(os.Stderr, "serve:", serr.Error())
 		}
 		return 1
@@ -241,31 +237,24 @@ func runServe(argv []string) int {
 	if err != nil {
 		logger.Error("setup app", slog.Any("err", err))
 		supStop()
-		if serr := waitFinal(); serr != nil {
+		if serr := waitSupervisorOnce(); serr != nil {
 			logger.Error("supervisor wait", slog.Any("err", serr))
 		}
 		return 1
 	}
-	// setupApp migrated the store; leave the marker behind so later
-	// downgrade checks work without opening the database.
-	if merr := sysops.RefreshMetaVersion(cfg); merr != nil {
+	if merr := leaveDowngradeMarkerWithoutDBOpen(cfg); merr != nil {
 		logger.Error("schema marker", slog.Any("err", merr))
 		supStop()
-		if serr := waitFinal(); serr != nil {
+		if serr := waitSupervisorOnce(); serr != nil {
 			logger.Error("supervisor wait", slog.Any("err", serr))
 		}
 		return 1
 	}
-	// Owned drain runners. Followers, queue workers, the CI scheduler,
-	// and the webhook dispatcher join this map as their steps land
-	// them in serve: starting them needs repo enumeration and job
-	// executors that do not exist yet, and no-op runners would only
-	// fake the drain.
 	spoolCtx, stopSpool := context.WithCancel(context.Background())
 	defer stopSpool()
 	spoolDone := make(chan error, 1)
 	go func() { spoolDone <- events.DrainLoop(spoolCtx, app.spool, app.store, events.EnqueuePush) }()
-	extra := map[string]func(context.Context) error{
+	ownedDrainRunners := map[string]func(context.Context) error{
 		"store": func(ctx context.Context) error {
 			done := make(chan struct{})
 			go func() { cleanup(); close(done) }()
@@ -285,16 +274,12 @@ func runServe(argv []string) int {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			// Final pass: every record still on disk is either
-			// committed now or left for the next start. Replay is
-			// idempotent, so a record stranded between commit and
-			// remove applies exactly once.
-			return app.spool.Replay(ctx, app.store, events.EnqueuePush)
+			return replaySpoolFinalPass(ctx, app)
 		},
 		"child": func(ctx context.Context) error {
 			supStop()
 			done := make(chan error, 1)
-			go func() { done <- waitFinal() }()
+			go func() { done <- waitSupervisorOnce() }()
 			select {
 			case err := <-done:
 				return err
@@ -303,33 +288,27 @@ func runServe(argv []string) int {
 			}
 		},
 	}
-	// supFailed carries a mid-serve supervisor death to the HTTP loop
-	// so an exhausted restart budget stops serving and exits non-zero
-	// instead of idling with false readiness.
-	supFailed := make(chan error, 1)
+	supervisorDeathStopsServing := make(chan error, 1)
 	go func() {
-		if err := waitFinal(); err != nil {
+		if err := waitSupervisorOnce(); err != nil {
 			select {
-			case supFailed <- err:
+			case supervisorDeathStopsServing <- err:
 			default:
 			}
 		}
 	}()
-	code := serveHTTP(ctx, logger, app.handler, cfg.HTTP, halveCh, extra, supFailed)
+	code := serveHTTP(ctx, logger, app.handler, cfg.HTTP, halveCh, ownedDrainRunners, supervisorDeathStopsServing)
 	supStop()
-	// A dead supervisor fails the process even when HTTP drained
-	// cleanly; a halved shutdown keeps the operator's exit code.
-	if serr := waitFinal(); serr != nil && halveCtx.Err() == nil {
+	shutdownHalved := halveCtx.Err() != nil
+	if serr := waitSupervisorOnce(); serr != nil && !shutdownHalved {
 		logger.Error("supervisor exited", slog.Any("err", serr))
 		return 1
 	}
 	return code
 }
 
-// startSupervisor renders the daemon TOML and builds the supervisor.
-// A [ruk] socket selects an external daemon with no child.
 func startSupervisor(cfg config.Config) (*supervisor.Supervisor, error) {
-	if cfg.Ruk.Socket != "" {
+	if externalDaemonSelected(cfg) {
 		return supervisor.New(supervisor.Config{
 			ExternalSocket: cfg.Ruk.Socket,
 		})
@@ -352,26 +331,34 @@ func startSupervisor(cfg config.Config) (*supervisor.Supervisor, error) {
 	})
 }
 
-// maxStartupTimeoutMs bounds the configured startup wait below int64
-// overflow when expressed in nanoseconds. Untyped, so it compares
-// against the uint config value without a conversion.
-const maxStartupTimeoutMs = (1<<63 - 1) / 1_000_000
+const supervisorWaitBackstop = 30 * time.Second
+
+const maxStartupTimeoutMsBeforeNanosOverflow = (1<<63 - 1) / 1_000_000
+
+func externalDaemonSelected(cfg config.Config) bool {
+	return cfg.Ruk.Socket != ""
+}
+
+func leaveDowngradeMarkerWithoutDBOpen(cfg config.Config) error {
+	return sysops.RefreshMetaVersion(cfg)
+}
+
+func replaySpoolFinalPass(ctx context.Context, app *app) error {
+	return app.spool.Replay(ctx, app.store, events.EnqueuePush)
+}
 
 func startupTimeout(cfg config.Config) (time.Duration, error) {
 	ms := cfg.Ruk.StartupTimeoutMs
 	if ms == 0 {
 		return supervisor.StartupTimeout, nil
 	}
-	if ms > maxStartupTimeoutMs {
+	if ms > maxStartupTimeoutMsBeforeNanosOverflow {
 		return 0, fmt.Errorf("serve: ruk.startup_timeout_ms %d overflows a duration", ms)
 	}
 	return time.Duration(ms) * time.Millisecond, nil
 }
 
-// waitSupervisorReady blocks until the daemon serves, the supervisor
-// fails, or the process is signalled. The supervisor result flows
-// through waitFinal, the single consumer of the supervisor channel.
-func waitSupervisorReady(ctx context.Context, sup *supervisor.Supervisor, waitFinal func() error, cfg config.Config) error {
+func waitSupervisorReady(ctx context.Context, sup *supervisor.Supervisor, waitSupervisorOnce func() error, cfg config.Config) error {
 	timeout, err := startupTimeout(cfg)
 	if err != nil {
 		return err
@@ -381,7 +368,7 @@ func waitSupervisorReady(ctx context.Context, sup *supervisor.Supervisor, waitFi
 	readyErr := make(chan error, 1)
 	go func() { readyErr <- sup.WaitReady(readyCtx) }()
 	exited := make(chan error, 1)
-	go func() { exited <- waitFinal() }()
+	go func() { exited <- waitSupervisorOnce() }()
 	select {
 	case err := <-exited:
 		cancel()
@@ -397,9 +384,7 @@ func waitSupervisorReady(ctx context.Context, sup *supervisor.Supervisor, waitFi
 	}
 }
 
-// watchHUP reloads the log level on SIGHUP. Nothing else reloads:
-// every other key change requires a restart.
-func watchHUP(cfg config.Config, logger *slog.Logger, path string) {
+func reloadLogLevelOnSIGHUP(cfg config.Config, logger *slog.Logger, path string) {
 	hupCh := make(chan os.Signal, 1)
 	signal.Notify(hupCh, syscall.SIGHUP)
 	go func() {
@@ -571,10 +556,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	return &app{server: server, handler: gitFallback{git: git, fallback: server, daemon: daemon}, store: st, auth: authSvc, docs: docs, spool: spool}, cleanup, nil
 }
 
-// drainOffline runs the ordered drain without a serving socket, for
-// startup paths (like a bind failure) where the app opened but never
-// served. It closes the store and stops the child exactly once.
-func drainOffline(logger *slog.Logger, steps []supervisor.Step) {
+func drainWithoutServingSocket(logger *slog.Logger, steps []supervisor.Step) {
 	drainCtx, cancel := context.WithTimeoutCause(context.Background(), supervisor.DefaultDrainTimeout, fmt.Errorf("offline drain timed out"))
 	defer cancel()
 	if err := supervisor.Drain(drainCtx, steps); err != nil {
@@ -582,12 +564,9 @@ func drainOffline(logger *slog.Logger, steps []supervisor.Step) {
 	}
 }
 
-// serveHTTP binds the listeners, then drains through the ordered
-// shutdown sequence on signal: every owned runner joins one Drain in
-// DrainOrder, with HTTP as one step inside the 40 s budget. A second
-// signal on halveCh aborts the remaining drain so systemd's stop
-// timeout is never stranded.
-func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, httpCfg config.HTTPConfig, halveCh <-chan struct{}, extra map[string]func(context.Context) error, supFailed <-chan error) int {
+const httpDrainBudgetFallback = 30 * time.Second
+
+func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, httpCfg config.HTTPConfig, halveCh <-chan struct{}, ownedDrainRunners map[string]func(context.Context) error, supervisorDeathStopsServing <-chan error) int {
 	httpServer := &http.Server{
 		ReadTimeout:       time.Duration(httpCfg.ReadTimeoutMs) * time.Millisecond,
 		ReadHeaderTimeout: time.Duration(httpCfg.ReadHeaderTimeoutMs) * time.Millisecond,
@@ -596,11 +575,11 @@ func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, h
 		Handler:           handler,
 	}
 	runners := map[string]func(context.Context) error{}
-	maps.Copy(runners, extra)
+	maps.Copy(runners, ownedDrainRunners)
 	runners["http"] = func(ctx context.Context) error {
 		budget := time.Duration(httpCfg.ShutdownDrainMs) * time.Millisecond
 		if budget <= 0 {
-			budget = 30 * time.Second
+			budget = httpDrainBudgetFallback
 		}
 		shutCtx, cancel := context.WithTimeoutCause(ctx, budget, fmt.Errorf("http drain timed out"))
 		defer cancel()
@@ -623,7 +602,7 @@ func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, h
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			logger.Error("listen", slog.String("addr", addr), slog.Any("err", err))
-			drainOffline(logger, steps)
+			drainWithoutServingSocket(logger, steps)
 			return 78
 		}
 		logger.Info("listening", slog.String("addr", ln.Addr().String()))
@@ -649,7 +628,7 @@ func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, h
 	case <-ctx.Done():
 		drain()
 		return 0
-	case supErr := <-supFailed:
+	case supErr := <-supervisorDeathStopsServing:
 		logger.Error("supervisor exited mid-serve", slog.Any("err", supErr))
 		drain()
 		return 1

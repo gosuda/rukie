@@ -105,7 +105,7 @@ func placeFiles(cfg config.Config, backupDir string, doc ManifestDoc) (RestoreRe
 		switch f.Path {
 		case "meta.sqlite":
 			dst = cfg.Store.SQLite.Path
-			clearSQLiteSiblings(dst)
+			dropStaleSQLiteSiblings(dst)
 		default:
 			rel, ok := strings.CutPrefix(f.Path, "repos/")
 			if !ok || rel == "" || strings.Contains(rel, "..") {
@@ -128,21 +128,17 @@ func placeFiles(cfg config.Config, backupDir string, doc ManifestDoc) (RestoreRe
 		seen[dst] = true
 		report.Files++
 	}
-	report.Untracked = findUntracked(cfg, seen)
+	report.Untracked = listUntrackedForReconcileReview(cfg, seen)
 	return report, nil
 }
 
-// clearSQLiteSiblings drops -wal/-shm beside a replaced database so no
-// stale frame can resurrect after the restore.
-func clearSQLiteSiblings(dbPath string) {
+func dropStaleSQLiteSiblings(dbPath string) {
 	_ = os.Remove(dbPath + "-wal")
 	_ = os.Remove(dbPath + "-shm")
 	_ = os.Remove(dbPath)
 }
 
-// findUntracked lists repo-root files the manifest never named:
-// post-boundary additions restore keeps and reconcile must review.
-func findUntracked(cfg config.Config, seen map[string]bool) []string {
+func listUntrackedForReconcileReview(cfg config.Config, seen map[string]bool) []string {
 	var untracked []string
 	_ = filepath.WalkDir(cfg.Ruk.RepoRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {

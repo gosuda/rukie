@@ -12,14 +12,10 @@ func TestGracefulDrain(t *testing.T) {
 	if DefaultDrainTimeout != 40*time.Second {
 		t.Fatalf("DefaultDrainTimeout = %s, want 40s per the ops-design shutdown budget", DefaultDrainTimeout)
 	}
-	// The ops-design §3.3 shutdown order with the K7 workers spliced
-	// in, as a literal: any reorder of DrainOrder fails here.
 	want := []string{"ssh", "http", "followers", "queue", "spool", "scheduler", "webhooks", "store", "child"}
 	if !slices.Equal(DrainOrder, want) {
 		t.Fatalf("DrainOrder = %v, want %v", DrainOrder, want)
 	}
-	// Runners arrive in hostile (reverse) order; the drain must still
-	// follow DrainOrder.
 	var order []string
 	runners := map[string]func(ctx context.Context) error{}
 	for i := len(want) - 1; i >= 0; i-- {
@@ -64,8 +60,6 @@ func TestGracefulDrainRunsAllStepsDespiteFailure(t *testing.T) {
 func TestGracefulDrainStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
-	// DrainOrder runs ssh before http; http cancels, so the later
-	// store step must not run.
 	seq, err := OrderedDrain(map[string]func(ctx context.Context) error{
 		"ssh": func(context.Context) error { calls++; return nil },
 		"http": func(_ context.Context) error {

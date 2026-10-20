@@ -162,17 +162,13 @@ func freshBackupDir(outBase string) (string, error) {
 	}
 }
 
-// copyRepoTree copies root into dst, hashing every regular file. The
-// root must exist: a missing repo root is a misconfiguration, not an
-// empty forge. skipAbs names one absolute path that never enters the
-// backup (the secret key, wherever the operator placed it).
-func copyRepoTree(root, dst, skipAbs string) ([]ManifestFile, error) {
-	info, err := os.Stat(root)
+func copyRepoTree(repoRoot, backupDst, excludedAbsPath string) ([]ManifestFile, error) {
+	info, err := os.Stat(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("sysops: repo root: %w", err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("sysops: repo root %s is not a directory", root)
+		return nil, fmt.Errorf("sysops: repo root %s is not a directory", repoRoot)
 	}
 	var files []ManifestFile
 	walk := func(path string, d fs.DirEntry, werr error) error {
@@ -182,17 +178,17 @@ func copyRepoTree(root, dst, skipAbs string) ([]ManifestFile, error) {
 		if d.IsDir() {
 			return nil
 		}
-		if abs, aerr := filepath.Abs(path); aerr == nil && abs == skipAbs {
+		if abs, aerr := filepath.Abs(path); aerr == nil && abs == excludedAbsPath {
 			return nil
 		}
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("sysops: repo entry %s is not a regular file", path)
 		}
-		rel, rerr := filepath.Rel(root, path)
+		rel, rerr := filepath.Rel(repoRoot, path)
 		if rerr != nil {
 			return rerr
 		}
-		rec, cerr := copyFileHashed(path, filepath.Join(dst, rel), 0o600)
+		rec, cerr := copyFileHashed(path, filepath.Join(backupDst, rel), 0o600)
 		if cerr != nil {
 			return cerr
 		}
@@ -200,7 +196,7 @@ func copyRepoTree(root, dst, skipAbs string) ([]ManifestFile, error) {
 		files = append(files, rec)
 		return nil
 	}
-	if err := filepath.WalkDir(root, walk); err != nil {
+	if err := filepath.WalkDir(repoRoot, walk); err != nil {
 		return nil, fmt.Errorf("sysops: copy repo tree: %w", err)
 	}
 	slices.SortFunc(files, func(a, b ManifestFile) int { return cmp.Compare(a.Path, b.Path) })

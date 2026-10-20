@@ -40,9 +40,7 @@ func openTestStore(t *testing.T, path string) *store.Store {
 	return st
 }
 
-// fabricateNewerDB writes a database whose schema_migrations claims a
-// version beyond this binary, simulating a downgrade.
-func fabricateNewerDB(t *testing.T, path string) int64 {
+func fabricateDowngradeDB(t *testing.T, path string) int64 {
 	t.Helper()
 	st, err := store.Open(context.Background(), store.Options{Path: path})
 	if err != nil {
@@ -77,7 +75,7 @@ func downgradeConfig(t *testing.T, dbPath string) config.Config {
 
 func TestDowngradeRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "newer.sqlite")
-	fabricateNewerDB(t, path)
+	fabricateDowngradeDB(t, path)
 	if err := CheckDowngrade(downgradeConfig(t, path)); err == nil {
 		t.Fatal("CheckDowngrade passed a newer database, want refusal")
 	} else if !IsDowngrade(err) {
@@ -174,7 +172,7 @@ func TestPendingMigrationsEmptyOnCurrent(t *testing.T) {
 
 func TestPendingMigrationsRefusesNewer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "newer.sqlite")
-	fabricateNewerDB(t, path)
+	fabricateDowngradeDB(t, path)
 	cfg := config.Defaults()
 	cfg.Store.SQLite.Path = path
 	if _, err := PendingMigrations(cfg); !IsDowngrade(err) {
