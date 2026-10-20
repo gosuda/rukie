@@ -141,9 +141,26 @@ var actionTable = map[string]floorSpec{
 	"org.view":              {RoleNone, op.ScopeRepoRead, true, false},
 	"org.update":            {RoleNone, op.ScopeAdminWrite, false, false},
 	"org.member_add":        {RoleNone, op.ScopeAdminWrite, false, false},
+	"org.get":               {RoleNone, op.ScopeRepoRead, true, false},
+	"org.list":              {RoleNone, op.ScopeRepoRead, false, false},
+	"org.rename":            {RoleNone, op.ScopeRepoWrite, false, false},
+	"org.delete":            {RoleNone, op.ScopeRepoWrite, false, false},
+	"org.member.list":       {RoleNone, op.ScopeRepoRead, true, false},
+	"org.member.remove":     {RoleNone, op.ScopeRepoWrite, false, false},
+	"org.leave":             {RoleNone, op.ScopeRepoWrite, false, false},
 	"team.create":           {RoleNone, op.ScopeAdminWrite, false, false},
 	"team.member_add":       {RoleNone, op.ScopeAdminWrite, false, false},
 	"team.view":             {RoleNone, op.ScopeRepoRead, false, false},
+	"team.list":             {RoleNone, op.ScopeRepoRead, false, false},
+	"team.get":              {RoleNone, op.ScopeRepoRead, false, false},
+	"team.update":           {RoleNone, op.ScopeRepoWrite, false, false},
+	"team.delete":           {RoleNone, op.ScopeRepoWrite, false, false},
+	"team.member.list":      {RoleNone, op.ScopeRepoRead, false, false},
+	"team.member.add":       {RoleNone, op.ScopeRepoWrite, false, false},
+	"team.member.remove":    {RoleNone, op.ScopeRepoWrite, false, false},
+	"team.repo.list":        {RoleNone, op.ScopeRepoRead, false, false},
+	"team.repo.add":         {RoleNone, op.ScopeRepoWrite, false, false},
+	"team.repo.remove":      {RoleNone, op.ScopeRepoWrite, false, false},
 	"repo.create_user":      {RoleNone, op.ScopeRepoCreate, false, false},
 	"repo.create_org":       {RoleNone, op.ScopeRepoCreate, false, false},
 	"repo.view":             {RoleRead, op.ScopeRepoRead, true, false},
@@ -432,11 +449,6 @@ func nonRepoPrecondition(res Resolver, c Caller, action string, r Resource) stri
 			return "precondition"
 		}
 		return ""
-	case "org.create":
-		if !c.Authed {
-			return "precondition"
-		}
-		return ""
 	case "org.view":
 		if res.OrgPublic(r.OrgID) {
 			return ""
@@ -446,16 +458,84 @@ func nonRepoPrecondition(res Resolver, c Caller, action string, r Resource) stri
 		}
 		return "precondition"
 	case "org.update", "org.member_add":
+		if c.IsToken {
+			return "session-required"
+		}
 		if !res.IsOrgOwner(r.OrgID, c.UserID) {
+			return "precondition"
+		}
+		return ""
+	case "org.get", "org.member.list":
+		if res.OrgPublic(r.OrgID) {
+			return ""
+		}
+		if res.IsOrgMember(r.OrgID, c.UserID) {
+			return ""
+		}
+		return "precondition"
+	case "org.list":
+		if c.IsToken {
+			return "session-required"
+		}
+		if !c.Authed {
+			return "precondition"
+		}
+		return ""
+	case "org.rename", "org.delete", "org.member.remove":
+		if c.IsToken {
+			return "session-required"
+		}
+		if !res.IsOrgOwner(r.OrgID, c.UserID) {
+			return "precondition"
+		}
+		return ""
+	case "org.leave":
+		if c.IsToken {
+			return "session-required"
+		}
+		if !c.Authed || !res.IsOrgMember(r.OrgID, c.UserID) {
+			return "precondition"
+		}
+		return ""
+	case "org.create":
+		if c.IsToken {
+			return "session-required"
+		}
+		if !c.Authed {
 			return "precondition"
 		}
 		return ""
 	case "team.create", "team.member_add":
+		if c.IsToken {
+			return "session-required"
+		}
 		if !res.IsOrgOwner(r.OrgID, c.UserID) {
 			return "precondition"
 		}
 		return ""
+	case "team.update", "team.delete", "team.member.add", "team.member.remove", "team.repo.add", "team.repo.remove":
+		if c.IsToken {
+			return "session-required"
+		}
+		if !res.IsOrgOwner(r.OrgID, c.UserID) {
+			return "precondition"
+		}
+		return ""
+	case "team.list", "team.get", "team.member.list", "team.repo.list":
+		if c.IsToken {
+			return "session-required"
+		}
+		if !c.Authed {
+			return "precondition"
+		}
+		if !res.IsOrgOwner(r.OrgID, c.UserID) && !res.IsOrgMember(r.OrgID, c.UserID) {
+			return "precondition"
+		}
+		return ""
 	case "team.view":
+		if c.IsToken {
+			return "session-required"
+		}
 		if res.IsOrgOwner(r.OrgID, c.UserID) {
 			return ""
 		}
