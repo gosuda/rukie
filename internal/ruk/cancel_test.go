@@ -265,7 +265,7 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 			srv.fail(err)
 			return
 		}
-		if err := drainStdin(conn, stream); err != nil {
+		if err = drainStdin(conn, stream); err != nil {
 			srv.fail(err)
 			return
 		}
