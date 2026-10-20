@@ -59,7 +59,7 @@ func (rd Readiness) Handler() http.Handler {
 		}
 		body.Ready = body.Store.Ok && body.Schema.Ok && body.Daemon.Ready
 		w.Header().Set("Content-Type", "application/json")
-		if !body.Store.Ok || !body.Schema.Ok {
+		if !body.Ready {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		raw, _ := jsonv2.Marshal(body, jsonv1.DefaultOptionsV1())

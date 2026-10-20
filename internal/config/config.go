@@ -66,6 +66,7 @@ type RukConfig struct {
 	BinaryPath             string   `toml:"binary_path"`
 	RepoRoot               string   `toml:"repo_root"`
 	SocketPath             string   `toml:"socket_path"`
+	Socket                 string   `toml:"socket"`
 	AllowedUIDs            []uint32 `toml:"allowed_uids"`
 	MaxConnections         uint     `toml:"max_connections"`
 	BlockingPoolSize       uint     `toml:"blocking_pool_size"`
@@ -254,6 +255,9 @@ func (c *Config) resolvePaths(dir string) {
 		c.Ruk.SocketPath = filepath.Join(c.DataDir, "run", "ruk.sock")
 	} else {
 		c.Ruk.SocketPath = resolve(c.Ruk.SocketPath)
+	}
+	if c.Ruk.Socket != "" {
+		c.Ruk.Socket = resolve(c.Ruk.Socket)
 	}
 	if c.CI.Runner.WorkDir == "" {
 		c.CI.Runner.WorkDir = filepath.Join(c.DataDir, "ci-work")
