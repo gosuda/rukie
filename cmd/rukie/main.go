@@ -29,6 +29,9 @@ import (
 	"github.com/gosuda/rukie/internal/logging"
 	"github.com/gosuda/rukie/internal/mcp"
 	"github.com/gosuda/rukie/internal/op"
+	"github.com/gosuda/rukie/internal/queue"
+	"github.com/gosuda/rukie/internal/repowatch"
+	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/rukproc"
 	"github.com/gosuda/rukie/internal/store"
@@ -289,6 +292,34 @@ func runServe(argv []string) int {
 			}
 		},
 	}
+	if serr := app.watcher.StartAll(ctx); serr != nil {
+		logger.Error("repo watchers", slog.Any("err", serr))
+		supStop()
+		if werr := waitSupervisorOnce(); werr != nil {
+			logger.Error("supervisor wait", slog.Any("err", werr))
+		}
+		return 1
+	}
+	workerCtx, workerStop := context.WithCancel(ctx)
+	sweepCtx, sweepStop := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		_ = app.jobs.RunKinds(workerCtx, repowatch.WorkerConfig("serve"), repowatch.PurgeKinds(), app.watcher.HandlePurge)
+	}()
+	go func() {
+		defer close(sweepDone)
+		_ = app.watcher.RunSweeper(sweepCtx, time.Hour)
+	}()
+	ownedDrainRunners["followers"] = app.watcher.StopAll
+	ownedDrainRunners["queue"] = func(context.Context) error {
+		workerStop()
+		sweepStop()
+		<-workerDone
+		<-sweepDone
+		return nil
+	}
 	supervisorDeathStopsServing := make(chan error, 1)
 	go func() {
 		if err := waitSupervisorOnce(); err != nil {
@@ -411,6 +442,8 @@ type app struct {
 	auth    *auth.Service
 	docs    *api.DocStore
 	spool   *events.Spool
+	watcher *repowatch.Watcher
+	jobs    *queue.Queue
 }
 
 type gitFallback struct {
@@ -510,6 +543,30 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	repoClient := dialRepoClient(ctx, logger, cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath))
+	repoJobs := queue.Open(st, time.Now)
+	watcher := repowatch.New(repowatch.Config{
+		Store: st, Queue: repoJobs, Client: repoClient, RepoRoot: cfg.Ruk.RepoRoot,
+	})
+	repoDeps := api.Deps{
+		Service: authSvc, Limiter: limiter, Reveals: authDeps.Reveals,
+		Store: st, Ruk: repoClient, Queue: repoJobs,
+		RepoRoot: cfg.Ruk.RepoRoot, RukBin: cfg.Ruk.BinaryPath,
+		OnRepoCreated: func(repoID int64) { watcher.Start(ctx, repoID) },
+		OnRepoDeleted: watcher.Stop,
+	}
+	if regErr := api.RegisterRepos(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
+	if regErr := api.RegisterCode(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
+	if regErr := api.RegisterRefs(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	fillLLMS, regErr := api.RegisterLLMS(table, llmsBase(cfg))
 	if regErr != nil {
 		cleanup()
@@ -521,6 +578,9 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
 	api.RegisterF12Views(views)
+	api.RegisterReposViews(views)
+	api.RegisterCodeViews(views)
+	api.RegisterRefsViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
 	idem.StartSweeper(ctx, time.Minute)
@@ -538,6 +598,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{
 		PublicOrigin:  cfg.HTTP.ExternalURL,
+		IsSiteSegment: api.SiteSegment,
 		Authenticator: auth.NewAuthenticator(authSvc),
 		Idempotency:   idem,
 		Audit:         auditor,
@@ -585,7 +646,21 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	if daemon == nil {
 		daemon = api.NotReadyDaemon
 	}
-	return &app{server: server, handler: gitFallback{git: git, fallback: server, daemon: daemon}, store: st, auth: authSvc, docs: docs, spool: spool}, cleanup, nil
+	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: git, fallback: server, daemon: daemon}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs}, cleanup, nil
+}
+
+func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {
+	if socket == "" {
+		return nil
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	client, err := ruk.Dial(dialCtx, socket)
+	if err != nil {
+		logger.Warn("ruk dial deferred", slog.Any("err", err))
+		return nil
+	}
+	return client
 }
 
 func drainWithoutServingSocket(logger *slog.Logger, steps []supervisor.Step) {

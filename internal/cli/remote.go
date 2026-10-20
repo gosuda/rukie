@@ -54,6 +54,15 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	if err := api.RegisterF12(table, deps); err != nil {
 		return nil, err
 	}
+	if err := api.RegisterRepos(table, deps); err != nil {
+		return nil, err
+	}
+	if err := api.RegisterCode(table, deps); err != nil {
+		return nil, err
+	}
+	if err := api.RegisterRefs(table, deps); err != nil {
+		return nil, err
+	}
 	fillLLMS, err := api.RegisterLLMS(table, "")
 	if err != nil {
 		return nil, err
@@ -64,10 +73,14 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
 	api.RegisterF12Views(views)
+	api.RegisterReposViews(views)
+	api.RegisterCodeViews(views)
+	api.RegisterRefsViews(views)
 	api.RegisterLLMSViews(views)
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{
 		Authenticator: authn,
+		IsSiteSegment: api.SiteSegment,
 		Idempotency:   op.NewMemoryIdempotency(),
 		Audit:         op.FuncAuditor(func(context.Context, op.AuditRow) error { return nil }),
 		Limiter:       deps.Limiter,

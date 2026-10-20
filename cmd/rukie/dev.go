@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -217,17 +218,89 @@ func seedDevData(ctx context.Context, dir string) (int64, string, string, error)
 		return 0, "", "", fmt.Errorf("seedDevData: %w", err)
 	}
 	userID, password, token, seedErr := seedDevUser(ctx, svc)
-	_ = svc.Close()
-	_ = st.Close(context.Background())
 	if seedErr != nil {
+		_ = svc.Close()
+		_ = st.Close(context.Background())
 		return 0, "", "", seedErr
 	}
+	skipped, herr := seedDevHello(ctx, dir, st, userID)
+	if herr != nil {
+		_ = svc.Close()
+		_ = st.Close(context.Background())
+		return 0, "", "", herr
+	}
+	if skipped {
+		_, _ = fmt.Fprintln(os.Stderr, "dev: hello repo skipped: ruk binary is not available")
+	}
+	_ = svc.Close()
+	_ = st.Close(context.Background())
 	for _, extra := range devSeedExtras {
 		if err := extra(ctx, dir); err != nil {
 			return 0, "", "", fmt.Errorf("seedDevData: %w", err)
 		}
 	}
 	return userID, password, token, nil
+}
+
+func seedDevHello(ctx context.Context, dir string, st *store.Store, userID int64) (bool, error) {
+	bin, berr := rukproc.ResolveBinary("")
+	if berr != nil {
+		return true, nil
+	}
+	roots := filepath.Join(dir, "repos")
+	if merr := os.MkdirAll(filepath.Join(roots, "dev"), 0o750); merr != nil {
+		return false, fmt.Errorf("seedDevHello: %w", merr)
+	}
+	repoDir := filepath.Join(roots, "dev", "hello.git")
+	if _, serr := os.Stat(filepath.Join(repoDir, ".ruk")); serr != nil {
+		if out, rerr := rukproc.Run(ctx, bin, []string{"git", "init", repoDir}, devSeedEnv()); rerr != nil {
+			return false, fmt.Errorf("seedDevHello: %w\n%s", rerr, out)
+		}
+	}
+	var present bool
+	rerr := st.Read(ctx, func(tx *store.ReadTx) error {
+		_, ferr := tx.FindRepo(userID, 0, "hello")
+		present = ferr == nil
+		return nil
+	})
+	if rerr != nil {
+		return false, fmt.Errorf("seedDevHello: %w", rerr)
+	}
+	if present {
+		return false, nil
+	}
+	now := time.Now()
+	serr := st.Write(ctx, func(tx *store.WriteTx) error {
+		id, ierr := tx.InsertRepo(now, store.RepoInsert{
+			OwnerUserID:   sql.NullInt64{Int64: userID, Valid: true},
+			Name:          "hello",
+			Visibility:    "private",
+			Description:   "Seeded development repository",
+			DefaultBranch: "main",
+			RukPath:       "dev/hello.git",
+		})
+		if ierr != nil {
+			return ierr
+		}
+		return tx.InsertDefaultRule(id, now, "main")
+	})
+	if serr != nil {
+		return false, fmt.Errorf("seedDevHello: %w", serr)
+	}
+	return false, nil
+}
+
+func devSeedEnv() []string {
+	return []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.TempDir(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=" + os.DevNull,
+		"GIT_CONFIG_SYSTEM=" + os.DevNull,
+		"GIT_TERMINAL_PROMPT=0",
+		"RUK_COORDINATOR=off",
+		"LANG=C",
+	}
 }
 
 func seedDevUser(ctx context.Context, svc *auth.Service) (int64, string, string, error) {

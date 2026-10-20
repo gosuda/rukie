@@ -158,6 +158,41 @@ type WorkerConfig struct {
 }
 
 func (q *Queue) Run(ctx context.Context, cfg WorkerConfig, handle Handler) error {
+	return q.runKinds(ctx, cfg, nil, handle)
+}
+
+func (q *Queue) RunKinds(ctx context.Context, cfg WorkerConfig, kinds []Kind, handle Handler) error {
+	names := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		if !ValidKind(kind) {
+			return fmt.Errorf("RunKinds: unknown job kind %q", string(kind))
+		}
+		names = append(names, string(kind))
+	}
+	return q.runKinds(ctx, cfg, names, handle)
+}
+
+func (q *Queue) ClaimKinds(ctx context.Context, owner string, kinds []Kind, lease time.Duration, limit int) ([]store.Job, error) {
+	names := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		names = append(names, string(kind))
+	}
+	var out []store.Job
+	err := q.store.Write(ctx, func(tx *store.WriteTx) error {
+		jobs, werr := tx.ClaimKindJobs(owner, names, q.clock(), lease, limit)
+		if werr != nil {
+			return werr
+		}
+		out = jobs
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (q *Queue) runKinds(ctx context.Context, cfg WorkerConfig, kinds []string, handle Handler) error {
 	if cfg.Batch <= 0 {
 		return fmt.Errorf("Run: batch must be positive")
 	}
@@ -173,13 +208,28 @@ func (q *Queue) Run(ctx context.Context, cfg WorkerConfig, handle Handler) error
 	if handle == nil {
 		return fmt.Errorf("Run: handler must not be nil")
 	}
+	claim := func() ([]store.Job, error) {
+		if len(kinds) == 0 {
+			return q.Claim(ctx, cfg.Owner, cfg.Lease, cfg.Batch)
+		}
+		var out []store.Job
+		err := q.store.Write(ctx, func(tx *store.WriteTx) error {
+			jobs, werr := tx.ClaimKindJobs(cfg.Owner, kinds, q.clock(), cfg.Lease, cfg.Batch)
+			if werr != nil {
+				return werr
+			}
+			out = jobs
+			return nil
+		})
+		return out, err
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		jobs, err := q.Claim(ctx, cfg.Owner, cfg.Lease, cfg.Batch)
+		jobs, err := claim()
 		if err != nil {
 			return err
 		}
