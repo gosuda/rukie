@@ -162,11 +162,14 @@ func runServe(argv []string) int {
 		}
 		return 0
 	}
-	logger, lerr := logging.New(cfg.Log.Level, cfg.Log.Format, cfg.Log.Source)
+	lvl, lerr := logging.ParseLevel(cfg.Log.Level)
 	if lerr != nil {
 		fmt.Fprintln(os.Stderr, lerr.Error())
 		return 78
 	}
+	levelVar := &slog.LevelVar{}
+	levelVar.Set(lvl)
+	logger := logging.NewWithVar(levelVar, cfg.Log.Format, cfg.Log.Source)
 	slog.SetDefault(logger)
 	if err := sysops.EnsureDataDir(cfg.DataDir); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
@@ -229,7 +232,7 @@ func runServe(argv []string) int {
 		})
 		return supFinal
 	}
-	reloadLogLevelOnSIGHUP(cfg, logger, configPath(*configFlag))
+	reloadLogLevelOnSIGHUP(configPath(*configFlag), levelVar)
 	if rerr := waitSupervisorReady(ctx, sup, waitSupervisorOnce, cfg); rerr != nil {
 		fmt.Fprintln(os.Stderr, rerr.Error())
 		supStop()
@@ -432,20 +435,18 @@ func waitSupervisorReady(ctx context.Context, sup *supervisor.Supervisor, waitSu
 	}
 }
 
-func reloadLogLevelOnSIGHUP(cfg config.Config, logger *slog.Logger, path string) {
+func reloadLogLevelOnSIGHUP(path string, levelVar *slog.LevelVar) {
 	hupCh := make(chan os.Signal, 1)
 	signal.Notify(hupCh, syscall.SIGHUP)
 	go func() {
 		defer signal.Stop(hupCh)
 		for range hupCh {
-			level, next, err := supervisor.ReloadLogLevel(cfg.Log.Format, cfg.Log.Source, path)
+			level, err := supervisor.ReloadLogLevel(levelVar, path)
 			if err != nil {
-				logger.Error("sighup reload", slog.Any("err", err))
+				slog.Default().Error("sighup reload", slog.Any("err", err))
 				continue
 			}
-			slog.SetDefault(next)
-			logger = next
-			next.Info("reloaded log level", slog.String("level", level))
+			slog.Default().Info("reloaded log level", slog.String("level", level))
 		}
 	}()
 }

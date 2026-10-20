@@ -8,18 +8,21 @@ import (
 	"github.com/gosuda/rukie/internal/logging"
 )
 
-// ReloadLogLevel re-reads the config file and rebuilds the logger with
-// the file's level. Format and source stay as passed so SIGHUP reloads
-// the log level only; every other key change requires a restart and is
-// ignored here. It returns the applied level name.
-func ReloadLogLevel(format string, source bool, configPath string) (string, *slog.Logger, error) {
+// ReloadLogLevel re-reads the config file and applies the file's level to
+// the shared level var. Every logger built from that var — the serve
+// logger, the store logger, and the request auditor — honors the new
+// level at once; nothing keeps a stale startup logger. Format, source,
+// and every other key change still require a restart and are ignored
+// here. It returns the applied level name.
+func ReloadLogLevel(lv *slog.LevelVar, configPath string) (string, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("supervisor: reload log level: %w", err)
+		return "", fmt.Errorf("supervisor: reload log level: %w", err)
 	}
-	logger, lerr := logging.New(cfg.Log.Level, format, source)
+	lvl, lerr := logging.ParseLevel(cfg.Log.Level)
 	if lerr != nil {
-		return "", nil, fmt.Errorf("supervisor: reload log level: %w", lerr)
+		return "", fmt.Errorf("supervisor: reload log level: %w", lerr)
 	}
-	return cfg.Log.Level, logger, nil
+	lv.Set(lvl)
+	return cfg.Log.Level, nil
 }

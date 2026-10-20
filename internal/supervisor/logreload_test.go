@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -29,31 +30,62 @@ backend = "sqlite"
 
 func TestReloadLogLevelAppliesFileLevel(t *testing.T) {
 	path := writeConfig(t, logTestBase+"\n[log]\nlevel = \"debug\"\n")
-	level, logger, err := ReloadLogLevel("json", false, path)
+	lv := &slog.LevelVar{}
+	lv.Set(slog.LevelInfo)
+	level, err := ReloadLogLevel(lv, path)
 	if err != nil {
 		t.Fatalf("ReloadLogLevel: %v", err)
 	}
 	if level != "debug" {
 		t.Fatalf("level = %q, want debug", level)
 	}
-	if !logger.Enabled(t.Context(), slog.LevelDebug) {
-		t.Fatal("reloaded logger does not enable debug")
-	}
-	if logger.Enabled(t.Context(), slog.Level(-10)) {
-		t.Fatal("reloaded logger enables below-debug; level table is wrong")
+	if lv.Level() != slog.LevelDebug {
+		t.Fatalf("level var = %v, want debug", lv.Level())
 	}
 }
 
 func TestReloadLogLevelRejectsBadFile(t *testing.T) {
+	lv := &slog.LevelVar{}
+	lv.Set(slog.LevelInfo)
 	path := writeConfig(t, logTestBase+"\n[log]\nlevel = \"verbose\"\n")
-	if _, _, err := ReloadLogLevel("json", false, path); err == nil {
+	if _, err := ReloadLogLevel(lv, path); err == nil {
 		t.Fatal("ReloadLogLevel accepted level verbose, want an error")
 	}
+	if lv.Level() != slog.LevelInfo {
+		t.Fatalf("level var moved to %v on a rejected reload, want info", lv.Level())
+	}
 	unknown := writeConfig(t, logTestBase+"\n[log]\nlevel = \"info\"\n[nope]\nx = 1\n")
-	if _, _, err := ReloadLogLevel("json", false, unknown); err == nil {
+	if _, err := ReloadLogLevel(lv, unknown); err == nil {
 		t.Fatal("ReloadLogLevel accepted an unknown key, want an error")
 	}
-	if _, _, err := ReloadLogLevel("json", false, filepath.Join(t.TempDir(), "missing.toml")); err == nil {
+	if _, err := ReloadLogLevel(lv, filepath.Join(t.TempDir(), "missing.toml")); err == nil {
 		t.Fatal("ReloadLogLevel accepted a missing file, want an error")
+	}
+}
+
+func TestReloadLogLevelReachesComponentLoggers(t *testing.T) {
+	path := writeConfig(t, logTestBase+"\n[log]\nlevel = \"info\"\n")
+	lv := &slog.LevelVar{}
+	lv.Set(slog.LevelInfo)
+	component := slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: lv}))
+	if component.Enabled(t.Context(), slog.LevelDebug) {
+		t.Fatal("component logger enables debug at info")
+	}
+	relaxed := writeConfig(t, logTestBase+"\n[log]\nlevel = \"debug\"\n")
+	if _, err := ReloadLogLevel(lv, relaxed); err != nil {
+		t.Fatalf("ReloadLogLevel: %v", err)
+	}
+	if !component.Enabled(t.Context(), slog.LevelDebug) {
+		t.Fatal("component logger obtained before the reload ignores debug; it keeps a stale level")
+	}
+	strict := writeConfig(t, logTestBase+"\n[log]\nlevel = \"warn\"\n")
+	if _, err := ReloadLogLevel(lv, strict); err != nil {
+		t.Fatalf("ReloadLogLevel: %v", err)
+	}
+	if component.Enabled(t.Context(), slog.LevelInfo) {
+		t.Fatal("component logger still enables info after a warn reload")
+	}
+	if _, err := ReloadLogLevel(lv, path); err != nil {
+		t.Fatalf("ReloadLogLevel: %v", err)
 	}
 }
