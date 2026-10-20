@@ -17,6 +17,7 @@ import (
 	"github.com/gosuda/rukie/internal/api"
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/op"
+	"github.com/gosuda/rukie/internal/reserved"
 	"github.com/gosuda/rukie/internal/store"
 )
 
@@ -343,8 +344,8 @@ func TestLastOwnerGuard(t *testing.T) {
 	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members", adaCookie, string(addBody)); rec.Code != http.StatusOK {
 		t.Fatalf("add bob to owners = %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec := odo(t, e, "POST", "/acme/-/members/ada/remove", adaCookie, ""); rec.Code != http.StatusOK {
-		t.Fatalf("remove shared owner = %d: %s", rec.Code, rec.Body.String())
+	if rec := odo(t, e, "POST", "/acme/-/members/ada/remove", adaCookie, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("remove shared owner = %d, want 204: %s", rec.Code, rec.Body.String())
 	}
 	bobCookie := ologin(t, e, "bob", "long-test-password-01")
 	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members/bob/remove", bobCookie, ""); rec.Code != http.StatusConflict {
@@ -400,10 +401,7 @@ func TestOrgReservedRegistryRefusals(t *testing.T) {
 	e := buildOrgsEnv(t)
 	obootstrap(t, e, "ada", "long-test-password-01")
 	adaCookie := ologin(t, e, "ada", "long-test-password-01")
-	for _, name := range api.Reserved() {
-		if name == "" || strings.HasPrefix(name, "{") || strings.Contains(name, "/") {
-			continue
-		}
+	for _, name := range reserved.Names() {
 		if len(name) > 39 {
 			continue
 		}

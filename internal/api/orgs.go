@@ -1653,7 +1653,8 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only, organization owners. Refuses while the organization still holds repositories.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
-		Status:      http.StatusOK,
+		ETag:        func(OrgDeleteOut) string { return "" },
+		Status:      http.StatusNoContent,
 		Location:    func(OrgDeleteOut) string { return "/settings/orgs" },
 		Handler:     deleteOrgHandler(deps),
 	}); err != nil {
@@ -1768,7 +1769,8 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only, organization owners. The owners team cannot be deleted. Requires If-Match.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
-		Status:      http.StatusOK,
+		ETag:        func(TeamDeleteOut) string { return "" },
+		Status:      http.StatusNoContent,
 		Location:    func(TeamDeleteOut) string { return "" },
 		Handler:     deleteTeamHandler(deps),
 	}); err != nil {
