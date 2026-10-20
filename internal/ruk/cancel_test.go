@@ -254,6 +254,7 @@ func TestCommandHookTimeoutDrainsToExit(t *testing.T) {
 
 func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 	srv := newScriptedServer(t)
+	eofSeen := make(chan struct{})
 	srv.serveOne(func(conn net.Conn) {
 		if err := scriptedHandshake(conn); err != nil {
 			srv.fail(err)
@@ -264,10 +265,11 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 			srv.fail(err)
 			return
 		}
-		if err = drainStdin(conn, stream); err != nil {
+		if err := drainStdin(conn, stream); err != nil {
 			srv.fail(err)
 			return
 		}
+		close(eofSeen)
 		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 		for {
 			frame, rerr := readFrame(conn)
@@ -298,7 +300,14 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 	})
 	client := srv.client()
 	ctx, cancel := context.WithCancel(t.Context())
-	time.AfterFunc(200*time.Millisecond, cancel)
+	go func() {
+		select {
+		case <-eofSeen:
+			time.Sleep(200 * time.Millisecond)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	var stdout bytes.Buffer
 	report, _, err := RunCommand(ctx, client, Command{
 		Open: wire.ServiceOpen{
@@ -325,6 +334,7 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 func TestCommandCancelBeforeStdinEOFClosesFast(t *testing.T) {
 	srv := newScriptedServer(t)
 	seen := make(chan [2]time.Time, 1)
+	streaming := make(chan struct{})
 	srv.serveOne(func(conn net.Conn) {
 		if err := scriptedHandshake(conn); err != nil {
 			srv.fail(err)
@@ -335,11 +345,28 @@ func TestCommandCancelBeforeStdinEOFClosesFast(t *testing.T) {
 			srv.fail(err)
 			return
 		}
+		first, rerr := readFrame(conn)
+		if rerr != nil {
+			srv.fail(rerr)
+			return
+		}
+		if first.Kind != KindStdin {
+			srv.fail(fmt.Errorf("first stream frame = kind %d, want stdin", uint8(first.Kind)))
+			return
+		}
+		close(streaming)
 		watchClose(conn, stream, seen)
 	})
 	client := srv.client()
 	ctx, cancel := context.WithCancel(t.Context())
-	time.AfterFunc(300*time.Millisecond, cancel)
+	go func() {
+		select {
+		case <-streaming:
+			time.Sleep(200 * time.Millisecond)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	var stdout bytes.Buffer
 	_, _, _ = RunCommand(ctx, client, Command{
 		Open: wire.ServiceOpen{

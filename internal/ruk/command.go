@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -75,14 +76,12 @@ func RunCommand(ctx context.Context, c *Client, cmd Command) (wire.CommandExitRe
 		grace = defaultCancelGrace
 	}
 	d := &commandDriver{pc: pc, id: s.id, stdout: cmd.Stdout, handle: cmd.Hook, service: open.Service, hookBudget: hookBudget, grace: grace}
-	var finished atomic.Bool
 	go func() {
 		select {
 		case <-cmdCtx.Done():
-			if finished.Load() {
-				return
+			if !d.terminal.Load() {
+				d.sendCancel()
 			}
-			_ = pc.writeKind(KindCancel, s.id, nil)
 			if !d.stdinEOF.Load() {
 				_ = pc.nc.Close()
 				return
@@ -107,12 +106,12 @@ func RunCommand(ctx context.Context, c *Client, cmd Command) (wire.CommandExitRe
 	} else {
 		report, stderr, completed, runErr = d.runRound(cmdCtx, cmd.Stdin)
 	}
-	finished.Store(true)
 	if completed {
 		return report, stderr, runErr
 	}
 	err = runErr
 	if ctx.Err() != nil {
+		d.sendCancel()
 		return report, stderr, fmt.Errorf("RunCommand: %w: %w", ctx.Err(), ErrOutcomeUnknown)
 	}
 	return report, stderr, err
@@ -132,7 +131,15 @@ type commandDriver struct {
 	id         uint64
 	window     uint64
 	stdinEOF   atomic.Bool
+	terminal   atomic.Bool
+	cancelOnce sync.Once
 	hasRef     bool
+}
+
+func (d *commandDriver) sendCancel() {
+	d.cancelOnce.Do(func() {
+		_ = d.pc.writeKind(KindCancel, d.id, nil)
+	})
 }
 
 func (d *commandDriver) fail(format string, args ...any) (wire.CommandExitReport, []byte, bool, error) {
@@ -294,6 +301,7 @@ func (d *commandDriver) refill(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			d.terminal.Store(true)
 			if d.hasRef {
 				return errorFromReply("Command "+d.service, d.refusal, d.invoking, Unknown)
 			}
@@ -321,6 +329,7 @@ func (d *commandDriver) awaitRefusedExit() error {
 	if frame.Stream != d.id || frame.Kind != KindExit {
 		return fmt.Errorf("RunCommand: %w: expected exit after refusal", ErrProtocol)
 	}
+	d.terminal.Store(true)
 	report, _, err := d.decodeExit(frame.Payload)
 	if err != nil {
 		return err
@@ -492,6 +501,7 @@ func (d *commandDriver) decodeExit(payload []byte) (wire.CommandExitReport, bool
 }
 
 func (d *commandDriver) finishExit(payload []byte) (wire.CommandExitReport, []byte, bool, error) {
+	d.terminal.Store(true)
 	report, isCommand, err := d.decodeExit(payload)
 	if err != nil {
 		return wire.CommandExitReport{}, d.stderr, false, err
