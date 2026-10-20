@@ -714,6 +714,30 @@ func TestGitStreamLimitsRefuseOversizePush(t *testing.T) {
 	}
 }
 
+func TestGitChunkedOverflowRefused413(t *testing.T) {
+	limits := wire.DefaultGitLimits()
+	limits.MaxStdinBytes = 64
+	s := newStack(t, &limits)
+	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+	s.addRepo(t, "ada", "hello", "private")
+	req, err := http.NewRequest(http.MethodPost, s.url+"/ada/hello.git/git-receive-pack", io.NopCloser(strings.NewReader(strings.Repeat("a", 256))))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.ContentLength = -1
+	req.SetBasicAuth("ada", ada.token)
+	req.Header.Set("Content-Type", "application/x-git-receive-pack-request")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked overflow status = %d, want 413", resp.StatusCode)
+	}
+}
+
 func TestRefsForRejectedUntilReview(t *testing.T) {
 	s := newStack(t, nil)
 	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")

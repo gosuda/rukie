@@ -2,6 +2,7 @@ package ruk
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -32,6 +33,26 @@ func TestHookDeadlineTable(t *testing.T) {
 		if got := hookDeadline(ceiling, tc.deadlineMs); got != tc.want {
 			t.Fatalf("%s: hookDeadline = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestRefillSurfacesMidStdinRefusal(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
+	pc := &conn{nc: server, writeEvery: 30 * time.Second}
+	go func() {
+		refusal, _ := jsonv2.Marshal(wire.ErrorReply{Code: wire.CodeLimit, Message: "request body exceeds its bound"})
+		_ = writeFrame(client, KindError, 9, refusal)
+		exit, _ := jsonv2.Marshal(wire.ExitReport{Code: "E_LIMIT", Outcome: "Failed", Status: 1})
+		_ = writeFrame(client, KindExit, 9, exit)
+	}()
+	d := &commandDriver{pc: pc, id: 9, service: "receive-pack"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := d.refill(ctx)
+	if !errors.Is(err, ErrLimit) {
+		t.Fatalf("refill err = %v, want E_LIMIT", err)
 	}
 }
 

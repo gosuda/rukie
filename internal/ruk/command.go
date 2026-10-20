@@ -267,6 +267,9 @@ func (d *commandDriver) refill(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			if d.hasRef {
+				return errorFromReply("Command "+d.service, d.refusal, d.invoking, Unknown)
+			}
 			return commandTerminal{report: report, completed: completed}
 		case KindOpen, KindAccepted, KindStdin, KindStdinEOF, KindStdout, KindStderr, KindCancel, KindHookCall, KindHookReply:
 			return fmt.Errorf("RunCommand: %w: kind %d during stdin", ErrProtocol, uint8(frame.Kind))
