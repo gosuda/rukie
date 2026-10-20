@@ -356,6 +356,17 @@ func SetHeader(ctx context.Context, key, value string) {
 	}
 }
 
+type clientIPKey struct{}
+
+// ClientIP reports the request's remote address for abuse accounting.
+// Handlers that rate-limit or block by IP read it here; empty when unset.
+func ClientIP(ctx context.Context) string {
+	if ip, ok := ctx.Value(clientIPKey{}).(string); ok {
+		return ip
+	}
+	return ""
+}
+
 func CursorKey(ctx context.Context) []byte {
 	if st := stateFrom(ctx); st != nil && st.srv != nil {
 		return cursorSubkey(st.srv.cfg.CSRFKey)
@@ -905,6 +916,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	st.requestID = newRequestID(r)
 	ctx := context.WithValue(r.Context(), stateKey{}, st)
+	ctx = context.WithValue(ctx, clientIPKey{}, clientIP(r))
 	r = r.WithContext(ctx)
 	decision := "allow"
 	matches, methods := s.lookup(st.path)

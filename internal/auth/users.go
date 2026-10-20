@@ -49,10 +49,11 @@ type LoginInput struct {
 }
 
 type LoginResult struct {
-	Secret   string
-	User     User
-	Session  Session
-	Rehashed bool
+	Secret       string
+	User         User
+	Session      Session
+	Rehashed     bool
+	TOTPRequired bool
 }
 
 var errInvalidCredentials = loginError{}
@@ -125,7 +126,11 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	if err != nil {
 		return LoginResult{}, err
 	}
-	secret, sess, err := s.MintSession(ctx, u.ID, "password", in.IP, in.UserAgent)
+	level := fullPasswordLevel
+	if u.TOTPEnabled {
+		level = pendingPasswordLevel
+	}
+	secret, sess, err := s.MintSession(ctx, u.ID, level, in.IP, in.UserAgent)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -134,14 +139,19 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoginResult, error)
 	res.Session = sess
 	res.User = u
 	res.Secret = secret
+	res.TOTPRequired = u.TOTPEnabled
 	s.recordAudit(ctx, AuditEvent{Actor: u.ID, Action: "password.login", Target: "user:" + u.Name, IP: in.IP, UserAgent: in.UserAgent, SessionHash: sess.IDHash, Result: "ok"})
 	return res, nil
 }
 
 func (s *Service) recordFailure(ctx context.Context, lower string, u User, ip string, now int64) error {
+	return s.recordFailureReason(ctx, lower, u, ip, now, "password")
+}
+
+func (s *Service) recordFailureReason(ctx context.Context, lower string, u User, ip string, now int64, reason string) error {
 	return s.execTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO login_attempts (username_lower, ip, at, success, reason)
-			VALUES (?, ?, ?, 0, 'password')`, lower, ip, now); err != nil {
+			VALUES (?, ?, ?, 0, ?)`, lower, ip, now, reason); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM login_attempts WHERE at < ?`, now-lockoutRetain.Milliseconds()); err != nil {
@@ -155,13 +165,18 @@ func (s *Service) recordFailure(ctx context.Context, lower string, u User, ip st
 		if u.LockedUntil > now {
 			remaining := u.LockedUntil - now
 			doubled := min(remaining*2, lockoutMax.Milliseconds())
-			_, err := tx.ExecContext(ctx, `UPDATE users SET locked_until = ?, updated_at = ? WHERE id = ?`,
-				now+doubled, now, u.ID)
-			return err
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET locked_until = ?, updated_at = ? WHERE id = ?`,
+				now+doubled, now, u.ID); err != nil {
+				return err
+			}
+			return killPendingSessions(ctx, tx, u.ID)
 		}
 		if recent >= lockoutThreshold {
 			if _, err := tx.ExecContext(ctx, `UPDATE users SET failed_login_count = ?, locked_until = ?, updated_at = ? WHERE id = ?`,
 				recent, now+lockoutBase.Milliseconds(), now, u.ID); err != nil {
+				return err
+			}
+			if err := killPendingSessions(ctx, tx, u.ID); err != nil {
 				return err
 			}
 			s.recordAudit(ctx, AuditEvent{Actor: u.ID, Action: "lockout.lock", Target: "user:" + u.Name, Result: "ok"})
@@ -170,6 +185,12 @@ func (s *Service) recordFailure(ctx context.Context, lower string, u User, ip st
 		_, err := tx.ExecContext(ctx, `UPDATE users SET failed_login_count = ?, updated_at = ? WHERE id = ?`, recent, now, u.ID)
 		return err
 	})
+}
+
+func killPendingSessions(ctx context.Context, tx *sql.Tx, userID int64) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?
+		AND auth_level IN ('password-pending', 'oidc-pending')`, userID)
+	return err
 }
 
 func (s *Service) applyLockout(ctx context.Context, u User, now int64) {

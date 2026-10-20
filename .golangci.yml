@@ -22,5 +22,8 @@ linters:
       - path: ^internal/op/mount_huma\.go$
         text: G705
         linters: [gosec]
+      - path: ^internal/auth/totp\.go$
+        text: G505
+        linters: [gosec]
 formatters:
   enable: [gofmt, goimports]

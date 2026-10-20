@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -30,8 +31,11 @@ const authDSNParams = "file:%s?_txlock=immediate&_journal_mode=WAL&_synchronous=
 	"&_pragma=trusted_schema(OFF)"
 
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db            *sql.DB
+	now           func() time.Time
+	oidcProviders map[string]*oidcRuntime
+	sealKey       []byte
+	oidcMu        sync.Mutex
 }
 
 func Open(path string) (*Service, error) {

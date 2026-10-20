@@ -41,6 +41,14 @@ func (a Authenticator) Session(ctx context.Context, secret string) (op.Principal
 	if sess.RowID <= 0 {
 		return op.Principal{}, ErrSessionInvalid
 	}
+	if a.svc.SessionRestricted(sess, u) {
+		return op.Principal{
+			UserID:  u.ID,
+			Kind:    op.PrincipalHuman,
+			TokenID: -sess.RowID,
+			Grants:  op.Scopes(0).Add(op.ScopePublicRead),
+		}, nil
+	}
 	return op.Principal{
 		UserID:  u.ID,
 		Kind:    op.PrincipalHuman,
