@@ -73,6 +73,7 @@ func Reserved() []string {
 		"ops": true, "problems": true, "mcp": true, "openapi.json": true,
 		"static": true, "session": true, "account": true, "explore": true,
 		"favicon.ico": true, "robots.txt": true, ".well-known": true,
+		"search": true, "inbox": true, "changes": true, "tasks": true, "ci": true,
 	}
 	for _, r := range Routes() {
 		trimmed := strings.TrimPrefix(r.Pattern, "GET ")

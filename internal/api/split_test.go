@@ -137,4 +137,9 @@ func TestSplitReservedSegmentsCoverMountedLiterals(t *testing.T) {
 			t.Errorf("mounted literal %q of op %q is not a reserved site segment", first, spec.Name)
 		}
 	}
+	for _, seg := range []string{"login", "logout", "settings", "admin", "new", "explore", "search", "inbox", "changes", "tasks", "ci", "-", "healthz", "readyz", "llms.txt", "llms-full.txt"} {
+		if !api.SiteSegment(seg) {
+			t.Errorf("reserved segment %q does not route site-side", seg)
+		}
+	}
 }
