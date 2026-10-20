@@ -1319,8 +1319,12 @@ func addTeamMemberHandler(d Deps) func(context.Context, op.Principal, TeamMember
 				}
 				return gerr
 			}
-			if _, aerr := tx.AddTeamMember(team.ID, target.ID); aerr != nil {
+			added, aerr := tx.AddTeamMember(team.ID, target.ID)
+			if aerr != nil {
 				return aerr
+			}
+			if !added {
+				return nil
 			}
 			body, merr := marshalJSON(map[string]any{
 				"org": org.Name, "team": team.Name, "user": target.Name,
@@ -1329,7 +1333,7 @@ func addTeamMemberHandler(d Deps) func(context.Context, op.Principal, TeamMember
 				return merr
 			}
 			_, eerr := tx.Outbox().Emit(store.Event{
-				Kind: "team.member.added", Body: body, OccurredAt: now,
+				Kind: "membership", Body: body, OccurredAt: now,
 			})
 			return eerr
 		})

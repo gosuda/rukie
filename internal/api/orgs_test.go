@@ -296,23 +296,33 @@ func TestTeamMemberAddImpliesOrgMember(t *testing.T) {
 	if !strings.Contains(orl.Body.String(), "acme") {
 		t.Fatalf("acme missing from bob orgs: %s", orl.Body.String())
 	}
-	var outbox int64
-	if err := e.st.Read(t.Context(), func(tx *store.ReadTx) error {
-		rows, aerr := tx.Outbox().After("no-such-consumer", 100)
-		if aerr != nil {
-			return aerr
-		}
-		for _, row := range rows {
-			if row.Kind == "team.member.added" {
-				outbox++
+	countNotices := func() int64 {
+		t.Helper()
+		var outbox int64
+		if err := e.st.Read(t.Context(), func(tx *store.ReadTx) error {
+			rows, aerr := tx.Outbox().After("no-such-consumer", 100)
+			if aerr != nil {
+				return aerr
 			}
+			for _, row := range rows {
+				if row.Kind == "membership" {
+					outbox++
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("outbox: %v", err)
 		}
-		return nil
-	}); err != nil {
-		t.Fatalf("outbox: %v", err)
+		return outbox
 	}
-	if outbox == 0 {
-		t.Fatal("no team.member.added outbox row")
+	if countNotices() == 0 {
+		t.Fatal("no membership outbox row")
+	}
+	if rec := odo(t, e, "POST", "/acme/-/teams/owners/members", adaCookie, string(addBody)); rec.Code != http.StatusOK {
+		t.Fatalf("re-add member = %d: %s", rec.Code, rec.Body.String())
+	}
+	if countNotices() != 1 {
+		t.Fatalf("re-add duplicated the membership notice")
 	}
 }
 
