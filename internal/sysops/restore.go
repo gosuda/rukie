@@ -45,9 +45,6 @@ func RestoreLenient(ctx context.Context, cfg config.Config, backupDir string) (R
 }
 
 func restore(ctx context.Context, cfg config.Config, backupDir string, force bool) (RestoreReport, error) {
-	// Offline-only, and the lock is HELD for the whole restore: probing
-	// then releasing would let a server start mid-place and migrate a
-	// fresh empty database under the files being installed.
 	lock, err := AcquireDataDirLock(cfg.DataDir)
 	if err != nil {
 		return RestoreReport{}, fmt.Errorf("%w: restore needs the server stopped", ErrDataDirLive)
@@ -108,8 +105,6 @@ func restore(ctx context.Context, cfg config.Config, backupDir string, force boo
 	return report, nil
 }
 
-// resolveRestoreDst maps one manifest path to its live destination,
-// refusing anything outside the restore set.
 func resolveRestoreDst(cfg config.Config, manifestPath string) (string, error) {
 	if manifestPath == "meta.sqlite" {
 		return cfg.Store.SQLite.Path, nil
@@ -121,22 +116,12 @@ func resolveRestoreDst(cfg config.Config, manifestPath string) (string, error) {
 	return filepath.Join(cfg.Ruk.RepoRoot, rel), nil
 }
 
-// placeFilesStaged installs a backup without ever deleting live state
-// before its replacement is verified on disk. Every file is staged into
-// a temp dir first and rehashed against the manifest; then each live
-// destination is moved aside (not deleted) and the staged file is
-// atomically renamed into place. Any failure rolls the moved-aside
-// originals back, so a copy error, a hash change, or a bad manifest
-// path never leaves the store half replaced. Staging lives under
-// data_dir/tmp, so every rename is same-filesystem and atomic.
 func placeFilesStaged(cfg config.Config, backupDir string, doc ManifestDoc) (RestoreReport, error) {
 	var report RestoreReport
 	staging, err := os.MkdirTemp(filepath.Join(cfg.DataDir, "tmp"), "restore-*")
 	if err != nil {
 		return RestoreReport{}, fmt.Errorf("sysops: stage restore: %w", err)
 	}
-	// Only the success path keeps staged content (as live files, via
-	// rename); every error path removes the whole staging tree.
 	stagedKept := false
 	defer func() {
 		if !stagedKept {
@@ -155,10 +140,6 @@ func placeFilesStaged(cfg config.Config, backupDir string, doc ManifestDoc) (Res
 		return RestoreReport{}, fmt.Errorf("sysops: stage rollback dir: %w", err)
 	}
 	var placements []placement
-	// Reverse the install: parked originals move back with their SQLite
-	// WAL/SHM siblings, and files that had no original (fresh
-	// destinations) are deleted, so a mid-copy failure leaves exactly
-	// the pre-restore tree.
 	rollback := func() {
 		for i := len(placements) - 1; i >= 0; i-- {
 			p := placements[i]
@@ -188,10 +169,6 @@ func placeFilesStaged(cfg config.Config, backupDir string, doc ManifestDoc) (Res
 			return p, fmt.Errorf("sysops: stage %s: %w", f.Path, err)
 		}
 		src := filepath.Join(backupDir, f.Path)
-		// Manifest integrity is judged by the caller (VerifyManifest,
-		// or recorded warnings under --force). Here only the read is
-		// guarded: the staged copy must match a fresh hash of the
-		// source, or the source changed under the stage.
 		srcSum, _, herr := hashFile(src)
 		if herr != nil {
 			return p, fmt.Errorf("sysops: stage %s: %w", f.Path, herr)
@@ -213,9 +190,6 @@ func placeFilesStaged(cfg config.Config, backupDir string, doc ManifestDoc) (Res
 		}
 		placements = append(placements, p)
 	}
-	// SQLite WAL siblings belong to the pre-restore generation: move
-	// them aside with the database so a stale WAL can never replay
-	// over the restored snapshot, and a rollback restores all three.
 	siblings := []string{"-wal", "-shm"}
 	seen := map[string]bool{}
 	for i := range placements {

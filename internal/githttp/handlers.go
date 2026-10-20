@@ -188,11 +188,6 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		writeText(w, http.StatusForbidden, "token is not granted this repository")
 		return
 	}
-	// Step-0 write barrier: a live backup holds the mutex exclusively,
-	// so this push waits its turn as 503 backup/in-progress with
-	// Retry-After: 10 instead of writing past the snapshot. The shared
-	// hold covers the full stream, so the backup's exclusive take drains
-	// in-flight pushes first.
 	var releaseBarrier func() = func() {}
 	if name == receiveServiceName && s.barrier != nil {
 		var ok bool
@@ -266,9 +261,6 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		return
 	}
 	if err != nil {
-		// An unknown outcome never resends the stream: reconcile one
-		// Lookup plus a tip comparison against the accepted
-		// pre-receive targets, then report uncertainty.
 		if name == receiveServiceName && errors.Is(err, ruk.ErrOutcomeUnknown) {
 			verdict, verr := s.reconcileUnknownPush(ctx, client, path, requestID)
 			if verr == nil && verdict == supervisor.VerdictCommitted {

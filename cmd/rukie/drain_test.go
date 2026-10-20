@@ -64,10 +64,6 @@ func TestShutdownSecondSignalHalvesOnce(t *testing.T) {
 			t.Fatal("first signal did not stop serving")
 		}
 
-		// The supervisor is still draining: supDone stays open. The
-		// second signal must halve the deadlines without releasing a
-		// waiter on supDone (the old code returned a "halved" error
-		// here and the child survived).
 		supDone := make(chan error)
 		waiterGot := make(chan error, 1)
 		go func() {

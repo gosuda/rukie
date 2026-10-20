@@ -44,11 +44,7 @@ type Config struct {
 	SocketPath  string
 	Limits      wire.GitLimits
 	HookTimeout time.Duration
-	// Barrier takes a non-blocking shared hold on the backup mutex for
-	// one push's full write. A false ok refuses the push with 503
-	// backup/in-progress. Nil disables the gate (tests without a
-	// data dir, dev without a barrier file).
-	Barrier func() (release func(), ok bool)
+	Barrier     func() (release func(), ok bool)
 }
 
 type Server struct {
@@ -65,13 +61,9 @@ type Server struct {
 	hookTimeout time.Duration
 	barrier     func() (func(), bool)
 	mu          sync.Mutex
-	// wants remembers the accepted pre-receive targets per push
-	// request id, so an unknown-outcome receive-pack reconciles
-	// against a tip comparison instead of resending the stream.
-	wants map[string]map[string]string
+	wants       map[string]map[string]string
 }
 
-// stashWant records the accepted pre-receive targets for one push.
 func (s *Server) stashWant(invocation string, want map[string]string) {
 	if invocation == "" || len(want) == 0 {
 		return
@@ -84,7 +76,6 @@ func (s *Server) stashWant(invocation string, want map[string]string) {
 	s.wants[invocation] = want
 }
 
-// takeWant consumes the recorded targets for one push, if any.
 func (s *Server) takeWant(invocation string) map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -93,7 +84,6 @@ func (s *Server) takeWant(invocation string) map[string]string {
 	return want
 }
 
-// currentDaemonTips lists the daemon's current tips for one repo path.
 func (s *Server) currentDaemonTips(ctx context.Context, client *ruk.Client, path string) (map[string]string, error) {
 	repo, oerr := client.OpenRepo(ctx, path)
 	if oerr != nil {
@@ -110,20 +100,6 @@ func (s *Server) currentDaemonTips(ctx context.Context, client *ruk.Client, path
 	return out, nil
 }
 
-// reconcileUnknownPush settles a receive-pack stream the daemon lost
-// track of: one Lookup by request id, then a tip comparison against the
-// accepted pre-receive targets. The stream is never resent.
-//
-// Protocol gap, with evidence: no served method returns a stored
-// ServiceReceipt for a git-service request id. The 61-method table
-// (internal/ruk/testdata/ruk-model.json) has no receipt query; the only
-// reconcile-shaped method is push.reconcile, which observes a mirror
-// remote for a plan id (PushReconcileArgs{plan}), not a receipt for a
-// request id. CS-R10's durable receipts exist daemon-side but expose no
-// read path in this wave, so the lookup leg reports absent — exactly
-// once, per the helper contract — and the served, read-only refs.list
-// tip comparison decides. A future receipt-query method plugs into the
-// lookup parameter with no wiring change.
 func (s *Server) reconcileUnknownPush(ctx context.Context, client *ruk.Client, path, requestID string) (supervisor.Verdict, error) {
 	return supervisor.ReconcileUnknownOutcome(ctx,
 		func(context.Context) (supervisor.LookupResult, error) {

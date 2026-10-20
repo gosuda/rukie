@@ -47,10 +47,6 @@ func ListAll(ctx context.Context, list Lister, prefix string) ([]ruk.RefEntry, u
 			return nil, 0, err
 		}
 		out = append(out, reply.Refs.Items...)
-		// Later pages may reflect state newer than page 0's as_of.
-		// Carry the minimum: Ingest skips events whose new tip already
-		// matches the stored tip, so replays in (min, later] collapse
-		// to cursor advances instead of duplicate outbox rows.
 		if page == 0 || reply.AsOf < asOf {
 			asOf = reply.AsOf
 		}
@@ -169,11 +165,6 @@ func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent) error {
 			}
 			current := event.New.Hex()
 			if tips[event.Name] == current {
-				// Already applied: a resnapshot or a multi-page
-				// listing covered this ref past the stored cursor,
-				// or the tail redelivered it. Advance past the seq
-				// and emit nothing, so the outbox holds the
-				// transition exactly once.
 				if int64(event.Seq) > front {
 					front = int64(event.Seq)
 				}

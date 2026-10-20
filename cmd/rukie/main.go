@@ -282,10 +282,6 @@ func runServe(argv []string) int {
 			case err := <-done:
 				return err
 			case <-ctx.Done():
-				// The budget expired, but the child must still be
-				// reaped: keep waiting bounded by the supervisor
-				// backstop inside waitSupervisorOnce, then report
-				// the overrun alongside any stop failure.
 				logger.Error("child stop overrun", slog.Any("err", context.Cause(ctx)))
 				if err := <-done; err != nil {
 					return errors.Join(ctx.Err(), err)
@@ -355,11 +351,6 @@ func runServe(argv []string) int {
 	return code
 }
 
-// watchShutdownSignals stops request serving on the first SIGINT/SIGTERM
-// and halves the remaining drain deadlines once on the next signal, then
-// keeps waiting until serve returns. A second signal never aborts the
-// drain or the supervisor wait: every step still runs, and the child
-// still gets its SIGTERM-to-SIGKILL stop bounded by StopGrace.
 func watchShutdownSignals(sigCh <-chan os.Signal, stop context.CancelFunc, halves *halveRegistry, serveDone <-chan struct{}) {
 	<-sigCh
 	stop()
@@ -373,10 +364,6 @@ func watchShutdownSignals(sigCh <-chan os.Signal, stop context.CancelFunc, halve
 	}
 }
 
-// halveRegistry collects the live drain deadlines so a second signal can
-// shorten each remaining one exactly once, per ops-design §3.3 step 8.
-// A deadline registered after the halve still halves once, so a signal
-// that lands between stop and drain start is not lost.
 type halveRegistry struct {
 	mu     sync.Mutex
 	fns    []func()
@@ -405,9 +392,6 @@ func (r *halveRegistry) halveAll() {
 	}
 }
 
-// halveDeadline ends its context at a deadline that halve() moves to
-// now plus half the remaining time, once. Durations come from the
-// monotonic clock via time.Now and time.Until.
 type halveDeadline struct {
 	mu       sync.Mutex
 	deadline time.Time

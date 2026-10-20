@@ -76,8 +76,8 @@ type RukConfig struct {
 	RetentionIntervalMs    uint64   `toml:"retention_interval_ms"`
 	ClientDialTimeoutMs    uint     `toml:"client_dial_timeout_ms"`
 	ClientPoolSize         uint     `toml:"client_pool_size"`
-	ClientRequestTimeoutMs uint `toml:"client_request_timeout_ms"`
-	ClientPackTimeoutMs    uint `toml:"client_pack_timeout_ms"`
+	ClientRequestTimeoutMs uint     `toml:"client_request_timeout_ms"`
+	ClientPackTimeoutMs    uint     `toml:"client_pack_timeout_ms"`
 	// StartupTimeoutMs bounds the socket-plus-handshake wait; it feeds
 	// the supervisor probe and WaitReady. Restart attempts and backoff
 	// are O35 constants (at most 3 restarts, 1 s, 2 s, 4 s) with no

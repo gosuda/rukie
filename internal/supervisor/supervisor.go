@@ -22,20 +22,10 @@ const (
 	StopGrace      = 10 * time.Second
 )
 
-// stableResetAfter clears the consecutive-restart count once the child
-// has served this long without dying, so one crash a week never exhausts
-// the O35 budget. The MaxRestarts doc ("caps consecutive child restarts")
-// describes this counter.
 const stableResetAfter = 60 * time.Second
 
-// externalReprobeInterval re-checks an externally managed daemon, so a
-// dead external socket flips /readyz false and the fail-fast 503 gates
-// engage until it answers again.
 const externalReprobeInterval = 5 * time.Second
 
-// childExitError reports a child that died before its startup probe
-// succeeded. Unlike a probe timeout on a live child, the waiter already
-// reaped it, so the caller must not Kill it again.
 type childExitError struct{ err error }
 
 func (e *childExitError) Error() string { return e.err.Error() }
@@ -318,10 +308,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			s.ready.Store(false)
 			_, exited := errors.AsType[*childExitError](perr)
 			if !exited {
-				// The child may still be alive (probe timeout on a
-				// live child): SIGKILL it and reap it through the
-				// single waiter before spending the restart, or the
-				// orphan keeps the socket and every later probe fails.
 				_ = child.Signal(killSignal())
 				<-exit
 			}
@@ -356,10 +342,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-// spendRestart sleeps one O35 backoff and consumes one restart-budget
-// unit. It returns non-nil when the run must end: an exhausted budget
-// carries the cause as an error, and a cancelled context returns nil
-// for a clean shutdown.
 func (s *Supervisor) spendRestart(ctx context.Context, backoffs []time.Duration, cause error) error {
 	n := s.restarts.Load()
 	if int(n) >= s.maxRestarts() {

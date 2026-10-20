@@ -263,8 +263,6 @@ func TestCompleteAndFail(t *testing.T) {
 	if queued.RunAfter <= now.UnixMilli() {
 		t.Fatalf("failed job run_after = %d, want a future backoff", queued.RunAfter)
 	}
-	// A backed-off job is not immediately reclaimable: the poison job
-	// stops hot-looping the single writer.
 	if reclaimed, err := q.Claim(ctx, "w2", time.Minute, 10); err != nil {
 		t.Fatalf("early reclaim: %v", err)
 	} else if len(reclaimed) != 0 {

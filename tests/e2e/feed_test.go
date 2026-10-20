@@ -6,6 +6,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -443,12 +445,14 @@ func TestReconcilerRepairsMissedPush(t *testing.T) {
 func TestRukFirstWriteOrderCrash(t *testing.T) {
 	s := newStack(t, nil)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")
-	s.addRepo(t, "ada", "hello", "private")
+	repoID := s.addRepo(t, "ada", "hello", "private")
+	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})
 	repo := openFeedRepo(t, s, "ada", "hello")
 	ctx := e2eCtx(t)
-	id := events.StableRequestID("claim-list", "ada/hello", []byte("claim.list"))
+	args := map[string]any{"name": "refs/tags/rukfirst-probe", "target": oid, "expected": "absent"}
+	id := events.StableRequestID("tag-set", "ada/hello", []byte("refs/tags/rukfirst-probe"+oid))
 	call := func(rid string) (jsontext.Value, error) {
-		raw, err := ruk.Retry[map[string]any, jsonv1.RawMessage](ctx, s.client, repo, wire.MethodClaimList, rid, map[string]any{})
+		raw, err := ruk.Retry[map[string]any, jsonv1.RawMessage](ctx, s.client, repo, wire.MethodTagSet, rid, args)
 		if err != nil {
 			return nil, err
 		}
@@ -463,10 +467,12 @@ func TestRukFirstWriteOrderCrash(t *testing.T) {
 	if err == nil {
 		t.Fatal("crashing commit succeeded")
 	}
+	restartDaemonKeepClient(t, s)
 	var second []byte
 	err = events.WriteAfterRuk(ctx, s.st, id, call, call, func(tx *store.WriteTx, receipt jsontext.Value) error {
 		second = bytes.Clone(receipt)
-		return tx.PutRefTip(1, "feed/rukfirst", string(receipt), time.Now())
+		sum := sha256.Sum256(receipt)
+		return tx.PutRefTip(repoID, "feed/rukfirst", hex.EncodeToString(sum[:]), time.Now())
 	})
 	if err != nil {
 		t.Fatalf("retry: %v", err)
@@ -476,7 +482,7 @@ func TestRukFirstWriteOrderCrash(t *testing.T) {
 	}
 	var tips map[string]string
 	rerr := s.st.Read(ctx, func(tx *store.ReadTx) error {
-		got, gerr := tx.RefTips(1)
+		got, gerr := tx.RefTips(repoID)
 		if gerr != nil {
 			return gerr
 		}
@@ -486,12 +492,45 @@ func TestRukFirstWriteOrderCrash(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("tips: %v", rerr)
 	}
-	if tips["feed/rukfirst"] != string(second) {
-		t.Fatalf("tip = %q, want the receipt", tips["feed/rukfirst"])
+	sum := sha256.Sum256(second)
+	if tips["feed/rukfirst"] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("tip = %q, want the receipt digest", tips["feed/rukfirst"])
+	}
+	if got := feedTagTarget(t, s, repo, "refs/tags/rukfirst-probe"); got != oid {
+		t.Fatalf("tag target = %q, want %q: the mutation applied exactly once", got, oid)
 	}
 }
 
+func feedTagTarget(t *testing.T, s *stack, repo ruk.Repo, name string) string {
+	t.Helper()
+	ctx := e2eCtx(t)
+	reply, err := ruk.RefsList(ctx, s.client, repo, ruk.RefsListArgs{})
+	if err != nil {
+		t.Fatalf("refs.list: %v", err)
+	}
+	for _, ref := range reply.Refs.Items {
+		if ref.Name == name {
+			return ref.Target.Hex()
+		}
+	}
+	t.Fatalf("tag %s missing from refs.list", name)
+	return ""
+}
+
 func restartDaemon(t *testing.T, s *stack) {
+	t.Helper()
+	restartDaemonKeepClient(t, s)
+	dialCtx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	client, err := ruk.Dial(dialCtx, s.socket)
+	if err != nil {
+		t.Fatalf("redial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	s.client = client
+}
+
+func restartDaemonKeepClient(t *testing.T, s *stack) {
 	t.Helper()
 	_ = s.child.Kill()
 	configPath := filepath.Join(s.dir, "daemon.toml")
@@ -511,35 +550,31 @@ func restartDaemon(t *testing.T, s *stack) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	dialCtx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	client, err := ruk.Dial(dialCtx, s.socket)
-	if err != nil {
-		t.Fatalf("redial: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
-	s.client = client
 }
 
 func TestServiceReceiptsSurviveDaemonKill(t *testing.T) {
 	s := newStack(t, nil)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")
 	s.addRepo(t, "ada", "hello", "private")
+	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})
 	repo := openFeedRepo(t, s, "ada", "hello")
 	ctx := e2eCtx(t)
+	args := map[string]any{"name": "refs/tags/receipt-probe", "target": oid, "expected": "absent"}
 	const requestID = "123e4567-e89b-12d3-a456-426614174001"
-	first, err := ruk.Retry[map[string]any, jsonv1.RawMessage](ctx, s.client, repo, wire.MethodClaimList, requestID, map[string]any{})
+	first, err := ruk.Retry[map[string]any, jsonv1.RawMessage](ctx, s.client, repo, wire.MethodTagSet, requestID, args)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	restartDaemon(t, s)
-	repo = openFeedRepo(t, s, "ada", "hello")
-	second, err := ruk.Retry[map[string]any, jsonv1.RawMessage](ctx, s.client, repo, wire.MethodClaimList, requestID, map[string]any{})
+	restartDaemonKeepClient(t, s)
+	second, err := ruk.Retry[map[string]any, jsonv1.RawMessage](ctx, s.client, repo, wire.MethodTagSet, requestID, args)
 	if err != nil {
 		t.Fatalf("retry after kill: %v", err)
 	}
 	if string(first) != string(second) {
-		t.Fatal("receipt changed across the kill")
+		t.Fatal("receipt changed across the kill; the retry did not replay the stored report")
+	}
+	if got := feedTagTarget(t, s, repo, "refs/tags/receipt-probe"); got != oid {
+		t.Fatalf("tag target = %q, want %q: the mutation applied exactly once", got, oid)
 	}
 }
 
@@ -567,6 +602,10 @@ func TestFaultKillNine(t *testing.T) {
 		restartDaemon(t, s)
 		repo := openFeedRepo(t, s, "ada", "hello")
 		rctx := e2eCtx(t)
+		follower := events.OpenFollower(s.st, repoID, repo, s.client, time.Now)
+		if err := follower.PollOnce(rctx); err != nil {
+			t.Fatalf("follower poll after kill: %v", err)
+		}
 		reconciler := events.OpenReconciler(s.st, repoID, func(ctx context.Context, prefix, after string) (ruk.RefsListReply, error) {
 			args := ruk.RefsListArgs{Prefix: prefix}
 			if after != "" {
@@ -582,8 +621,11 @@ func TestFaultKillNine(t *testing.T) {
 		tips := feedTips(t, s, repoID)
 		switch tips["refs/heads/main"] {
 		case oid:
-			if n != 1 {
-				t.Fatalf("landed push synthesized %d rows, want 1", n)
+			if n != 0 {
+				t.Fatalf("reconcile after follower ingest synthesized %d rows, want 0", n)
+			}
+			if got := refUpdatedCount(t, s); got != 1 {
+				t.Fatalf("landed push produced %d ref.updated rows, want exactly 1", got)
 			}
 		case "":
 			if n != 0 {

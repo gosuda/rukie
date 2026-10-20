@@ -17,9 +17,6 @@ const (
 	jobMaxKindLen = 64
 )
 
-// jobMaxAttempts bounds handler retries: a job that fails this often is
-// a poison job, not a transient outage, so Fail moves it to dead instead
-// of requeueing it forever.
 const jobMaxAttempts = 10
 
 const (
@@ -317,9 +314,6 @@ WHERE id = ?4 AND state = 'leased' AND lease_owner = ?5 AND lease_token = ?6`,
 	return nil
 }
 
-// failBackoff spaces handler retries exponentially (30s doubling to 15m)
-// with a deterministic per-job jitter so one failure does not stampede
-// the single writer when many jobs fail together.
 func failBackoff(attempts int64, id string) time.Duration {
 	shift := attempts
 	if shift > 5 {

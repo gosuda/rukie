@@ -84,8 +84,6 @@ func (s *Server) recordPushAttempt(ctx context.Context, caller access.Caller, re
 	if len(landed) == 0 {
 		return
 	}
-	// Remember the accepted targets even without a feed sink: an
-	// unknown-outcome receive-pack reconciles against them.
 	want := make(map[string]string, len(landed))
 	for _, ref := range landed {
 		want[ref.Name] = ref.New

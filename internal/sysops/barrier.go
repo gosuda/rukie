@@ -17,8 +17,6 @@ import (
 // ErrBarrierHeld reports a second backup while a barrier is active.
 var ErrBarrierHeld = errors.New("sysops: a backup barrier is already held")
 
-// exclusiveWaitCap bounds the step-0 barrier wait: past 60 s the backup
-// aborts rather than stalling the forge (ops-design §5.2 step 0).
 const exclusiveWaitCap = 60 * time.Second
 
 const barrierPollInterval = 100 * time.Millisecond

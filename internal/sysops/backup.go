@@ -22,9 +22,6 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 )
 
-// barrierHoldSLO bounds the step-0 hold the way the 60 s bound covers
-// the wait: past it the backup still commits (it is consistent), but
-// the overrun is logged for SLO tracking per §5.2 step 4.
 const barrierHoldSLO = 60 * time.Second
 
 // ManifestVersion identifies the K10 manifest layout.
@@ -140,16 +137,8 @@ func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase str
 		barrier        *Barrier
 		offlineLock    *DirLock
 	)
-	// Offline first: holding the data-dir lock through the whole backup
-	// stops a server from starting under the copy. When the lock is
-	// held (a server is live), fall back to the step-0 write barrier
-	// instead of refusing: the stopgap of refusing online backups is
-	// not the final state.
 	offlineLock, lerr := AcquireDataDirLock(cfg.DataDir)
 	if lerr == nil {
-		// Offline the copy is trivially stable with no concurrent
-		// writers, so the barrier is vacuous but still identified:
-		// every manifest proves its t_M/t_R lineage.
 		barrierID = ulidNow()
 		defer func() { _ = offlineLock.Release() }()
 	} else if errors.Is(lerr, ErrDataDirLive) {
@@ -283,10 +272,6 @@ func copyRepoTree(repoRoot, backupDst, excludedAbsPath string) ([]ManifestFile, 
 	if err := filepath.WalkDir(repoRoot, walk); err != nil {
 		return nil, fmt.Errorf("sysops: copy repo tree: %w", err)
 	}
-	// Refs first: the daemon publishes a push by renaming refs last, so
-	// copying every ref, HEAD, and config before any object keeps every
-	// interleaving a valid repo: (pre,pre), (pre,post), or (post,post),
-	// never post-refs with pre-objects.
 	slices.SortFunc(rels, func(a, b string) int {
 		return cmp.Or(refFirstRank(a)-refFirstRank(b), cmp.Compare(a, b))
 	})
@@ -321,10 +306,6 @@ func refFirstRank(rel string) int {
 	return 1
 }
 
-// verifyNoWritesDuringCopy aborts the backup when any repo entry changed
-// at or after copyStart: a write slipped through the barrier (a stuck
-// pre-barrier writer, or daemon-internal maintenance), and the tree may
-// mix generations. Aborting beats installing a torn repo.
 func verifyNoWritesDuringCopy(repoRoot string, copyStart time.Time) error {
 	var changed []string
 	walk := func(path string, d fs.DirEntry, werr error) error {

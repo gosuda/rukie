@@ -52,9 +52,6 @@ func WriteUnavailable(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(body))
 }
 
-// backupRetryAfterSeconds is the fail-slow hint a live backup carries
-// while the step-0 write barrier holds: new mutations wait their turn
-// per ops-design §5.2 step 0.
 const backupRetryAfterSeconds = 10
 
 // WriteBackupInProgress answers one refused mutation with 503 and

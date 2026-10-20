@@ -3,6 +3,7 @@ package sysops
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,8 +146,16 @@ func TestCodeSchemaVersionMatchesMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migrations dir: %v", err)
 	}
-	if int64(len(entries)) != code {
-		t.Fatalf("CodeSchemaVersion = %d, want %d migration files", code, len(entries))
+	var newest int64
+	for _, e := range entries {
+		var v int64
+		if _, err := fmt.Sscanf(e.Name(), "%04d_", &v); err != nil {
+			t.Fatalf("migration file %q has no numeric prefix", e.Name())
+		}
+		newest = max(newest, v)
+	}
+	if code != newest {
+		t.Fatalf("CodeSchemaVersion = %d, want highest migration version %d", code, newest)
 	}
 	if code < 1 {
 		t.Fatal("CodeSchemaVersion is zero; no migration applied to the probe store")

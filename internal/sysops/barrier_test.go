@@ -168,8 +168,6 @@ func TestRestoreRollsBackMidCopyFailure(t *testing.T) {
 	if err := st.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	// Block one destination mid-copy: a file where a directory must be
-	// created. Placements before it must roll back.
 	blocker := filepath.Join(cfg.Ruk.RepoRoot, "ada")
 	_ = os.RemoveAll(blocker)
 	if err := os.WriteFile(blocker, []byte("in the way"), 0o600); err != nil {
@@ -178,7 +176,6 @@ func TestRestoreRollsBackMidCopyFailure(t *testing.T) {
 	if _, err := Restore(t.Context(), cfg, filepath.Dir(manifest)); err == nil {
 		t.Fatal("Restore past a blocked destination succeeded, want a mid-copy failure")
 	}
-	// meta.sqlite was parked and must be back, and the store must open.
 	stuck, err := store.Open(t.Context(), store.Options{Path: cfg.Store.SQLite.Path})
 	if err != nil {
 		t.Fatalf("restored store does not open after rollback: %v", err)

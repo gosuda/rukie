@@ -265,8 +265,6 @@ func TestFollowerIngestSkipsAlreadyAppliedTip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed tip: %v", err)
 	}
-	// The tip is already at b but the cursor is behind: a resnapshot or
-	// a multi-page listing covered this ref past the stored cursor.
 	event := tailEvent(5, "refs/heads/main", strings.Repeat("a", 40), applied)
 	if err := f.Ingest(ctx, []ruk.RefEvent{event}); err != nil {
 		t.Fatalf("ingest: %v", err)
@@ -310,9 +308,6 @@ func TestListAllCarriesMinimumAsOf(t *testing.T) {
 		if after != "cursor-1" {
 			t.Fatalf("second page after = %q, want cursor-1", after)
 		}
-		// The second page observed a newer state than the first page's
-		// snapshot. The resnapshot must advance only to the minimum,
-		// and Ingest drops the overlap by tip equality.
 		return listReply(12, map[string]string{"refs/heads/main": strings.Repeat("b", 40)}), nil
 	}
 	items, asOf, err := ListAll(ctx, list, "")

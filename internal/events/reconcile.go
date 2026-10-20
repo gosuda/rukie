@@ -61,13 +61,6 @@ func (r *Reconciler) ReconcileRepo(ctx context.Context) (int, error) {
 			return fmt.Errorf("ReconcileRepo: stored cursor %d is negative", cursor)
 		}
 		if asOf > math.MaxInt64 || int64(asOf) != cursor {
-			// The listing snapshot covers exactly the consumed prefix
-			// only when cursor == as_of. Behind it, the follower still
-			// owns those events; ahead of it, the follower already
-			// committed newer tips, and diffing a stale listing
-			// against them would emit a backwards ref.updated and
-			// regress ref_tips. Either way there is nothing safe to
-			// synthesize.
 			return nil
 		}
 		for name, target := range listed {

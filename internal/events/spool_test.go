@@ -264,8 +264,6 @@ func TestSpoolSurvivesDirectoryRecreation(t *testing.T) {
 func TestSpoolReplayQuarantinesPoisonRecord(t *testing.T) {
 	sp := openFeedSpool(t)
 	st := openFeedStore(t)
-	// Seed a pending push bound to another repo so EnqueuePush reports a
-	// permanent invocation mismatch for the poison record.
 	seed := PushRecord{InvocationID: "poison-1", RepoID: 99, ActorID: 7, AttemptedAt: feedTime().UnixMilli()}
 	if err := sp.Store(seed); err != nil {
 		t.Fatalf("store seed: %v", err)

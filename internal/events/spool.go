@@ -188,9 +188,6 @@ func (s *Spool) deadPath(id string) (string, error) {
 	return filepath.Clean(filepath.Join(s.dir, deadDirName, id+spoolSuffix)), nil
 }
 
-// quarantine moves a permanently failing record to spool/dead/ so one
-// poison record stops blocking every later record on each 30 s tick and
-// the shutdown pass. Transient failures stay in place for the next tick.
 func (s *Spool) quarantine(id string) error {
 	dst, err := s.deadPath(id)
 	if err != nil {
