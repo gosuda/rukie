@@ -190,6 +190,13 @@ func writeCollaborators(w io.Writer, c op.ViewCtx, out CollaboratorListOut) erro
 		textField("user", "User", "", false) +
 		textField("permission", "Permission (read, triage, write, maintain, admin)", "", false) +
 		submitField("Grant role"))
+	if len(out.Teams) > 0 {
+		b.WriteString("<h2>Teams</h2>\n<ul>\n")
+		for _, grant := range out.Teams {
+			b.WriteString("<li>" + esc(grant.Team) + " — " + esc(grant.Permission) + "</li>\n")
+		}
+		b.WriteString("</ul>\n")
+	}
 	_, err := io.WriteString(w, pageShell("Collaborators", b.String()))
 	return err
 }

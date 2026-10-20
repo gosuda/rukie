@@ -129,6 +129,7 @@ type TokenSecret struct {
 }
 
 type CreateTokenInput struct {
+	Repos      []int64
 	Name       string
 	IP         string
 	Scopes     op.Scopes
@@ -167,11 +168,24 @@ func (s *Service) CreateToken(ctx context.Context, in CreateTokenInput) (TokenSe
 	if in.PublicOnly {
 		publicOnlyInt = 1
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO scoped_tokens
-		(token_hash, public_prefix, user_id, name, scopes, expires_at, created_at, created_ip, public_only)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		tok.Hash, tok.PublicPrefix, in.UserID, in.Name, strings.Join(ScopeNames(tok.Scopes), " "),
-		tok.ExpiresAt, now, in.IP, publicOnlyInt)
+	scopesRaw := strings.Join(ScopeNames(tok.Scopes), " ")
+	err = s.execTx(ctx, func(tx *sql.Tx) error {
+		if _, ierr := tx.ExecContext(ctx, `INSERT INTO scoped_tokens
+			(token_hash, public_prefix, user_id, name, scopes, expires_at, created_at, created_ip, public_only)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			tok.Hash, tok.PublicPrefix, in.UserID, in.Name, scopesRaw,
+			tok.ExpiresAt, now, in.IP, publicOnlyInt); ierr != nil {
+			return ierr
+		}
+		for _, repoID := range in.Repos {
+			if _, ierr := tx.ExecContext(ctx,
+				`INSERT INTO token_repos (token_hash, repo_id) VALUES (?, ?)`,
+				tok.Hash, repoID); ierr != nil {
+				return ierr
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return TokenSecret{}, err
 	}

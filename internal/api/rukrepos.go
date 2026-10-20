@@ -384,7 +384,7 @@ func (d Deps) resolveRepo(ctx context.Context, r requester, owner, name string, 
 	out.owner = user.Name
 	out.name = row.Name
 	out.request = r
-	out.resolver = access.NewSQLResolver(d.Service.DB(), nil)
+	out.resolver = access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
 	return out, nil
 }
 
@@ -407,7 +407,7 @@ func (d Deps) openDaemonRepo(ctx context.Context, row store.RepoRow) (ruk.Repo, 
 }
 
 func (d Deps) checkRepoAccess(r requester, row store.RepoRow, action string, ref string) error {
-	resolver := access.NewSQLResolver(d.Service.DB(), nil)
+	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
 	resource := access.Resource{Kind: access.KindRepo, RepoID: row.ID, Ref: ref}
 	decision := access.Check(resolver, r.caller, action, resource)
 	if !decision.Allow {

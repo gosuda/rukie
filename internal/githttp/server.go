@@ -89,7 +89,7 @@ func New(cfg Config) (*Server, error) {
 		limiter:     cfg.Limiter,
 		client:      cfg.Client,
 		feed:        cfg.Feed,
-		resolver:    access.NewSQLResolver(cfg.Auth.DB(), nil),
+		resolver:    access.NewSQLResolver(cfg.Auth.DB(), access.NewStoreTeams(cfg.Auth.DB(), nil)),
 		db:          cfg.Auth.DB(),
 		repoRoot:    filepath.Clean(cfg.RepoRoot),
 		socketPath:  cfg.SocketPath,

@@ -45,7 +45,7 @@ func buildCLIServer(t *testing.T) (*op.Server, *auth.Service, string) {
 		t.Fatalf("auth open: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
-	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache()}
+	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	docs := &api.DocStore{}
 	registerCLIAPI(t, table, docs, deps)
@@ -54,6 +54,7 @@ func buildCLIServer(t *testing.T) (*op.Server, *auth.Service, string) {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterOrgsViews(views)
 	var key [32]byte
 	copy(key[:], "k8-cli-test-key-0123456789abcdef")
 	mux := http.NewServeMux()
@@ -88,6 +89,9 @@ func registerCLIAPI(t *testing.T, table *op.Table, docs *api.DocStore, deps api.
 	}
 	if err := api.RegisterAdmin(table, deps); err != nil {
 		t.Fatalf("register admin: %v", err)
+	}
+	if err := api.RegisterOrgs(table, deps); err != nil {
+		t.Fatalf("register orgs: %v", err)
 	}
 }
 

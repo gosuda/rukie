@@ -567,6 +567,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	if regErr := api.RegisterOrgs(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	fillLLMS, regErr := api.RegisterLLMS(table, llmsBase(cfg))
 	if regErr != nil {
 		cleanup()
@@ -581,6 +585,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	api.RegisterReposViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
+	api.RegisterOrgsViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
 	idem.StartSweeper(ctx, time.Minute)

@@ -258,16 +258,13 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 	if err := op.Register(t, op.Op[TokenCreateIn, TokenOut]{
 		Name: "auth.token.create", Kind: op.KindMutation, Method: http.MethodPost, Path: "/settings/tokens",
 		Scope: op.ScopeRepoRead, Summary: "Mint a scoped agent token",
-		Description: "Session-only with fresh auth. The secret is shown once. Repo restriction is empty until F4.",
-		Problems:    []op.Code{op.CodeUnauthorized, op.CodeValidation},
+		Description: "Session-only with fresh auth. The secret is shown once. A repo selector narrows the token to listed repositories.",
+		Problems:    []op.Code{op.CodeUnauthorized, op.CodeValidation, op.CodeNotFound},
 		Location:    func(out TokenOut) string { return "/settings/tokens?reveal=" + out.Prefix },
 		Handler: func(ctx context.Context, p op.Principal, in TokenCreateIn) (TokenOut, error) {
 			userID, err := auth.RequireFresh(ctx, deps.Service, p, deps.now())
 			if err != nil {
 				return TokenOut{}, mapAuthError(err)
-			}
-			if len(in.Body.Repos) > 0 {
-				return TokenOut{}, op.Errorf(op.CodeValidation, "repo restriction is not available yet")
 			}
 			scopes, err := auth.ParseScopeSet(strings.Fields(in.Body.Scopes))
 			if err != nil {
@@ -280,8 +277,12 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 					return TokenOut{}, op.Errorf(op.CodeValidation, "unparseable ttl")
 				}
 			}
+			repos, verr := tokenRepoSelector(ctx, deps, p, in.Body.Repos)
+			if verr != nil {
+				return TokenOut{}, verr
+			}
 			minted, err := deps.Service.CreateToken(ctx, auth.CreateTokenInput{
-				UserID: userID, Name: in.Body.Name, Scopes: scopes, TTL: ttl,
+				UserID: userID, Name: in.Body.Name, Scopes: scopes, TTL: ttl, Repos: repos,
 			})
 			if err != nil {
 				return TokenOut{}, mapAuthError(err)

@@ -63,6 +63,9 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	if err := api.RegisterRefs(table, deps); err != nil {
 		return nil, err
 	}
+	if err := api.RegisterOrgs(table, deps); err != nil {
+		return nil, err
+	}
 	fillLLMS, err := api.RegisterLLMS(table, "")
 	if err != nil {
 		return nil, err
@@ -76,6 +79,7 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	api.RegisterReposViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
+	api.RegisterOrgsViews(views)
 	api.RegisterLLMSViews(views)
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{

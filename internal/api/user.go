@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -14,8 +15,15 @@ type UserGetIn struct {
 }
 
 type UserGetOut struct {
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
+	DisplayName string `json:"display_name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Website     string `json:"website,omitempty"`
+	Visibility  string `json:"visibility,omitempty"`
+	Name        string `json:"name"`
+	FullName    string `json:"full_name"`
+	Kind        string `json:"kind,omitempty"`
+	Role        string `json:"role,omitempty"`
+	UpdatedAt   int64  `json:"updated_at,omitzero"`
 }
 
 type SelfUpdateBody struct {
@@ -81,14 +89,20 @@ func RegisterUser(t *op.Table, deps Deps) error {
 		Description: "Public directory entry. Unknown or inactive users return 404.",
 		Problems:    []op.Code{op.CodeNotFound},
 		ETag: func(out UserGetOut) string {
+			if out.Kind == "org" {
+				return fmt.Sprintf("\"org-%s-%d\"", out.Name, out.UpdatedAt)
+			}
 			return "\"user-" + out.Name + "\""
 		},
-		Handler: func(ctx context.Context, _ op.Principal, in UserGetIn) (UserGetOut, error) {
+		Handler: func(ctx context.Context, p op.Principal, in UserGetIn) (UserGetOut, error) {
 			u, err := deps.Service.GetUser(ctx, in.Owner)
-			if err != nil || !u.IsActive {
-				return UserGetOut{}, op.Errorf(op.CodeNotFound, "unknown user")
+			if err == nil {
+				if !u.IsActive {
+					return UserGetOut{}, op.Errorf(op.CodeNotFound, "unknown user")
+				}
+				return UserGetOut{Name: u.Name, FullName: u.FullName}, nil
 			}
-			return UserGetOut{Name: u.Name, FullName: u.FullName}, nil
+			return orgProfileForOwner(ctx, deps, p, in.Owner)
 		},
 	}); err != nil {
 		return err
@@ -157,7 +171,14 @@ func RegisterUserViews(v *op.Views) {
 		_, err := io.WriteString(w, pageShell("Profile settings", body))
 		return err
 	})
-	op.PageView(v, "user.get", func(w io.Writer, _ op.ViewCtx, out UserGetOut) error {
+	op.PageView(v, "user.get", func(w io.Writer, c op.ViewCtx, out UserGetOut) error {
+		if out.Kind == "org" {
+			return writeOrgProfile(w, c, OrgGetOut{Org: OrgJSON{
+				Name: out.Name, DisplayName: out.DisplayName, Description: out.Description,
+				Website: out.Website, Visibility: out.Visibility, UpdatedAt: out.UpdatedAt,
+				Role: out.Role,
+			}})
+		}
 		body := heading(out.Name) + para(out.FullName)
 		_, err := io.WriteString(w, pageShell(out.Name, body))
 		return err

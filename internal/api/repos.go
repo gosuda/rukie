@@ -222,9 +222,15 @@ type CollaboratorItem struct {
 	Via        string `json:"via"`
 }
 
+type TeamGrantJSON struct {
+	Team       string `json:"team"`
+	Permission string `json:"permission"`
+}
+
 type CollaboratorListOut struct {
 	Next          string             `json:"-"`
 	Collaborators []CollaboratorItem `json:"collaborators"`
+	Teams         []TeamGrantJSON    `json:"teams,omitempty"`
 }
 
 type CollaboratorAddBody struct {
@@ -1138,6 +1144,13 @@ func listCollaboratorsHandler(d Deps) func(context.Context, op.Principal, Collab
 		if derr := d.checkRepoAccess(rq, rc.row, "repo.view", ""); derr != nil {
 			return CollaboratorListOut{}, derr
 		}
+		if rc.row.OrgID != 0 {
+			teams, terr := d.teamGrantsForRepo(ctx, rc.row)
+			if terr != nil {
+				return CollaboratorListOut{}, terr
+			}
+			return CollaboratorListOut{Collaborators: []CollaboratorItem{}, Teams: teams}, nil
+		}
 		limit := clampLimit(in.Limit, 30, 100)
 		var grants []store.GrantRow
 		rderr := st.Read(ctx, func(tx *store.ReadTx) error {
@@ -1202,6 +1215,9 @@ func addCollaboratorHandler(d Deps) func(context.Context, op.Principal, Collabor
 		}
 		if rc.row.OwnerUserID.Valid && rc.row.OwnerUserID.Int64 == target.ID {
 			return CollaboratorAddOut{}, op.Errorf(op.CodeConflict, "the owner already holds every permission")
+		}
+		if rc.row.OrgID != 0 {
+			return CollaboratorAddOut{}, op.Errorf(op.CodeConflict, "organization repositories grant through teams")
 		}
 		werr := st.Write(ctx, func(tx *store.WriteTx) error {
 			return tx.PutGrant(rc.row.ID, target.ID, role)
