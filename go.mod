@@ -5,6 +5,7 @@ go 1.27.0
 toolchain go1.27.2
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/a-h/templ v0.3.1070
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/danielgtaylor/huma/v2 v2.39.1
