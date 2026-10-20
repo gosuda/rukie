@@ -40,6 +40,8 @@ type Child struct {
 // daemon logs; pass buffers to keep failure diagnostics.
 func StartServe(bin, configPath string, env []string, stdout, stderr io.Writer) (*Child, error) {
 	cmd := exec.Command(bin, "serve", "--config", configPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{}
+	setDeathSig(cmd.SysProcAttr)
 	cmd.Env = env
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

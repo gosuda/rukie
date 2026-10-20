@@ -26,16 +26,14 @@ type Step struct {
 // outbox, checkpoint the store, then stop the daemon child.
 var DrainOrder = []string{"ssh", "http", "followers", "queue", "spool", "scheduler", "webhooks", "store", "child"}
 
-// Drain runs steps in order under ctx. A cancelled context stops the
-// sequence after the running step; step failures never skip later
-// steps. It returns the joined step errors, if any.
+// Drain runs every step in order, even when ctx already expired or an
+// earlier step failed; it returns the joined step errors, if any. Steps
+// observe ctx themselves and return promptly on expiry, so a blown
+// budget is reported as step errors instead of silently skipping the
+// tail: the child step always runs and the child is always reaped.
 func Drain(ctx context.Context, steps []Step) error {
 	var errs []error
 	for _, step := range steps {
-		if ctx.Err() != nil {
-			return errors.Join(append(errs,
-				fmt.Errorf("supervisor: drain stopped before %q: %w", step.Name, ctx.Err()))...)
-		}
 		if err := step.Run(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("supervisor: drain %q: %w", step.Name, err))
 		}

@@ -201,21 +201,11 @@ func runServe(argv []string) int {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
-	halveCh := make(chan struct{})
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	halveCtx, cancelHalve := context.WithCancel(context.Background())
-	defer cancelHalve()
-	go func() {
-		<-sigCh
-		stop()
-		select {
-		case <-sigCh:
-			close(halveCh)
-			cancelHalve()
-		case <-ctx.Done():
-		}
-	}()
+	halves := &halveRegistry{}
+	serveDone := make(chan struct{})
+	go watchShutdownSignals(sigCh, stop, halves, serveDone)
 	var supOnce sync.Once
 	var supFinal error
 	waitSupervisorOnce := func() error {
@@ -224,8 +214,6 @@ func runServe(argv []string) int {
 			defer timer.Stop()
 			select {
 			case supFinal = <-supDone:
-			case <-halveCtx.Done():
-				supFinal = fmt.Errorf("serve: supervisor wait halved: %w", halveCtx.Err())
 			case <-timer.C:
 				supFinal = fmt.Errorf("serve: supervisor did not exit within 30s")
 			}
@@ -268,9 +256,11 @@ func runServe(argv []string) int {
 			go func() { cleanup(); close(done) }()
 			select {
 			case <-done:
+				return nil
 			case <-ctx.Done():
+				logger.Error("store drain overrun", slog.Any("err", context.Cause(ctx)))
+				return ctx.Err()
 			}
-			return nil
 		},
 		"spool": func(ctx context.Context) error {
 			stopSpool()
@@ -292,6 +282,14 @@ func runServe(argv []string) int {
 			case err := <-done:
 				return err
 			case <-ctx.Done():
+				// The budget expired, but the child must still be
+				// reaped: keep waiting bounded by the supervisor
+				// backstop inside waitSupervisorOnce, then report
+				// the overrun alongside any stop failure.
+				logger.Error("child stop overrun", slog.Any("err", context.Cause(ctx)))
+				if err := <-done; err != nil {
+					return errors.Join(ctx.Err(), err)
+				}
 				return ctx.Err()
 			}
 		},
@@ -347,15 +345,102 @@ func runServe(argv []string) int {
 			}
 		}
 	}()
-	code := serveHTTP(ctx, logger, app.handler, cfg.HTTP, halveCh, ownedDrainRunners, supervisorDeathStopsServing)
+	code := serveHTTP(ctx, logger, app.handler, cfg.HTTP, halves, ownedDrainRunners, supervisorDeathStopsServing)
+	close(serveDone)
 	supStop()
-	finalErr := waitSupervisorOnce()
-	shutdownHalved := halveCtx.Err() != nil
-	if finalErr != nil && !shutdownHalved {
+	if finalErr := waitSupervisorOnce(); finalErr != nil {
 		logger.Error("supervisor exited", slog.Any("err", finalErr))
 		return 1
 	}
 	return code
+}
+
+// watchShutdownSignals stops request serving on the first SIGINT/SIGTERM
+// and halves the remaining drain deadlines once on the next signal, then
+// keeps waiting until serve returns. A second signal never aborts the
+// drain or the supervisor wait: every step still runs, and the child
+// still gets its SIGTERM-to-SIGKILL stop bounded by StopGrace.
+func watchShutdownSignals(sigCh <-chan os.Signal, stop context.CancelFunc, halves *halveRegistry, serveDone <-chan struct{}) {
+	<-sigCh
+	stop()
+	for {
+		select {
+		case <-sigCh:
+			halves.halveAll()
+		case <-serveDone:
+			return
+		}
+	}
+}
+
+// halveRegistry collects the live drain deadlines so a second signal can
+// shorten each remaining one exactly once, per ops-design §3.3 step 8.
+// A deadline registered after the halve still halves once, so a signal
+// that lands between stop and drain start is not lost.
+type halveRegistry struct {
+	mu     sync.Mutex
+	fns    []func()
+	halved bool
+}
+
+func (r *halveRegistry) add(fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.halved {
+		fn()
+		return
+	}
+	r.fns = append(r.fns, fn)
+}
+
+func (r *halveRegistry) halveAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.halved {
+		return
+	}
+	r.halved = true
+	for _, fn := range r.fns {
+		fn()
+	}
+}
+
+// halveDeadline ends its context at a deadline that halve() moves to
+// now plus half the remaining time, once. Durations come from the
+// monotonic clock via time.Now and time.Until.
+type halveDeadline struct {
+	mu       sync.Mutex
+	deadline time.Time
+	timer    *time.Timer
+	cancel   context.CancelCauseFunc
+	halved   bool
+}
+
+func newHalveDeadline(parent context.Context, timeout time.Duration, cause error) (context.Context, *halveDeadline) {
+	ctx, cancel := context.WithCancelCause(parent)
+	hd := &halveDeadline{deadline: time.Now().Add(timeout), cancel: cancel}
+	hd.timer = time.AfterFunc(timeout, func() { cancel(cause) })
+	return ctx, hd
+}
+
+func (hd *halveDeadline) halve() {
+	hd.mu.Lock()
+	defer hd.mu.Unlock()
+	if hd.halved {
+		return
+	}
+	hd.halved = true
+	remaining := time.Until(hd.deadline)
+	if remaining < 0 {
+		remaining = 0
+	}
+	half := remaining / 2
+	hd.deadline = time.Now().Add(half)
+	hd.timer.Reset(half)
+}
+
+func (hd *halveDeadline) stop() {
+	hd.timer.Stop()
 }
 
 func startSupervisor(cfg config.Config) (*supervisor.Supervisor, error) {
@@ -709,7 +794,7 @@ func drainWithoutServingSocket(logger *slog.Logger, steps []supervisor.Step) {
 
 const httpDrainBudgetFallback = 30 * time.Second
 
-func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, httpCfg config.HTTPConfig, halveCh <-chan struct{}, ownedDrainRunners map[string]func(context.Context) error, supervisorDeathStopsServing <-chan error) int {
+func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, httpCfg config.HTTPConfig, halves *halveRegistry, ownedDrainRunners map[string]func(context.Context) error, supervisorDeathStopsServing <-chan error) int {
 	httpServer := &http.Server{
 		ReadTimeout:       time.Duration(httpCfg.ReadTimeoutMs) * time.Millisecond,
 		ReadHeaderTimeout: time.Duration(httpCfg.ReadHeaderTimeoutMs) * time.Millisecond,
@@ -724,15 +809,9 @@ func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, h
 		if budget <= 0 {
 			budget = httpDrainBudgetFallback
 		}
-		shutCtx, cancel := context.WithTimeoutCause(ctx, budget, fmt.Errorf("http drain timed out"))
-		defer cancel()
-		go func() {
-			select {
-			case <-halveCh:
-				cancel()
-			case <-shutCtx.Done():
-			}
-		}()
+		shutCtx, hd := newHalveDeadline(ctx, budget, fmt.Errorf("http drain timed out"))
+		defer hd.stop()
+		halves.add(hd.halve)
 		return httpServer.Shutdown(shutCtx)
 	}
 	steps, derr := supervisor.OrderedDrain(runners)
@@ -754,15 +833,9 @@ func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, h
 		}()
 	}
 	drain := func() {
-		drainCtx, cancel := context.WithTimeoutCause(context.Background(), supervisor.DefaultDrainTimeout, fmt.Errorf("drain timed out"))
-		defer cancel()
-		go func() {
-			select {
-			case <-halveCh:
-				cancel()
-			case <-drainCtx.Done():
-			}
-		}()
+		drainCtx, hd := newHalveDeadline(context.Background(), supervisor.DefaultDrainTimeout, fmt.Errorf("drain timed out"))
+		defer hd.stop()
+		halves.add(hd.halve)
 		if err := supervisor.Drain(drainCtx, steps); err != nil {
 			logger.Error("drain", slog.Any("err", err))
 		}

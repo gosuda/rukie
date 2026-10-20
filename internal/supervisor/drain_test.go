@@ -57,17 +57,18 @@ func TestGracefulDrainRunsAllStepsDespiteFailure(t *testing.T) {
 	}
 }
 
-func TestGracefulDrainStopsOnCancel(t *testing.T) {
+func TestGracefulDrainRunsEveryStepDespiteCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
 	seq, err := OrderedDrain(map[string]func(ctx context.Context) error{
 		"ssh": func(context.Context) error { calls++; return nil },
-		"http": func(_ context.Context) error {
+		"http": func(ctx context.Context) error {
 			calls++
 			cancel()
-			return nil
+			return ctx.Err()
 		},
-		"store": func(context.Context) error { calls++; return nil },
+		"store": func(ctx context.Context) error { calls++; return ctx.Err() },
+		"child": func(context.Context) error { calls++; return nil },
 	})
 	if err != nil {
 		t.Fatalf("OrderedDrain: %v", err)
@@ -75,8 +76,8 @@ func TestGracefulDrainStopsOnCancel(t *testing.T) {
 	if err := Drain(ctx, seq); err == nil {
 		t.Fatal("Drain under a cancelled context returned nil")
 	}
-	if calls != 2 {
-		t.Fatalf("drain ran %d steps after cancel, want 2 (ssh, http)", calls)
+	if calls != 4 {
+		t.Fatalf("drain ran %d steps after cancel, want 4: expiry reports errors but never skips the tail", calls)
 	}
 }
 
