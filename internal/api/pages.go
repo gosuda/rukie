@@ -11,13 +11,27 @@ import (
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/op"
+	"github.com/gosuda/rukie/internal/queue"
+	"github.com/gosuda/rukie/internal/ruk"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 type Deps struct {
-	Service *auth.Service
-	Limiter *access.Limiter
-	Reveals *auth.RevealCache
-	Clock   func() time.Time
+	Service       *auth.Service
+	Limiter       *access.Limiter
+	Reveals       *auth.RevealCache
+	Store         *store.Store
+	Ruk           *ruk.Client
+	Queue         *queue.Queue
+	OnRepoCreated func(repoID int64)
+	OnRepoDeleted func(repoID int64)
+	Clock         func() time.Time
+	RepoRoot      string
+	RukBin        string
+}
+
+func (d Deps) storeOf() *store.Store {
+	return d.Store
 }
 
 func (d Deps) now() time.Time {
