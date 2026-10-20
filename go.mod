@@ -7,6 +7,7 @@ toolchain go1.27.2
 require (
 	github.com/a-h/templ v0.3.1070
 	github.com/alecthomas/chroma/v2 v2.27.0
+	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/sourcegraph/go-diff v0.9.0
 	github.com/yuin/goldmark v1.8.6
 	golang.org/x/net v0.60.0
