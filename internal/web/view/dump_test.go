@@ -19,7 +19,6 @@ func TestDumpRenderedPages(t *testing.T) {
 	if dir == "" {
 		t.Fatal("RUKIE_RENDER_DIR is empty")
 	}
-	//nolint:gosec // G703: dir is the operator-controlled RUKIE_RENDER_DIR test output.
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("MkdirAll = %v", err)
 	}
@@ -34,7 +33,6 @@ func TestDumpRenderedPages(t *testing.T) {
 		if !dumpName.MatchString(name) {
 			t.Fatalf("unsafe dump name %q", name)
 		}
-		//nolint:gosec // G703: name is restricted to [A-Za-z0-9_.-] above.
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(buf.String()), 0o600); err != nil {
 			t.Fatalf("WriteFile %s = %v", name, err)
 		}

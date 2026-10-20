@@ -1327,7 +1327,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request, st *reqState, st
 		}
 	}
 	w.WriteHeader(status)
-	_, _ = w.Write(body) //nolint:gosec // G705 is a false positive here: HTML renders only through html/template auto-escaping; JSON through an HTML-escaping encoder; Markdown is scalar-escaped and served with nosniff.
+	_, _ = w.Write(body)
 }
 
 func matchETag(header, etag string) bool {

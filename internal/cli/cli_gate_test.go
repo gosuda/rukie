@@ -30,7 +30,7 @@ func TestCLISessionFile(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("session mode %o, want 600", info.Mode().Perm())
 	}
-	raw, err := os.ReadFile(filepath.Clean(sessionPath))
+	raw, err := os.ReadFile(sessionPath)
 	if err != nil {
 		t.Fatalf("read session: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestCLISessionFile(t *testing.T) {
 		t.Fatalf("sessions = %v", listed)
 	}
 
-	if err := os.Chmod(sessionPath, 0o644); err != nil { //nolint:gosec // G302 is the point here: login must repair a group-readable session file
+	if err := os.Chmod(sessionPath, 0o644); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 	relogin := newIO()
