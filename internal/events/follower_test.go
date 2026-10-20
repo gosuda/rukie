@@ -253,3 +253,76 @@ func TestFollowerPollOnceExpiredResnapshots(t *testing.T) {
 		t.Fatalf("stable resnapshot emitted %d rows, want %d", n, before)
 	}
 }
+
+func TestFollowerIngestSkipsAlreadyAppliedTip(t *testing.T) {
+	st := openFeedStore(t)
+	f := OpenFollowerWith(st, 11, nil, nil, feedTime)
+	ctx := feedCtx(t)
+	applied := strings.Repeat("b", 40)
+	err := st.Write(ctx, func(tx *store.WriteTx) error {
+		return tx.PutRefTip(11, "refs/heads/main", applied, feedTime())
+	})
+	if err != nil {
+		t.Fatalf("seed tip: %v", err)
+	}
+	// The tip is already at b but the cursor is behind: a resnapshot or
+	// a multi-page listing covered this ref past the stored cursor.
+	event := tailEvent(5, "refs/heads/main", strings.Repeat("a", 40), applied)
+	if err := f.Ingest(ctx, []ruk.RefEvent{event}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if n := countOutboxKind(t, st, kindRefUpdated); n != 0 {
+		t.Fatalf("ref.updated rows = %d, want 0: the transition is already applied", n)
+	}
+	cursor, err := f.Cursor(ctx)
+	if err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	if cursor != 5 {
+		t.Fatalf("cursor = %d, want 5: the covered seq still advances", cursor)
+	}
+	var tips map[string]string
+	rerr := st.Read(ctx, func(tx *store.ReadTx) error {
+		got, gerr := tx.RefTips(11)
+		if gerr != nil {
+			return gerr
+		}
+		tips = got
+		return nil
+	})
+	if rerr != nil {
+		t.Fatalf("tips: %v", rerr)
+	}
+	if tips["refs/heads/main"] != applied {
+		t.Fatalf("tip = %q, want the stored %q", tips["refs/heads/main"], applied)
+	}
+}
+
+func TestListAllCarriesMinimumAsOf(t *testing.T) {
+	ctx := feedCtx(t)
+	list := func(_ context.Context, prefix, after string) (ruk.RefsListReply, error) {
+		if after == "" {
+			reply := listReply(10, map[string]string{"refs/heads/main": strings.Repeat("a", 40)})
+			next := "cursor-1"
+			reply.Refs.NextAfter = &next
+			return reply, nil
+		}
+		if after != "cursor-1" {
+			t.Fatalf("second page after = %q, want cursor-1", after)
+		}
+		// The second page observed a newer state than the first page's
+		// snapshot. The resnapshot must advance only to the minimum,
+		// and Ingest drops the overlap by tip equality.
+		return listReply(12, map[string]string{"refs/heads/main": strings.Repeat("b", 40)}), nil
+	}
+	items, asOf, err := ListAll(ctx, list, "")
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if asOf != 10 {
+		t.Fatalf("asOf = %d, want the minimum 10, not the newer page", asOf)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want both pages", len(items))
+	}
+}

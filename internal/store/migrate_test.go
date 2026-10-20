@@ -3,12 +3,44 @@ package store
 import (
 	"errors"
 	"testing"
+	"testing/fstest"
 )
 
 func TestMigrationsContiguous(t *testing.T) {
-	gap := fsWith(t, map[string]string{"migrations/0003_gap.sql": "CREATE TABLE gap(x INTEGER) STRICT;"})
-	if _, err := loadMigrations(gap); err == nil {
-		t.Fatal("loadMigrations accepted a gap at version 2")
+	// Migration numbers are assigned centrally so parallel lanes can
+	// land out of order: gaps are allowed, order and validity are not.
+	gap := fsWith(t, map[string]string{
+		"migrations/0001_init.sql": "CREATE TABLE init(x INTEGER) STRICT;",
+		"migrations/0003_gap.sql": "CREATE TABLE gap(x INTEGER) STRICT;",
+	})
+	if ms, err := loadMigrations(gap); err != nil {
+		t.Fatalf("loadMigrations rejected a reserved gap: %v", err)
+	} else if len(ms) != 2 || ms[1].version != 3 {
+		t.Fatalf("gap load = %+v, want versions 1 and 3", ms)
+	}
+	dup := fsWith(t, map[string]string{
+		"migrations/0001_init.sql": "CREATE TABLE init(x INTEGER) STRICT;",
+		"migrations/0002_a.sql":   "CREATE TABLE a(x INTEGER) STRICT;",
+		"migrations/0002_b.sql":   "CREATE TABLE b(x INTEGER) STRICT;",
+	})
+	if _, err := loadMigrations(dup); err == nil {
+		t.Fatal("loadMigrations accepted duplicate versions")
+	}
+	nostart := fstest.MapFS{
+		"migrations/0002_nostart.sql": &fstest.MapFile{Data: []byte("CREATE TABLE n(x INTEGER) STRICT;")},
+	}
+	if _, err := loadMigrations(nostart); err == nil {
+		t.Fatal("loadMigrations accepted a set that does not start at 1")
+	}
+	// A duplicate version hides half a schema change: the second file
+	// loads silently and applyMigrations would skip it as applied.
+	dupCheck := fstest.MapFS{
+		"migrations/0001_init.sql": &fstest.MapFile{Data: []byte("CREATE TABLE init(x INTEGER) STRICT;")},
+		"migrations/0002_a.sql":   &fstest.MapFile{Data: []byte("CREATE TABLE a(x INTEGER) STRICT;")},
+		"migrations/0002_b.sql":   &fstest.MapFile{Data: []byte("CREATE TABLE b(x INTEGER) STRICT;")},
+	}
+	if _, err := loadMigrations(dupCheck); err == nil {
+		t.Fatal("loadMigrations accepted duplicate versions across files")
 	}
 	if _, err := loadMigrations(embeddedMigrations); err != nil {
 		t.Fatalf("embedded migrations rejected: %v", err)

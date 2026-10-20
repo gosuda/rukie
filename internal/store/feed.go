@@ -31,11 +31,6 @@ ON CONFLICT (repo_id, name) DO UPDATE SET target = excluded.target, updated_at =
 	sqlTipsClear = `DELETE FROM ref_tips WHERE repo_id = ?1`
 
 	sqlTipsList = `SELECT name, target FROM ref_tips WHERE repo_id = ?1`
-
-	sqlSeenInsert = `INSERT INTO follower_seen (repo_id, seq, name, new, seen_at) VALUES (?1, ?2, ?3, ?4, ?5)
-ON CONFLICT (repo_id, seq) DO NOTHING`
-
-	sqlSeenSweep = `DELETE FROM follower_seen WHERE repo_id = ?1 AND seq <= ?2`
 )
 
 type PendingPush struct {
@@ -209,48 +204,4 @@ func (tx *WriteTx) WriteTips(repoID int64) (map[string]string, error) {
 		return nil, err
 	}
 	return queryTips(tx.ctx, inner, repoID)
-}
-
-func (tx *WriteTx) InsertSeen(repoID int64, seq uint64, name, news string, at time.Time) (bool, error) {
-	if repoID <= 0 {
-		return false, fmt.Errorf("InsertSeen: %w: repo id must be positive", ErrInvalid)
-	}
-	if seq > 9223372036854775807 {
-		return false, fmt.Errorf("InsertSeen: %w: seq overflows int64", ErrInvalid)
-	}
-	if len(name) < 1 || len(name) > feedMaxRefName {
-		return false, fmt.Errorf("InsertSeen: %w: name must be 1 to 512 bytes", ErrInvalid)
-	}
-	if len(news) > feedMaxTargetLen {
-		return false, fmt.Errorf("InsertSeen: %w: new must be at most 256 bytes", ErrInvalid)
-	}
-	if msOf(at) <= 0 {
-		return false, fmt.Errorf("InsertSeen: %w: time must be after the Unix epoch", ErrInvalid)
-	}
-	inner, err := tx.live()
-	if err != nil {
-		return false, err
-	}
-	moved, err := execAffected(tx.ctx, inner, sqlSeenInsert, repoID, int64(seq), name, news, msOf(at))
-	if err != nil {
-		return false, fmt.Errorf("InsertSeen: %w", mapErr(err))
-	}
-	return moved == 1, nil
-}
-
-func (tx *WriteTx) SweepSeen(repoID int64, through uint64) error {
-	if repoID <= 0 {
-		return fmt.Errorf("SweepSeen: %w: repo id must be positive", ErrInvalid)
-	}
-	if through > 9223372036854775807 {
-		return fmt.Errorf("SweepSeen: %w: seq overflows int64", ErrInvalid)
-	}
-	inner, err := tx.live()
-	if err != nil {
-		return err
-	}
-	if _, err = execAffected(tx.ctx, inner, sqlSeenSweep, repoID, int64(through)); err != nil {
-		return fmt.Errorf("SweepSeen: %w", mapErr(err))
-	}
-	return nil
 }

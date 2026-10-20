@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ const SpoolDrainInterval = 30 * time.Second
 const (
 	spoolDirName = "spool"
 	spoolSuffix  = ".json"
+	deadDirName  = "dead"
 )
 
 type LandedRef struct {
@@ -179,6 +181,34 @@ func (s *Spool) Pending() ([]string, error) {
 	return out, nil
 }
 
+func (s *Spool) deadPath(id string) (string, error) {
+	if err := checkSpoolID(id); err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(s.dir, deadDirName, id+spoolSuffix)), nil
+}
+
+// quarantine moves a permanently failing record to spool/dead/ so one
+// poison record stops blocking every later record on each 30 s tick and
+// the shutdown pass. Transient failures stay in place for the next tick.
+func (s *Spool) quarantine(id string) error {
+	dst, err := s.deadPath(id)
+	if err != nil {
+		return fmt.Errorf("quarantine: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return fmt.Errorf("quarantine: %w", err)
+	}
+	src, err := s.path(id)
+	if err != nil {
+		return fmt.Errorf("quarantine: %w", err)
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return fmt.Errorf("quarantine: %w", err)
+	}
+	return errors.Join(syncDir(s.dir), syncDir(filepath.Dir(dst)))
+}
+
 func (s *Spool) Replay(ctx context.Context, st *store.Store, attempt func(*store.WriteTx, PushRecord) error) error {
 	if attempt == nil {
 		return fmt.Errorf("Replay: attempt must not be nil")
@@ -187,25 +217,36 @@ func (s *Spool) Replay(ctx context.Context, st *store.Store, attempt func(*store
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return errors.Join(append(errs, ctx.Err())...)
 		}
 		rec, lerr := s.Load(id)
 		if lerr != nil {
-			return lerr
+			errs = append(errs, fmt.Errorf("Replay %s: %w", id, lerr))
+			if qerr := s.quarantine(id); qerr != nil {
+				errs = append(errs, qerr)
+			}
+			continue
 		}
 		werr := st.Write(ctx, func(tx *store.WriteTx) error {
 			return attempt(tx, rec)
 		})
 		if werr != nil {
-			return werr
+			errs = append(errs, fmt.Errorf("Replay %s: %w", id, werr))
+			if errors.Is(werr, ErrInvocationMismatch) {
+				if qerr := s.quarantine(id); qerr != nil {
+					errs = append(errs, qerr)
+				}
+			}
+			continue
 		}
 		if rerr := s.Remove(id); rerr != nil {
-			return rerr
+			errs = append(errs, fmt.Errorf("Replay %s: %w", id, rerr))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func DrainLoop(ctx context.Context, sp *Spool, st *store.Store, attempt func(*store.WriteTx, PushRecord) error) error {

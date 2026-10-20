@@ -55,7 +55,7 @@ func outboxSources(t *testing.T, st *store.Store) []string {
 func TestReconcilerSynthesizesMissedUpdate(t *testing.T) {
 	st := openFeedStore(t)
 	seedTips(t, st, 41, map[string]string{"refs/heads/main": strings.Repeat("a", 40)})
-	setCursor(t, st, 41, 10)
+	setCursor(t, st, 41, 9)
 	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
 		return listReply(9, map[string]string{"refs/heads/main": strings.Repeat("b", 40)}), nil
 	}
@@ -180,5 +180,46 @@ func TestReconcilerRunProcessesOnce(t *testing.T) {
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("run err = %v, want canceled", err)
+	}
+}
+
+func refTipOf(t *testing.T, st *store.Store, repo int64, name string) string {
+	t.Helper()
+	var tips map[string]string
+	err := st.Read(feedCtx(t), func(tx *store.ReadTx) error {
+		got, rerr := tx.RefTips(repo)
+		if rerr != nil {
+			return rerr
+		}
+		tips = got
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("tips: %v", err)
+	}
+	return tips[name]
+}
+
+func TestReconcilerSkipsWhenFollowerIsAhead(t *testing.T) {
+	st := openFeedStore(t)
+	newer := strings.Repeat("c", 40)
+	seedTips(t, st, 41, map[string]string{"refs/heads/main": newer})
+	setCursor(t, st, 41, 11)
+	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
+		return listReply(10, map[string]string{"refs/heads/main": strings.Repeat("b", 40)}), nil
+	}
+	r := OpenReconciler(st, 41, list, feedTime)
+	n, err := r.ReconcileRepo(feedCtx(t))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("synthesized = %d against a stale listing, want 0", n)
+	}
+	if kinds := outboxSources(t, st); len(kinds) != 0 {
+		t.Fatalf("outbox = %v, want empty: no backwards ref.updated", kinds)
+	}
+	if got := refTipOf(t, st, 41, "refs/heads/main"); got != newer {
+		t.Fatalf("tip = %s, want the follower's newer %s", got, newer)
 	}
 }

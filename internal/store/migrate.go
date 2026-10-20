@@ -41,14 +41,19 @@ func loadMigrations(fsys fs.FS) ([]migration, error) {
 		return nil, fmt.Errorf("loadMigrations: %w", err)
 	}
 	out := make([]migration, 0, len(entries))
+	var prev int64
 	for i, e := range entries {
 		m, perr := parseMigration(fsys, e.Name())
 		if perr != nil {
 			return nil, perr
 		}
-		if m.version != int64(i+1) {
-			return nil, fmt.Errorf("loadMigrations: %s: versions must be contiguous from 1", e.Name())
+		if m.version <= prev {
+			return nil, fmt.Errorf("loadMigrations: %s: versions must be strictly increasing", e.Name())
 		}
+		if i == 0 && m.version != 1 {
+			return nil, fmt.Errorf("loadMigrations: %s: versions must start at 1", e.Name())
+		}
+		prev = m.version
 		out = append(out, m)
 	}
 	return out, nil
@@ -129,7 +134,12 @@ func appliedMigrations(ctx context.Context, conn *sql.Conn) (map[int64]string, e
 }
 
 func checkApplied(applied map[int64]string, ms []migration) error {
-	newest := int64(len(ms))
+	var newest int64
+	for _, m := range ms {
+		if m.version > newest {
+			newest = m.version
+		}
+	}
 	for version := range applied {
 		if version > newest {
 			return fmt.Errorf("checkApplied: version %d: %w", version, ErrSchemaTooNew)

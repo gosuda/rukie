@@ -260,3 +260,55 @@ func TestSpoolSurvivesDirectoryRecreation(t *testing.T) {
 		t.Fatalf("remove dir: %v", err)
 	}
 }
+
+func TestSpoolReplayQuarantinesPoisonRecord(t *testing.T) {
+	sp := openFeedSpool(t)
+	st := openFeedStore(t)
+	// Seed a pending push bound to another repo so EnqueuePush reports a
+	// permanent invocation mismatch for the poison record.
+	seed := PushRecord{InvocationID: "poison-1", RepoID: 99, ActorID: 7, AttemptedAt: feedTime().UnixMilli()}
+	if err := sp.Store(seed); err != nil {
+		t.Fatalf("store seed: %v", err)
+	}
+	if err := sp.Store(PushRecord{InvocationID: "good-1", RepoID: 2, ActorID: 3, AttemptedAt: feedTime().UnixMilli()}); err != nil {
+		t.Fatalf("store good: %v", err)
+	}
+	err := st.Write(feedCtx(t), func(tx *store.WriteTx) error {
+		_, perr := tx.PutPendingPush(store.PendingPush{
+			Landed:       `[]`,
+			InvocationID: "poison-1",
+			RepoID:       100,
+			ActorID:      7,
+			AttemptedAt:  feedTime().UnixMilli(),
+		})
+		return perr
+	})
+	if err != nil {
+		t.Fatalf("seed pending push: %v", err)
+	}
+	var applied []string
+	rerr := sp.Replay(feedCtx(t), st, func(tx *store.WriteTx, got PushRecord) error {
+		applied = append(applied, got.InvocationID)
+		return EnqueuePush(tx, got)
+	})
+	if rerr == nil {
+		t.Fatal("replay with a poison record succeeded, want the mismatch reported")
+	}
+	if len(applied) != 2 {
+		t.Fatalf("applied = %v, want both records attempted: one poison record must not block later ones", applied)
+	}
+	pending, err := sp.Pending()
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %v, want empty: poison quarantined, good applied", pending)
+	}
+	again := sp.Replay(feedCtx(t), st, func(_ *store.WriteTx, got PushRecord) error {
+		t.Fatalf("replayed quarantined record %s", got.InvocationID)
+		return nil
+	})
+	if again != nil {
+		t.Fatalf("second replay: %v, want nil: dead records never reprocess", again)
+	}
+}

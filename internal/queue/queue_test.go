@@ -184,14 +184,22 @@ func TestRenewOwnership(t *testing.T) {
 	if _, err := q.Enqueue(ctx, EnqueueSpec{ID: "a", Kind: KindLand, RepoID: 1, Payload: `{}`}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if _, err := q.Claim(ctx, "w1", time.Minute, 1); err != nil {
+	claimed, err := q.Claim(ctx, "w1", time.Minute, 1)
+	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := q.Renew(ctx, "w2", []string{"a"}, time.Minute); !errors.Is(err, store.ErrStale) {
+	if len(claimed) != 1 || claimed[0].LeaseToken == "" {
+		t.Fatalf("claimed = %+v, want one job carrying a fencing token", claimed)
+	}
+	token := claimed[0].LeaseToken
+	if err := q.Renew(ctx, "w2", []string{"a"}, token, time.Minute); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("foreign renew err = %v, want stale", err)
 	}
+	if err := q.Renew(ctx, "w1", []string{"a"}, "bogus-token", time.Minute); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("wrong-token renew err = %v, want stale", err)
+	}
 	now = now.Add(30 * time.Second)
-	if err := q.Renew(ctx, "w1", []string{"a"}, time.Minute); err != nil {
+	if err := q.Renew(ctx, "w1", []string{"a"}, token, time.Minute); err != nil {
 		t.Fatalf("owner renew: %v", err)
 	}
 	job, err := q.Job(ctx, "a")
@@ -204,30 +212,45 @@ func TestRenewOwnership(t *testing.T) {
 }
 
 func TestCompleteAndFail(t *testing.T) {
-	q, _ := openQueue(t, nil)
+	now := time.UnixMilli(1700000000000)
+	q, _ := openQueue(t, &now)
 	ctx := testCtx(t)
 	for _, id := range []string{"a", "b"} {
 		if _, err := q.Enqueue(ctx, EnqueueSpec{ID: id, Kind: KindLand, RepoID: 1, Payload: `{}`}); err != nil {
 			t.Fatalf("enqueue: %v", err)
 		}
 	}
-	if _, err := q.Claim(ctx, "w1", time.Minute, 2); err != nil {
+	claimed, err := q.Claim(ctx, "w1", time.Minute, 2)
+	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := q.Complete(ctx, "w2", "a"); !errors.Is(err, store.ErrStale) {
+	if len(claimed) != 2 {
+		t.Fatalf("claimed %d, want 2", len(claimed))
+	}
+	tokens := map[string]string{}
+	for _, job := range claimed {
+		tokens[job.ID] = job.LeaseToken
+	}
+	if tokens["a"] == "" || tokens["b"] == "" {
+		t.Fatalf("claims carry no fencing tokens: %+v", claimed)
+	}
+	if err := q.Complete(ctx, "w2", "a", tokens["a"]); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("foreign complete err = %v, want stale", err)
 	}
-	if err := q.Complete(ctx, "w1", "a"); err != nil {
+	if err := q.Complete(ctx, "w1", "a", "bogus-token"); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("wrong-token complete err = %v, want stale", err)
+	}
+	if err := q.Complete(ctx, "w1", "a", tokens["a"]); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	if err := q.Fail(ctx, "w1", "b"); err != nil {
+	if err := q.Fail(ctx, "w1", "b", tokens["b"]); err != nil {
 		t.Fatalf("fail: %v", err)
 	}
 	done, err := q.Job(ctx, "a")
 	if err != nil {
 		t.Fatalf("job a: %v", err)
 	}
-	if done.State != "done" || done.LeaseOwner != "" {
+	if done.State != "done" || done.LeaseOwner != "" || done.LeaseToken != "" {
 		t.Fatalf("done job = %+v", done)
 	}
 	queued, err := q.Job(ctx, "b")
@@ -237,12 +260,23 @@ func TestCompleteAndFail(t *testing.T) {
 	if queued.State != "queued" || queued.Attempts != 1 {
 		t.Fatalf("failed job = %+v", queued)
 	}
+	if queued.RunAfter <= now.UnixMilli() {
+		t.Fatalf("failed job run_after = %d, want a future backoff", queued.RunAfter)
+	}
+	// A backed-off job is not immediately reclaimable: the poison job
+	// stops hot-looping the single writer.
+	if reclaimed, err := q.Claim(ctx, "w2", time.Minute, 10); err != nil {
+		t.Fatalf("early reclaim: %v", err)
+	} else if len(reclaimed) != 0 {
+		t.Fatalf("early reclaimed = %+v, want nothing before the backoff passes", reclaimed)
+	}
+	now = now.Add(2 * time.Hour)
 	reclaimed, err := q.Claim(ctx, "w2", time.Minute, 10)
 	if err != nil {
 		t.Fatalf("reclaim: %v", err)
 	}
 	if len(reclaimed) != 1 || reclaimed[0].ID != "b" {
-		t.Fatalf("reclaimed = %+v", reclaimed)
+		t.Fatalf("reclaimed = %+v, want b after the backoff", reclaimed)
 	}
 }
 
@@ -252,11 +286,17 @@ func TestCompleteIdleJobFails(t *testing.T) {
 	if _, err := q.Enqueue(ctx, EnqueueSpec{ID: "a", Kind: KindLand, RepoID: 1, Payload: `{}`}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if err := q.Complete(ctx, "w1", "a"); !errors.Is(err, store.ErrStale) {
+	if err := q.Complete(ctx, "w1", "a", "some-token"); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("complete idle err = %v, want stale", err)
 	}
-	if err := q.Fail(ctx, "w1", "a"); !errors.Is(err, store.ErrStale) {
+	if err := q.Fail(ctx, "w1", "a", "some-token"); !errors.Is(err, store.ErrStale) {
 		t.Fatalf("fail idle err = %v, want stale", err)
+	}
+	if err := q.Renew(ctx, "w1", []string{"a"}, "some-token", time.Minute); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("renew idle err = %v, want stale", err)
+	}
+	if err := q.Complete(ctx, "w1", "a", ""); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("empty-token complete err = %v, want invalid", err)
 	}
 }
 
@@ -319,5 +359,122 @@ func TestWorkerConfigValidation(t *testing.T) {
 	}
 	if err := q.Run(testCtx(t), base, nil); err == nil {
 		t.Fatal("nil handler ran")
+	}
+}
+
+func TestFailBacksOffThenDeadLetters(t *testing.T) {
+	now := time.UnixMilli(1700000000000)
+	q, _ := openQueue(t, &now)
+	ctx := testCtx(t)
+	if _, err := q.Enqueue(ctx, EnqueueSpec{ID: "poison", Kind: KindMirrorRun, RepoID: 1, Payload: `{}`}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	var prevRunAfter int64
+	for attempt := int64(1); attempt <= 10; attempt++ {
+		claimed, err := q.Claim(ctx, "w1", time.Minute, 1)
+		if err != nil {
+			t.Fatalf("claim %d: %v", attempt, err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("claim %d returned %d jobs, want 1", attempt, len(claimed))
+		}
+		if err := q.Fail(ctx, "w1", "poison", claimed[0].LeaseToken); err != nil {
+			t.Fatalf("fail %d: %v", attempt, err)
+		}
+		job, err := q.Job(ctx, "poison")
+		if err != nil {
+			t.Fatalf("job after fail %d: %v", attempt, err)
+		}
+		if attempt < 10 {
+			if job.State != "queued" || job.Attempts != attempt {
+				t.Fatalf("after fail %d: job = %+v, want queued with %d attempts", attempt, job, attempt)
+			}
+			if job.RunAfter <= now.UnixMilli() {
+				t.Fatalf("after fail %d: run_after = %d, want a future backoff", attempt, job.RunAfter)
+			}
+			if job.RunAfter < prevRunAfter {
+				t.Fatalf("backoff shrank: run_after %d after %d", job.RunAfter, prevRunAfter)
+			}
+			prevRunAfter = job.RunAfter
+			now = time.UnixMilli(job.RunAfter + 1)
+		} else if job.State != "dead" || job.Attempts != 10 {
+			t.Fatalf("after fail 10: job = %+v, want dead with 10 attempts", job)
+		}
+	}
+	now = now.Add(30 * 24 * time.Hour)
+	if reclaimed, err := q.Claim(ctx, "w1", time.Minute, 10); err != nil {
+		t.Fatalf("reclaim dead: %v", err)
+	} else if len(reclaimed) != 0 {
+		t.Fatalf("reclaimed a dead job: %+v", reclaimed)
+	}
+}
+
+func TestRunDoesNotHotLoopOnPoisonJob(t *testing.T) {
+	now := time.UnixMilli(1700000000000)
+	q, _ := openQueue(t, &now)
+	ctx := testCtx(t)
+	if _, err := q.Enqueue(ctx, EnqueueSpec{ID: "poison", Kind: KindMirrorRun, RepoID: 1, Payload: `{}`}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var handled atomic.Int64
+	done := make(chan error, 1)
+	go func() {
+		done <- q.Run(runCtx, WorkerConfig{Poll: 10 * time.Millisecond, Lease: time.Minute, Batch: 1, Owner: "w1"},
+			func(_ context.Context, _ store.Job) error {
+				handled.Add(1)
+				return errors.New("mirror 401")
+			})
+	}()
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	if werr := <-done; !errors.Is(werr, context.Canceled) {
+		t.Fatalf("worker err = %v, want canceled", werr)
+	}
+	if got := handled.Load(); got != 1 {
+		t.Fatalf("handled %d jobs in 150ms, want exactly 1: the backoff must stop the hot loop", got)
+	}
+	job, err := q.Job(ctx, "poison")
+	if err != nil {
+		t.Fatalf("job: %v", err)
+	}
+	if job.State != "queued" || job.Attempts != 1 {
+		t.Fatalf("poison job = %+v, want queued with 1 attempt", job)
+	}
+}
+
+func TestExpiredLeaseCannotCompleteAfterReclaim(t *testing.T) {
+	now := time.UnixMilli(1700000000000)
+	q1, st := openQueue(t, &now)
+	q2 := Open(st, func() time.Time { return now })
+	ctx := testCtx(t)
+	if _, err := q1.Enqueue(ctx, EnqueueSpec{ID: "a", Kind: KindLand, RepoID: 1, Payload: `{}`}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	first, err := q1.Claim(ctx, "w1", time.Minute, 1)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim = %+v, err = %v", first, err)
+	}
+	now = now.Add(61 * time.Second)
+	second, err := q2.Claim(ctx, "w2", time.Minute, 1)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("reclaim = %+v, err = %v", second, err)
+	}
+	if second[0].LeaseToken == first[0].LeaseToken {
+		t.Fatal("reclaim reused the lease token; fences cannot distinguish epochs")
+	}
+	if err := q1.Complete(ctx, "w1", "a", first[0].LeaseToken); !errors.Is(err, store.ErrStale) {
+		t.Fatalf("stale complete err = %v, want stale: the first worker lost the lease", err)
+	}
+	if err := q2.Complete(ctx, "w2", "a", second[0].LeaseToken); err != nil {
+		t.Fatalf("replacement complete: %v", err)
+	}
+	done, err := q1.Job(ctx, "a")
+	if err != nil {
+		t.Fatalf("job: %v", err)
+	}
+	if done.State != "done" || done.Attempts != 0 {
+		t.Fatalf("job = %+v, want done exactly once with 0 attempts", done)
 	}
 }

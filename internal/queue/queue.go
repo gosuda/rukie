@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -91,10 +92,16 @@ func (q *Queue) Enqueue(ctx context.Context, spec EnqueueSpec) (bool, error) {
 	return inserted, nil
 }
 
+// Claim leases up to limit jobs to owner for lease and stamps the batch
+// with a fresh fencing token. The token travels on each returned Job:
+// pass Job.LeaseToken to Renew, Complete, and Fail. A worker that lost
+// its lease presents a stale token and gets ErrStale instead of
+// completing another worker's job twice.
 func (q *Queue) Claim(ctx context.Context, owner string, lease time.Duration, limit int) ([]store.Job, error) {
+	token := string(store.NewID(q.clock()))
 	var out []store.Job
 	err := q.store.Write(ctx, func(tx *store.WriteTx) error {
-		jobs, werr := tx.ClaimJobs(owner, q.clock(), lease, limit)
+		jobs, werr := tx.ClaimJobs(owner, token, q.clock(), lease, limit)
 		if werr != nil {
 			return werr
 		}
@@ -107,9 +114,12 @@ func (q *Queue) Claim(ctx context.Context, owner string, lease time.Duration, li
 	return out, nil
 }
 
-func (q *Queue) Renew(ctx context.Context, owner string, ids []string, lease time.Duration) error {
+func (q *Queue) Renew(ctx context.Context, owner string, ids []string, token string, lease time.Duration) error {
+	if len(token) == 0 {
+		return fmt.Errorf("Renew: %w: lease token must not be empty", store.ErrInvalid)
+	}
 	return q.store.Write(ctx, func(tx *store.WriteTx) error {
-		moved, werr := tx.RenewJobs(owner, ids, q.clock(), lease)
+		moved, werr := tx.RenewJobs(owner, token, ids, q.clock(), lease)
 		if werr != nil {
 			return werr
 		}
@@ -120,15 +130,21 @@ func (q *Queue) Renew(ctx context.Context, owner string, ids []string, lease tim
 	})
 }
 
-func (q *Queue) Complete(ctx context.Context, owner, id string) error {
+func (q *Queue) Complete(ctx context.Context, owner, id, token string) error {
+	if len(token) == 0 {
+		return fmt.Errorf("Complete: %w: lease token must not be empty", store.ErrInvalid)
+	}
 	return q.store.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.CompleteJob(owner, id, q.clock())
+		return tx.CompleteJob(owner, id, token, q.clock())
 	})
 }
 
-func (q *Queue) Fail(ctx context.Context, owner, id string) error {
+func (q *Queue) Fail(ctx context.Context, owner, id, token string) error {
+	if len(token) == 0 {
+		return fmt.Errorf("Fail: %w: lease token must not be empty", store.ErrInvalid)
+	}
 	return q.store.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.RequeueJob(owner, id, q.clock())
+		return tx.RequeueJob(owner, id, token, q.clock())
 	})
 }
 
@@ -177,9 +193,10 @@ func (q *Queue) ClaimKinds(ctx context.Context, owner string, kinds []Kind, leas
 	for _, kind := range kinds {
 		names = append(names, string(kind))
 	}
+	token := string(store.NewID(q.clock()))
 	var out []store.Job
 	err := q.store.Write(ctx, func(tx *store.WriteTx) error {
-		jobs, werr := tx.ClaimKindJobs(owner, names, q.clock(), lease, limit)
+		jobs, werr := tx.ClaimKindJobs(owner, token, names, q.clock(), lease, limit)
 		if werr != nil {
 			return werr
 		}
@@ -212,9 +229,10 @@ func (q *Queue) runKinds(ctx context.Context, cfg WorkerConfig, kinds []string, 
 		if len(kinds) == 0 {
 			return q.Claim(ctx, cfg.Owner, cfg.Lease, cfg.Batch)
 		}
+		token := string(store.NewID(q.clock()))
 		var out []store.Job
 		err := q.store.Write(ctx, func(tx *store.WriteTx) error {
-			jobs, werr := tx.ClaimKindJobs(cfg.Owner, kinds, q.clock(), cfg.Lease, cfg.Batch)
+			jobs, werr := tx.ClaimKindJobs(cfg.Owner, token, kinds, q.clock(), cfg.Lease, cfg.Batch)
 			if werr != nil {
 				return werr
 			}
@@ -233,18 +251,35 @@ func (q *Queue) runKinds(ctx context.Context, cfg WorkerConfig, kinds []string, 
 		if err != nil {
 			return err
 		}
+		if len(jobs) == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(cfg.Poll):
+			}
+			continue
+		}
+		failed := 0
 		for _, job := range jobs {
+			if rerr := q.Renew(ctx, cfg.Owner, []string{job.ID}, job.LeaseToken, cfg.Lease); rerr != nil {
+				if errors.Is(rerr, store.ErrStale) {
+					failed++
+					continue
+				}
+				return rerr
+			}
 			if herr := handle(ctx, job); herr != nil {
-				if ferr := q.Fail(ctx, cfg.Owner, job.ID); ferr != nil {
+				failed++
+				if ferr := q.Fail(ctx, cfg.Owner, job.ID, job.LeaseToken); ferr != nil && !errors.Is(ferr, store.ErrStale) {
 					return ferr
 				}
 				continue
 			}
-			if cerr := q.Complete(ctx, cfg.Owner, job.ID); cerr != nil {
+			if cerr := q.Complete(ctx, cfg.Owner, job.ID, job.LeaseToken); cerr != nil && !errors.Is(cerr, store.ErrStale) {
 				return cerr
 			}
 		}
-		if len(jobs) == 0 {
+		if failed == len(jobs) {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"encoding/json/jsontext"
@@ -15,24 +17,26 @@ const (
 	jobMaxKindLen = 64
 )
 
+// jobMaxAttempts bounds handler retries: a job that fails this often is
+// a poison job, not a transient outage, so Fail moves it to dead instead
+// of requeueing it forever.
+const jobMaxAttempts = 10
+
 const (
 	sqlJobInsert = `INSERT INTO jobs (id, kind, repo_id, payload, state, attempts, lease_owner, lease_expires_at, created_at, updated_at)
 VALUES (?1, ?2, ?3, ?4, 'queued', 0, '', 0, ?5, ?5) ON CONFLICT (id) DO NOTHING`
 
-	sqlJobClaim = `UPDATE jobs SET state = 'leased', lease_owner = ?1, lease_expires_at = ?2, updated_at = ?3
+	sqlJobClaim = `UPDATE jobs SET state = 'leased', lease_owner = ?1, lease_token = ?6, lease_expires_at = ?2, updated_at = ?3
 WHERE id IN (SELECT id FROM jobs
-WHERE state = 'queued' OR (state = 'leased' AND lease_expires_at <= ?4)
+WHERE (state = 'queued' OR (state = 'leased' AND lease_expires_at <= ?4)) AND run_after <= ?4
 ORDER BY created_at, id LIMIT ?5)
-RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_expires_at, created_at, updated_at`
+RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at`
 
-	sqlJobGet = `SELECT id, kind, repo_id, payload, state, attempts, lease_owner, lease_expires_at, created_at, updated_at
+	sqlJobGet = `SELECT id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at
 FROM jobs WHERE id = ?1`
 
-	sqlJobDone = `UPDATE jobs SET state = 'done', lease_owner = '', lease_expires_at = 0, updated_at = ?1
-WHERE id = ?2 AND state = 'leased' AND lease_owner = ?3`
-
-	sqlJobFail = `UPDATE jobs SET state = 'queued', attempts = attempts + 1, lease_owner = '', lease_expires_at = 0, updated_at = ?1
-WHERE id = ?2 AND state = 'leased' AND lease_owner = ?3`
+	sqlJobDone = `UPDATE jobs SET state = 'done', lease_owner = '', lease_token = '', lease_expires_at = 0, updated_at = ?1
+WHERE id = ?2 AND state = 'leased' AND lease_owner = ?3 AND lease_token = ?4`
 )
 
 type JobSpec struct {
@@ -46,10 +50,12 @@ type JobSpec struct {
 type Job struct {
 	Payload        string
 	LeaseOwner     string
+	LeaseToken     string
 	ID             string
 	Kind           string
 	State          string
 	LeaseExpiresAt int64
+	RunAfter       int64
 	Attempts       int64
 	RepoID         int64
 	CreatedAt      int64
@@ -96,16 +102,19 @@ func scanJob(rows interface {
 }) (Job, error) {
 	var job Job
 	var payload string
-	if err := rows.Scan(&job.ID, &job.Kind, &job.RepoID, &payload, &job.State, &job.Attempts, &job.LeaseOwner, &job.LeaseExpiresAt, &job.CreatedAt, &job.UpdatedAt); err != nil {
+	if err := rows.Scan(&job.ID, &job.Kind, &job.RepoID, &payload, &job.State, &job.Attempts, &job.LeaseOwner, &job.LeaseToken, &job.LeaseExpiresAt, &job.RunAfter, &job.CreatedAt, &job.UpdatedAt); err != nil {
 		return Job{}, err
 	}
 	job.Payload = payload
 	return job, nil
 }
 
-func (tx *WriteTx) ClaimJobs(owner string, now time.Time, lease time.Duration, limit int) ([]Job, error) {
+func (tx *WriteTx) ClaimJobs(owner, token string, now time.Time, lease time.Duration, limit int) ([]Job, error) {
 	if len(owner) == 0 {
 		return nil, fmt.Errorf("ClaimJobs: %w: owner must not be empty", ErrInvalid)
+	}
+	if len(token) == 0 {
+		return nil, fmt.Errorf("ClaimJobs: %w: lease token must not be empty", ErrInvalid)
 	}
 	if limit <= 0 {
 		return nil, fmt.Errorf("ClaimJobs: %w: limit must be positive", ErrInvalid)
@@ -121,7 +130,7 @@ func (tx *WriteTx) ClaimJobs(owner string, now time.Time, lease time.Duration, l
 	if at <= 0 {
 		return nil, fmt.Errorf("ClaimJobs: %w: time must be after the Unix epoch", ErrInvalid)
 	}
-	rows, err := inner.QueryContext(tx.ctx, sqlJobClaim, owner, at+lease.Milliseconds(), at, at, limit)
+	rows, err := inner.QueryContext(tx.ctx, sqlJobClaim, owner, at+lease.Milliseconds(), at, at, limit, token)
 	if err != nil {
 		return nil, fmt.Errorf("ClaimJobs: %w", err)
 	}
@@ -140,9 +149,12 @@ func (tx *WriteTx) ClaimJobs(owner string, now time.Time, lease time.Duration, l
 	return out, nil
 }
 
-func (tx *WriteTx) ClaimKindJobs(owner string, kinds []string, now time.Time, lease time.Duration, limit int) ([]Job, error) {
+func (tx *WriteTx) ClaimKindJobs(owner, token string, kinds []string, now time.Time, lease time.Duration, limit int) ([]Job, error) {
 	if len(owner) == 0 {
 		return nil, fmt.Errorf("ClaimKindJobs: %w: owner must not be empty", ErrInvalid)
+	}
+	if len(token) == 0 {
+		return nil, fmt.Errorf("ClaimKindJobs: %w: lease token must not be empty", ErrInvalid)
 	}
 	if len(kinds) == 0 {
 		return nil, fmt.Errorf("ClaimKindJobs: %w: kinds must not be empty", ErrInvalid)
@@ -165,13 +177,13 @@ func (tx *WriteTx) ClaimKindJobs(owner string, kinds []string, now time.Time, le
 	if jerr != nil {
 		return nil, fmt.Errorf("ClaimKindJobs: %w", jerr)
 	}
-	const query = `UPDATE jobs SET state = 'leased', lease_owner = ?1, lease_expires_at = ?2, updated_at = ?3
+	const query = `UPDATE jobs SET state = 'leased', lease_owner = ?1, lease_token = ?8, lease_expires_at = ?2, updated_at = ?3
 WHERE id IN (SELECT id FROM jobs
-WHERE kind IN (SELECT value FROM json_each(?4)) AND (state = 'queued' OR (state = 'leased' AND lease_expires_at <= ?5))
+WHERE kind IN (SELECT value FROM json_each(?4)) AND (state = 'queued' OR (state = 'leased' AND lease_expires_at <= ?5)) AND run_after <= ?5
 AND (kind != 'repo_purge' OR json_extract(payload, '$.not_before') <= ?6)
 ORDER BY created_at, id LIMIT ?7)
-RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_expires_at, created_at, updated_at`
-	args := []any{owner, at + lease.Milliseconds(), at, string(kindsJSON), at, at, limit}
+RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at`
+	args := []any{owner, at + lease.Milliseconds(), at, string(kindsJSON), at, at, limit, token}
 	rows, qerr := inner.QueryContext(tx.ctx, query, args...)
 	if qerr != nil {
 		return nil, fmt.Errorf("ClaimKindJobs: %w", qerr)
@@ -203,9 +215,12 @@ func (tx *ReadTx) GetJob(id string) (Job, error) {
 	return job, nil
 }
 
-func (tx *WriteTx) RenewJobs(owner string, ids []string, now time.Time, lease time.Duration) (int64, error) {
+func (tx *WriteTx) RenewJobs(owner, token string, ids []string, now time.Time, lease time.Duration) (int64, error) {
 	if len(owner) == 0 {
 		return 0, fmt.Errorf("RenewJobs: %w: owner must not be empty", ErrInvalid)
+	}
+	if len(token) == 0 {
+		return 0, fmt.Errorf("RenewJobs: %w: lease token must not be empty", ErrInvalid)
 	}
 	if len(ids) == 0 {
 		return 0, fmt.Errorf("RenewJobs: %w: ids must not be empty", ErrInvalid)
@@ -222,9 +237,9 @@ func (tx *WriteTx) RenewJobs(owner string, ids []string, now time.Time, lease ti
 		return 0, fmt.Errorf("RenewJobs: %w: time must be after the Unix epoch", ErrInvalid)
 	}
 	query := `UPDATE jobs SET lease_expires_at = ?1, updated_at = ?2
-WHERE state = 'leased' AND lease_owner = ?3 AND id IN (?` + repeatPlaceholders(len(ids)) + `)`
-	args := make([]any, 0, len(ids)+3)
-	args = append(args, at+lease.Milliseconds(), at, owner)
+WHERE state = 'leased' AND lease_owner = ?3 AND lease_token = ?4 AND id IN (?` + repeatPlaceholders(len(ids)) + `)`
+	args := make([]any, 0, len(ids)+4)
+	args = append(args, at+lease.Milliseconds(), at, owner, token)
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -243,17 +258,85 @@ func repeatPlaceholders(n int) string {
 	return out
 }
 
-func (tx *WriteTx) CompleteJob(owner, id string, now time.Time) error {
-	return tx.finishLease(sqlJobDone, "CompleteJob", owner, id, now)
+func (tx *WriteTx) CompleteJob(owner, id, token string, now time.Time) error {
+	return tx.finishLease(sqlJobDone, "CompleteJob", owner, id, token, now)
 }
 
-func (tx *WriteTx) RequeueJob(owner, id string, now time.Time) error {
-	return tx.finishLease(sqlJobFail, "RequeueJob", owner, id, now)
+// RequeueJob records one handler failure: attempts grows, the next run
+// waits out failBackoff, and at jobMaxAttempts the row moves to dead so
+// a poison job stops spinning the single writer. Only the lease-token
+// holder requeues; a fenced-out worker reports ErrStale and exits
+// cleanly instead of running the job twice.
+func (tx *WriteTx) RequeueJob(owner, id, token string, now time.Time) error {
+	if len(owner) == 0 || len(id) == 0 || len(token) == 0 {
+		return fmt.Errorf("RequeueJob: %w: owner, id, and lease token must not be empty", ErrInvalid)
+	}
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	at := msOf(now)
+	if at <= 0 {
+		return fmt.Errorf("RequeueJob: %w: time must be after the Unix epoch", ErrInvalid)
+	}
+	var attempts int64
+	err = inner.QueryRowContext(tx.ctx,
+		`SELECT attempts FROM jobs WHERE id = ?1 AND state = 'leased' AND lease_owner = ?2 AND lease_token = ?3`,
+		id, owner, token).Scan(&attempts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("RequeueJob: %w: job is not leased to this owner", ErrStale)
+	}
+	if err != nil {
+		return fmt.Errorf("RequeueJob: %w", mapErr(err))
+	}
+	next := attempts + 1
+	if next >= jobMaxAttempts {
+		moved, merr := execAffected(tx.ctx, inner,
+			`UPDATE jobs SET state = 'dead', attempts = ?1, lease_owner = '', lease_token = '', lease_expires_at = 0, run_after = 0, updated_at = ?2
+WHERE id = ?3 AND state = 'leased' AND lease_owner = ?4 AND lease_token = ?5`,
+			next, at, id, owner, token)
+		if merr != nil {
+			return fmt.Errorf("RequeueJob: %w", mapErr(merr))
+		}
+		if moved == 0 {
+			return fmt.Errorf("RequeueJob: %w: job is not leased to this owner", ErrStale)
+		}
+		return nil
+	}
+	wait := at + failBackoff(next, id).Milliseconds()
+	moved, merr := execAffected(tx.ctx, inner,
+		`UPDATE jobs SET state = 'queued', attempts = ?1, lease_owner = '', lease_token = '', lease_expires_at = 0, run_after = ?2, updated_at = ?3
+WHERE id = ?4 AND state = 'leased' AND lease_owner = ?5 AND lease_token = ?6`,
+		next, wait, at, id, owner, token)
+	if merr != nil {
+		return fmt.Errorf("RequeueJob: %w", mapErr(merr))
+	}
+	if moved == 0 {
+		return fmt.Errorf("RequeueJob: %w: job is not leased to this owner", ErrStale)
+	}
+	return nil
 }
 
-func (tx *WriteTx) finishLease(query, op, owner, id string, now time.Time) error {
-	if len(owner) == 0 || len(id) == 0 {
-		return fmt.Errorf("%s: %w: owner and id must not be empty", op, ErrInvalid)
+// failBackoff spaces handler retries exponentially (30s doubling to 15m)
+// with a deterministic per-job jitter so one failure does not stampede
+// the single writer when many jobs fail together.
+func failBackoff(attempts int64, id string) time.Duration {
+	shift := attempts
+	if shift > 5 {
+		shift = 5
+	}
+	base := 30 * time.Second << shift
+	if base > 15*time.Minute {
+		base = 15 * time.Minute
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	return base + time.Duration(h.Sum32()%10)*time.Second
+}
+
+func (tx *WriteTx) finishLease(query, op, owner, id, token string, now time.Time) error {
+	if len(owner) == 0 || len(id) == 0 || len(token) == 0 {
+		return fmt.Errorf("%s: %w: owner, id, and lease token must not be empty", op, ErrInvalid)
 	}
 	inner, err := tx.live()
 	if err != nil {
@@ -263,7 +346,7 @@ func (tx *WriteTx) finishLease(query, op, owner, id string, now time.Time) error
 	if at <= 0 {
 		return fmt.Errorf("%s: %w: time must be after the Unix epoch", op, ErrInvalid)
 	}
-	moved, err := execAffected(tx.ctx, inner, query, at, id, owner)
+	moved, err := execAffected(tx.ctx, inner, query, at, id, owner, token)
 	if err != nil {
 		return fmt.Errorf("%s: %w", op, mapErr(err))
 	}

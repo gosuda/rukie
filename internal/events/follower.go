@@ -47,7 +47,11 @@ func ListAll(ctx context.Context, list Lister, prefix string) ([]ruk.RefEntry, u
 			return nil, 0, err
 		}
 		out = append(out, reply.Refs.Items...)
-		if page == 0 {
+		// Later pages may reflect state newer than page 0's as_of.
+		// Carry the minimum: Ingest skips events whose new tip already
+		// matches the stored tip, so replays in (min, later] collapse
+		// to cursor advances instead of duplicate outbox rows.
+		if page == 0 || reply.AsOf < asOf {
 			asOf = reply.AsOf
 		}
 		if reply.Refs.NextAfter == nil {
@@ -148,6 +152,10 @@ func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent) error {
 		if cursor < 0 {
 			return fmt.Errorf("Ingest: stored cursor %d is negative", cursor)
 		}
+		tips, terr := tx.WriteTips(f.repoID)
+		if terr != nil {
+			return terr
+		}
 		front := cursor
 		for _, event := range ordered {
 			if event.Seq > math.MaxInt64 {
@@ -160,15 +168,24 @@ func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent) error {
 				return fmt.Errorf("Ingest: %w: event seq %d misses its name", store.ErrInvalid, event.Seq)
 			}
 			current := event.New.Hex()
-			inserted, serr := tx.InsertSeen(f.repoID, event.Seq, event.Name, current, now)
-			if serr != nil {
-				return serr
-			}
-			if !inserted {
+			if tips[event.Name] == current {
+				// Already applied: a resnapshot or a multi-page
+				// listing covered this ref past the stored cursor,
+				// or the tail redelivered it. Advance past the seq
+				// and emit nothing, so the outbox holds the
+				// transition exactly once.
+				if int64(event.Seq) > front {
+					front = int64(event.Seq)
+				}
 				continue
 			}
 			if derr := f.deliver(tx, event, now); derr != nil {
 				return derr
+			}
+			if event.New.Null() || isZeroID(current) {
+				delete(tips, event.Name)
+			} else {
+				tips[event.Name] = current
 			}
 			if int64(event.Seq) > front {
 				front = int64(event.Seq)
@@ -177,13 +194,10 @@ func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent) error {
 		if front == cursor {
 			return nil
 		}
-		if aerr := tx.Outbox().Advance(eventConsumer(f.repoID), cursor, front); aerr != nil {
-			return aerr
-		}
 		if front < 0 {
 			return fmt.Errorf("Ingest: front %d is negative", front)
 		}
-		return tx.SweepSeen(f.repoID, uint64(front))
+		return tx.Outbox().Advance(eventConsumer(f.repoID), cursor, front)
 	})
 }
 
