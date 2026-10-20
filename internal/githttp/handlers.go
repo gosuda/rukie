@@ -53,16 +53,14 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 	}
 	repoID, found := s.lookupRepo(r.Context(), rt.owner, rt.repo)
 	if !found {
-		if !id.authed {
-			s.failAuth(w, r)
+		if s.denyAnonymous(w, r, id) {
 			return
 		}
 		writeText(w, http.StatusNotFound, "repository not found")
 		return
 	}
 	if name == receiveServiceName {
-		if !id.authed {
-			s.failAuth(w, r)
+		if s.denyAnonymous(w, r, id) {
 			return
 		}
 		if decision := s.authorize(id, repoID, "repo.push", ""); decision.NotFound {
@@ -75,8 +73,7 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 	} else {
 		decision := s.authorize(id, repoID, "repo.clone", "")
 		if decision.NotFound || !decision.Allow {
-			if !id.authed {
-				s.failAuth(w, r)
+			if s.denyAnonymous(w, r, id) {
 				return
 			}
 			if decision.NotFound {
@@ -159,23 +156,20 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 	}
 	repoID, found := s.lookupRepo(r.Context(), rt.owner, rt.repo)
 	if !found {
-		if !id.authed {
-			s.failAuth(w, r)
+		if s.denyAnonymous(w, r, id) {
 			return
 		}
 		writeText(w, http.StatusNotFound, "repository not found")
 		return
 	}
 	if name == receiveServiceName {
-		if !id.authed {
-			s.failAuth(w, r)
+		if s.denyAnonymous(w, r, id) {
 			return
 		}
 	}
 	decision := s.authorize(id, repoID, "repo.clone", "")
 	if decision.NotFound || !decision.Allow {
-		if !id.authed {
-			s.failAuth(w, r)
+		if s.denyAnonymous(w, r, id) {
 			return
 		}
 		if decision.NotFound {

@@ -493,6 +493,36 @@ func TestGitAnonymousReadInternalDenied(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("anonymous public status = %d, want 200", status)
 	}
+	postPin := func(path string) {
+		t.Helper()
+		first := true
+		var baseline string
+		for _, name := range []string{"internal", "secret", "nosuchrepo"} {
+			req, err := http.NewRequest(http.MethodPost, s.url+"/ada/"+name+".git/"+path, strings.NewReader("0000"))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/x-git-receive-pack-request")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("post: %v", err)
+			}
+			var body bytes.Buffer
+			_, _ = body.ReadFrom(resp.Body)
+			_ = resp.Body.Close()
+			fingerprint := strconv.Itoa(resp.StatusCode) + "\n" + resp.Header.Get("WWW-Authenticate") + "\n" + body.String()
+			if first {
+				if resp.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("anonymous POST %s status = %d, want 401", name, resp.StatusCode)
+				}
+				baseline = fingerprint
+				first = false
+			} else if fingerprint != baseline {
+				t.Fatalf("anonymous POST %s answer differs:\n%q vs %q", name, fingerprint, baseline)
+			}
+		}
+	}
+	postPin("git-receive-pack")
 	status, _, _ = httpGet(t, s.url+"/ada/secret.git/info/refs?service=git-upload-pack", "mallory", mallory.token)
 	if status != http.StatusNotFound {
 		t.Fatalf("stranger on private status = %d, want 404", status)
@@ -828,6 +858,19 @@ func TestGitIngestLimitsRefuseTightPush(t *testing.T) {
 		defer cancel()
 		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
 			t.Fatalf("at-limit push failed: %v\n%s", err, out)
+		}
+		if refs := s.lsRemote(t, pushURL); refs["refs/heads/main"] != oid {
+			t.Fatalf("main = %q, want %q", refs["refs/heads/main"], oid)
+		}
+	})
+	t.Run("push_options_one_option_at_quota_1_lands", func(t *testing.T) {
+		s, ada := withLimits(t, func(l *wire.GitLimits) { l.MaxPushOptions = 1 })
+		work, oid := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		if out, err := gitRun(ctx, t, work, "push", "--push-option=ci.skip", pushURL, "HEAD:refs/heads/main"); err != nil {
+			t.Fatalf("one option at quota 1 failed: %v\n%s", err, out)
 		}
 		if refs := s.lsRemote(t, pushURL); refs["refs/heads/main"] != oid {
 			t.Fatalf("main = %q, want %q", refs["refs/heads/main"], oid)

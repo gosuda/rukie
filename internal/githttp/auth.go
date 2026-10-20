@@ -84,6 +84,14 @@ func (s *Server) failAuth(w http.ResponseWriter, r *http.Request) {
 	writeUnauthorized(w)
 }
 
+func (s *Server) denyAnonymous(w http.ResponseWriter, r *http.Request, id identity) bool {
+	if id.authed {
+		return false
+	}
+	s.failAuth(w, r)
+	return true
+}
+
 func (s *Server) checkEntryRate(w http.ResponseWriter, r *http.Request, id identity) bool {
 	key := op.RateKey{Kind: op.RateIPAnon, ID: clientIP(r)}
 	if id.authed {
