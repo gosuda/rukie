@@ -32,10 +32,19 @@ type conn struct {
 }
 
 func dialConn(ctx context.Context, id uint64, socketPath, profile string, timeouts Timeouts, hooks Hooks) (*conn, error) {
+	c, err := dialRawConn(ctx, id, socketPath, profile, timeouts, hooks)
+	if err != nil {
+		return nil, err
+	}
+	go c.readLoop()
+	return c, nil
+}
+
+func dialRawConn(ctx context.Context, id uint64, socketPath, profile string, timeouts Timeouts, hooks Hooks) (*conn, error) {
 	dialer := net.Dialer{Timeout: timeouts.Dial}
 	nc, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("dialConn: %w: %w", ErrNoDaemon, err)
+		return nil, fmt.Errorf("dialRawConn: %w: %w", ErrNoDaemon, err)
 	}
 	c := &conn{
 		id:         id,
@@ -51,7 +60,6 @@ func dialConn(ctx context.Context, id uint64, socketPath, profile string, timeou
 		_ = nc.Close()
 		return nil, err
 	}
-	go c.readLoop()
 	return c, nil
 }
 
