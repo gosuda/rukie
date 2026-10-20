@@ -157,6 +157,22 @@ func drainStdin(conn net.Conn, stream uint64) error {
 	}
 }
 
+func watchClose(conn net.Conn, stream uint64, seen chan<- [2]time.Time) {
+	var at [2]time.Time
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	for {
+		frame, err := readFrame(conn)
+		if err != nil {
+			at[1] = time.Now()
+			seen <- at
+			return
+		}
+		if frame.Stream == stream && frame.Kind == KindCancel && at[0].IsZero() {
+			at[0] = time.Now()
+		}
+	}
+}
+
 func TestCommandHookTimeoutDrainsToExit(t *testing.T) {
 	srv := newScriptedServer(t)
 	srv.serveOne(func(conn net.Conn) {
@@ -235,25 +251,8 @@ func TestCommandHookTimeoutDrainsToExit(t *testing.T) {
 	}
 }
 
-func watchClose(conn net.Conn, stream uint64, seen chan<- [2]time.Time) {
-	var at [2]time.Time
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	for {
-		frame, err := readFrame(conn)
-		if err != nil {
-			at[1] = time.Now()
-			seen <- at
-			return
-		}
-		if frame.Stream == stream && frame.Kind == KindCancel && at[0].IsZero() {
-			at[0] = time.Now()
-		}
-	}
-}
-
 func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 	srv := newScriptedServer(t)
-	seen := make(chan [2]time.Time, 1)
 	srv.serveOne(func(conn net.Conn) {
 		if err := scriptedHandshake(conn); err != nil {
 			srv.fail(err)
@@ -268,13 +267,39 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 			srv.fail(err)
 			return
 		}
-		watchClose(conn, stream, seen)
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		for {
+			frame, err := readFrame(conn)
+			if err != nil {
+				srv.fail(fmt.Errorf("cancel wait: %w", err))
+				return
+			}
+			if frame.Kind == KindCancel {
+				break
+			}
+		}
+		time.Sleep(300 * time.Millisecond)
+		if err := writeFrame(conn, KindStdout, stream, []byte("late-bytes")); err != nil {
+			srv.fail(err)
+			return
+		}
+		report, err := mustMarshal(wire.CommandExitReport{ExitCode: 0, InvocationID: "inv-script"})
+		if err != nil {
+			srv.fail(err)
+			return
+		}
+		if err := writeFrame(conn, KindExit, stream, report); err != nil {
+			srv.fail(err)
+			return
+		}
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		_, _ = readFrame(conn)
 	})
 	client := srv.client()
 	ctx, cancel := context.WithCancel(t.Context())
 	time.AfterFunc(200*time.Millisecond, cancel)
 	var stdout bytes.Buffer
-	_, _, _ = RunCommand(ctx, client, Command{
+	report, _, err := RunCommand(ctx, client, Command{
 		Open: wire.ServiceOpen{
 			Service:      "upload-pack",
 			Repository:   "/repo",
@@ -284,19 +309,15 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 		Stdin:  strings.NewReader("hello"),
 		Stdout: &stdout,
 	})
-	srv.wg.Wait()
 	srv.assertNoErrors(t)
-	var at [2]time.Time
-	select {
-	case at = <-seen:
-	case <-time.After(10 * time.Second):
-		t.Fatal("scripted daemon saw no close")
+	if err != nil {
+		t.Fatalf("drained run err = %v, want the received terminal report", err)
 	}
-	if at[0].IsZero() {
-		t.Fatal("scripted daemon saw no cancel")
+	if report.ExitCode != 0 {
+		t.Fatalf("drained run exit = %d, want 0", report.ExitCode)
 	}
-	if gap := at[1].Sub(at[0]); gap < time.Second {
-		t.Fatalf("close followed cancel by %v, want the 2 s drain", gap)
+	if !strings.Contains(stdout.String(), "late-bytes") {
+		t.Fatalf("stdout = %q, want the post-cancel bytes", stdout.String())
 	}
 }
 

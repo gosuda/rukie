@@ -693,7 +693,7 @@ func TestFaultKillNine(t *testing.T) {
 }
 
 func TestEventsTailExpiredResnapshot(t *testing.T) {
-	s := newStackWithConfig(t, nil, "event_retention_seconds = 1\nretention_interval_ms = 500\n")
+	s := newStackWithConfig(t, nil, "event_retention_seconds = 1\nretention_interval_ms = 500\n", 0)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")
 	repoID := s.addRepo(t, "ada", "hello", "private")
 	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})

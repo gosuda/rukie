@@ -73,10 +73,15 @@ func rukBin(t *testing.T) string {
 
 func newStack(t *testing.T, limits *wire.GitLimits) *stack {
 	t.Helper()
-	return newStackWithConfig(t, limits, "")
+	return newStackWithConfig(t, limits, "", 0)
 }
 
-func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string) *stack {
+func newStackWithHTTPCap(t *testing.T, limits *wire.GitLimits, httpCap uint64) *stack {
+	t.Helper()
+	return newStackWithConfig(t, limits, "", httpCap)
+}
+
+func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string, httpCap uint64) *stack {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
@@ -144,12 +149,13 @@ func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string
 		t.Fatalf("spool: %v", err)
 	}
 	git, err := githttp.New(githttp.Config{
-		Auth:     svc,
-		Limiter:  access.NewLimiter(),
-		Client:   client,
-		Feed:     events.OpenHookSink(st, spool, time.Now),
-		RepoRoot: roots,
-		Limits:   useLimits,
+		Auth:             svc,
+		Limiter:          access.NewLimiter(),
+		Client:           client,
+		Feed:             events.OpenHookSink(st, spool, time.Now),
+		RepoRoot:         roots,
+		Limits:           useLimits,
+		MaxHTTPBodyBytes: httpCap,
 		Barrier: func() (func(), bool) {
 			return sysops.HoldSharedBarrier(dir)
 		},
@@ -935,10 +941,10 @@ func TestNoGitProcessInBoundary(t *testing.T) {
 		t.Fatal("caller unavailable")
 	}
 	root := filepath.Dir(filepath.Dir(filepath.Dir(file)))
-	cmd := exec.Command("go", "list", "-f", "{{join .Imports \" \"}}", "./internal/githttp")
-	cmd.Dir = root
-	cmd.Env = os.Environ()
-	out, err := cmd.Output()
+	direct := exec.Command("go", "list", "-f", "{{join .Imports \" \"}}", "./internal/githttp")
+	direct.Dir = root
+	direct.Env = os.Environ()
+	out, err := direct.Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}
@@ -956,26 +962,72 @@ func TestNoGitProcessInBoundary(t *testing.T) {
 	work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
 	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
 	self := os.Getpid()
-	before, err := childNames(self)
+	baseline, err := childNames(self)
 	if err != nil {
-		t.Fatalf("snapshot: %v", err)
+		t.Fatalf("baseline: %v", err)
+	}
+	var mu sync.Mutex
+	seen := map[int]struct{}{}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if kids, err := childNames(self); err == nil {
+				mu.Lock()
+				for pid := range kids {
+					seen[pid] = struct{}{}
+				}
+				mu.Unlock()
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
+	var pidsMu sync.Mutex
+	own := map[int]struct{}{}
+	run := func(ctx context.Context, dir string, args ...string) (string, error) {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, gitBin(t), args...)
+		cmd.Dir = dir
+		cmd.Env = gitEnv(t)
+		var combined bytes.Buffer
+		cmd.Stdout = &combined
+		cmd.Stderr = &combined
+		if err := cmd.Start(); err != nil {
+			return combined.String(), err
+		}
+		pidsMu.Lock()
+		own[cmd.Process.Pid] = struct{}{}
+		pidsMu.Unlock()
+		waitErr := cmd.Wait()
+		return combined.String(), waitErr
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 	defer cancel()
 	cloneParent := t.TempDir()
-	if pout, perr := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); perr != nil {
+	if pout, perr := run(ctx, work, "push", pushURL, "HEAD:refs/heads/main"); perr != nil {
 		t.Fatalf("push: %v\n%s", perr, pout)
 	}
-	if cout, cerr := gitRun(ctx, t, cloneParent, "clone", pushURL, "hello"); cerr != nil {
+	if cout, cerr := run(ctx, cloneParent, "clone", pushURL, "hello"); cerr != nil {
 		t.Fatalf("clone: %v\n%s", cerr, cout)
 	}
-	after, err := childNames(self)
-	if err != nil {
-		t.Fatalf("resnapshot: %v", err)
-	}
-	for pid, name := range after {
-		if _, ok := before[pid]; !ok && name != "git" && !strings.HasSuffix(name, "/git") {
-			t.Fatalf("new child process %d (%s) spawned during clone and push", pid, name)
+	close(stop)
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	for pid := range seen {
+		if _, ok := baseline[pid]; ok {
+			continue
+		}
+		pidsMu.Lock()
+		_, isOwn := own[pid]
+		pidsMu.Unlock()
+		if !isOwn {
+			t.Fatalf("non-git child process %d appeared during clone and push", pid)
 		}
 	}
 }
