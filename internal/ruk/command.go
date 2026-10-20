@@ -384,19 +384,27 @@ func (d *commandDriver) answerHook(ctx context.Context, payload []byte) error {
 	type answered struct {
 		reply wire.HookReply
 	}
+	hctx, stop := context.WithTimeout(ctx, budget)
+	defer stop()
 	box := make(chan answered, 1)
 	go func() {
-		box <- answered{reply: d.handle(ctx, call)}
+		box <- answered{reply: d.handle(hctx, call)}
 	}()
-	timer := time.NewTimer(budget)
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("RunCommand: %w: %w", ctx.Err(), ErrOutcomeUnknown)
 	case out := <-box:
 		return d.sendReply(out.reply)
-	case <-timer.C:
+	case <-hctx.Done():
+		select {
+		case out := <-box:
+			return d.sendReply(out.reply)
+		default:
+		}
 		_ = d.sendReply(wire.RejectAllHookReply("hook handler timed out"))
+		if ctx.Err() != nil {
+			return fmt.Errorf("RunCommand: %w: %w", ctx.Err(), ErrOutcomeUnknown)
+		}
 		return fmt.Errorf("RunCommand: %w: hook handler timed out", ErrOutcomeUnknown)
 	}
 }
