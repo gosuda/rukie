@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"io"
@@ -31,23 +32,23 @@ import (
 )
 
 type userRec struct {
-	user  auth.User
 	token string
+	user  auth.User
 }
 
 type stack struct {
 	t       *testing.T
-	dir     string
-	roots   string
-	socket  string
 	server  *httptest.Server
-	url     string
-	handler http.Handler
 	auth    *auth.Service
 	db      *sql.DB
 	client  *ruk.Client
 	child   *rukproc.Child
+	handler http.Handler
 	users   map[string]userRec
+	dir     string
+	roots   string
+	socket  string
+	url     string
 }
 
 func gitBin(t *testing.T) string {
@@ -89,8 +90,8 @@ func newStack(t *testing.T, limits *wire.GitLimits) *stack {
 	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\nframe_timeout_ms = 5000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n",
 		socket, roots, os.Getuid())
 	configPath := filepath.Join(dir, "daemon.toml")
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatalf("daemon config: %v", err)
+	if werr := os.WriteFile(configPath, []byte(config), 0o600); werr != nil {
+		t.Fatalf("daemon config: %v", werr)
 	}
 	var logs bytes.Buffer
 	child, err := rukproc.StartServe(rukBin(t), configPath, os.Environ(), &logs, &logs)
@@ -105,7 +106,7 @@ func newStack(t *testing.T, limits *wire.GitLimits) *stack {
 	})
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, err := os.Stat(socket); err == nil {
+		if _, serr := os.Stat(socket); serr == nil {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -259,7 +260,7 @@ func gitEnv(t *testing.T) []string {
 	}
 }
 
-func gitRun(t *testing.T, ctx context.Context, dir string, args ...string) (string, error) {
+func gitRun(ctx context.Context, t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, gitBin(t), args...)
 	cmd.Dir = dir
@@ -276,7 +277,7 @@ func (s *stack) localRepo(t *testing.T, files map[string]string) (string, string
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	dir := t.TempDir()
-	if out, err := gitRun(t, ctx, dir, "init", "-b", "main", "."); err != nil {
+	if out, err := gitRun(ctx, t, dir, "init", "-b", "main", "."); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
 	for name, content := range files {
@@ -288,13 +289,13 @@ func (s *stack) localRepo(t *testing.T, files map[string]string) (string, string
 			t.Fatalf("write: %v", err)
 		}
 	}
-	if out, err := gitRun(t, ctx, dir, "add", "-A"); err != nil {
+	if out, err := gitRun(ctx, t, dir, "add", "-A"); err != nil {
 		t.Fatalf("git add: %v\n%s", err, out)
 	}
-	if out, err := gitRun(t, ctx, dir, "commit", "-m", "seed"); err != nil {
+	if out, err := gitRun(ctx, t, dir, "commit", "-m", "seed"); err != nil {
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
-	out, err := gitRun(t, ctx, dir, "rev-parse", "HEAD")
+	out, err := gitRun(ctx, t, dir, "rev-parse", "HEAD")
 	if err != nil {
 		t.Fatalf("rev-parse: %v\n%s", err, out)
 	}
@@ -305,7 +306,7 @@ func (s *stack) lsRemote(t *testing.T, repoURL string) map[string]string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
-	out, err := gitRun(t, ctx, t.TempDir(), "ls-remote", repoURL)
+	out, err := gitRun(ctx, t, t.TempDir(), "ls-remote", repoURL)
 	if err != nil {
 		t.Fatalf("ls-remote: %v\n%s", err, out)
 	}
@@ -348,7 +349,7 @@ func TestGitPushFetchRoundTrip(t *testing.T) {
 	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	if out, err := gitRun(t, ctx, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
+	if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
 		t.Fatalf("push: %v\n%s", err, out)
 	}
 	refs := s.lsRemote(t, pushURL)
@@ -356,7 +357,7 @@ func TestGitPushFetchRoundTrip(t *testing.T) {
 		t.Fatalf("main = %q, want %q", refs["refs/heads/main"], oid)
 	}
 	cloneDir := t.TempDir()
-	if out, err := gitRun(t, ctx, cloneDir, "clone", pushURL, "hello"); err != nil {
+	if out, err := gitRun(ctx, t, cloneDir, "clone", pushURL, "hello"); err != nil {
 		t.Fatalf("clone: %v\n%s", err, out)
 	}
 	raw, err := os.ReadFile(filepath.Join(cloneDir, "hello", "README.md"))
@@ -365,6 +366,46 @@ func TestGitPushFetchRoundTrip(t *testing.T) {
 	}
 	if string(raw) != "hello\n" {
 		t.Fatalf("cloned content = %q", raw)
+	}
+}
+
+func TestGitLargePushStreamsWithinWindows(t *testing.T) {
+	s := newStack(t, nil)
+	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+	s.addRepo(t, "ada", "hello", "private")
+	raw := make([]byte, 1<<20)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	work, oid := s.localRepo(t, map[string]string{"big.bin": string(raw)})
+	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+	ctx, cancel := context.WithTimeout(t.Context(), 180*time.Second)
+	defer cancel()
+	if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
+		t.Fatalf("large push: %v\n%s", err, out)
+	}
+	if refs := s.lsRemote(t, pushURL); refs["refs/heads/main"] != oid {
+		t.Fatalf("main = %q, want %q", refs["refs/heads/main"], oid)
+	}
+}
+
+func TestGitProtocolV0Fetch(t *testing.T) {
+	s := newStack(t, nil)
+	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+	s.addRepo(t, "ada", "hello", "private")
+	work, oid := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+	defer cancel()
+	if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+	out, err := gitRun(ctx, t, t.TempDir(), "-c", "protocol.version=0", "ls-remote", pushURL)
+	if err != nil {
+		t.Fatalf("v0 ls-remote: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, oid) {
+		t.Fatalf("v0 ls-remote lacks %s:\n%s", oid, out)
 	}
 }
 
@@ -383,7 +424,7 @@ func TestConcurrentPushesSerialize(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 			defer cancel()
 			ref := "refs/heads/concurrent-" + strconv.Itoa(i)
-			out, err := gitRun(t, ctx, work, "push", pushURL, "HEAD:"+ref)
+			out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:"+ref)
 			outputs[i] = out
 			errs[i] = err
 		})
@@ -467,14 +508,14 @@ func TestGitLandOnlyDirectPushDenied(t *testing.T) {
 	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	out, err := gitRun(t, ctx, work, "push", pushURL, "HEAD:refs/heads/main")
+	out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main")
 	if err == nil {
 		t.Fatalf("direct push to a LandOnly branch succeeded\n%s", out)
 	}
 	if refs := s.lsRemote(t, pushURL); refs["refs/heads/main"] != "" {
 		t.Fatalf("main landed despite the LandOnly rule: %q", refs["refs/heads/main"])
 	}
-	if out, err := gitRun(t, ctx, work, "push", pushURL, "HEAD:refs/heads/feature"); err != nil {
+	if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/feature"); err != nil {
 		t.Fatalf("unprotected branch push failed: %v\n%s", err, out)
 	}
 }
@@ -508,24 +549,24 @@ func TestGitAuthorizesBeforeOpeningStream(t *testing.T) {
 	}
 	roots := filepath.Join(dir, "roots")
 	repoGit := filepath.Join(roots, "ada", "hello.git", ".ruk")
-	if err := os.MkdirAll(repoGit, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	if merr := os.MkdirAll(repoGit, 0o755); merr != nil {
+		t.Fatalf("mkdir: %v", merr)
 	}
 	now := time.Now().UnixMilli()
-	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, created_at, updated_at) VALUES (?, 0, ?, ?, ?, ?)`, admin.ID, "hello", "private", now, now); err != nil {
-		t.Fatalf("insert repo: %v", err)
+	if _, ierr := svc.DB().ExecContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, created_at, updated_at) VALUES (?, 0, ?, ?, ?, ?)`, admin.ID, "hello", "private", now, now); ierr != nil {
+		t.Fatalf("insert repo: %v", ierr)
 	}
 	socket := filepath.Join(dir, "count.sock")
-	ln, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	ln, lerr := net.Listen("unix", socket)
+	if lerr != nil {
+		t.Fatalf("listen: %v", lerr)
 	}
 	defer func() { _ = ln.Close() }()
 	fake := &countingDaemon{t: t, opens: make(chan struct{}, 64)}
 	go func() {
 		for {
-			conn, err := ln.Accept()
-			if err != nil {
+			conn, aerr := ln.Accept()
+			if aerr != nil {
 				return
 			}
 			go fake.serve(conn)
@@ -631,7 +672,7 @@ func TestGitStreamLimitsRefuseOversizePush(t *testing.T) {
 	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	out, err := gitRun(t, ctx, work, "push", pushURL, "HEAD:refs/heads/main")
+	out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main")
 	if err == nil {
 		t.Fatalf("oversize push succeeded\n%s", out)
 	}
@@ -652,7 +693,7 @@ func TestRefsForRejectedUntilReview(t *testing.T) {
 	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	out, err := gitRun(t, ctx, work, "push", pushURL, "HEAD:refs/for/main")
+	out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/for/main")
 	if err == nil {
 		t.Fatalf("refs/for push succeeded without review\n%s", out)
 	}
@@ -696,24 +737,24 @@ func TestNoGitProcessInBoundary(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("process boundary check needs /proc")
 	}
-	self := os.Getpid()
-	before, err := childNames(self)
-	if err != nil {
-		t.Fatalf("snapshot: %v", err)
-	}
 	s := newStack(t, nil)
 	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
 	s.addRepo(t, "ada", "hello", "private")
 	work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
 	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+	self := os.Getpid()
+	before, err := childNames(self)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 	defer cancel()
 	cloneParent := t.TempDir()
-	if out, err := gitRun(t, ctx, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
-		t.Fatalf("push: %v\n%s", err, out)
+	if pout, perr := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); perr != nil {
+		t.Fatalf("push: %v\n%s", perr, pout)
 	}
-	if out, err := gitRun(t, ctx, cloneParent, "clone", pushURL, "hello"); err != nil {
-		t.Fatalf("clone: %v\n%s", err, out)
+	if cout, cerr := gitRun(ctx, t, cloneParent, "clone", pushURL, "hello"); cerr != nil {
+		t.Fatalf("clone: %v\n%s", cerr, cout)
 	}
 	after, err := childNames(self)
 	if err != nil {

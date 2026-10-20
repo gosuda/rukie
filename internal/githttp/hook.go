@@ -35,7 +35,7 @@ func isCharBoundary(text string, i int) bool {
 }
 
 func (s *Server) hookHandler(caller access.Caller, repoID int64) ruk.HookHandler {
-	return func(ctx context.Context, call wire.HookCall) wire.HookReply {
+	return func(_ context.Context, call wire.HookCall) wire.HookReply {
 		verdicts := make([]wire.HookRefVerdict, 0, len(call.Commands))
 		for _, cmd := range call.Commands {
 			verdicts = append(verdicts, wire.HookRefVerdict{

@@ -36,11 +36,11 @@ type Config struct {
 	Auth        *auth.Service
 	Limiter     *access.Limiter
 	Client      *ruk.Client
+	Clock       func() time.Time
 	RepoRoot    string
 	SocketPath  string
 	Limits      wire.GitLimits
 	HookTimeout time.Duration
-	Clock       func() time.Time
 }
 
 type Server struct {
@@ -49,12 +49,12 @@ type Server struct {
 	client      *ruk.Client
 	resolver    *access.SQLResolver
 	db          *sql.DB
-	mu          sync.Mutex
+	clock       func() time.Time
 	repoRoot    string
 	socketPath  string
 	limits      wire.GitLimits
 	hookTimeout time.Duration
-	clock       func() time.Time
+	mu          sync.Mutex
 }
 
 func New(cfg Config) (*Server, error) {
@@ -257,7 +257,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.serveRound(w, r, rt, receiveServiceName)
-	default:
+	case routeNone:
 		writeText(w, http.StatusNotFound, "not found")
 	}
 }

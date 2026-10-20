@@ -73,18 +73,18 @@ func DefaultGitLimits() GitLimits {
 }
 
 type CommandAccepted struct {
+	InvocationID string `json:"invocation_id"`
 	StreamID     uint64 `json:"stream_id"`
 	StdinCredit  uint64 `json:"stdin_credit"`
-	InvocationID string `json:"invocation_id"`
 }
 
 type CommandExitReport struct {
-	ExitCode     int32    `json:"exit_code"`
 	Signal       string   `json:"signal"`
-	Cancelled    bool     `json:"cancelled"`
 	Outcome      string   `json:"outcome"`
-	OperationIDs []string `json:"operation_ids"`
 	InvocationID string   `json:"invocation_id"`
+	OperationIDs []string `json:"operation_ids"`
+	ExitCode     int32    `json:"exit_code"`
+	Cancelled    bool     `json:"cancelled"`
 }
 
 type HookPhase string
@@ -191,9 +191,9 @@ type HookRefVerdict struct {
 }
 
 type HookReply struct {
-	RejectAll bool             `json:"reject_all"`
 	Reason    *string          `json:"reason"`
 	Verdicts  []HookRefVerdict `json:"verdicts"`
+	RejectAll bool             `json:"reject_all"`
 }
 
 func RejectAllHookReply(reason string) HookReply {
@@ -228,6 +228,14 @@ type ErrorReply struct {
 type WindowCredit struct {
 	Direction   string `json:"direction,omitempty"`
 	CreditBytes uint64 `json:"credit_bytes"`
+	Bytes       uint64 `json:"bytes,omitzero"`
+}
+
+func (c WindowCredit) Credit() uint64 {
+	if c.Bytes != 0 {
+		return c.Bytes
+	}
+	return c.CreditBytes
 }
 
 // SchemaArgs restricts one schema read.

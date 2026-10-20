@@ -59,8 +59,8 @@ func RunCommand(ctx context.Context, c *Client, open wire.ServiceOpen, stdin io.
 		case <-closed:
 		}
 	}()
-	if err := pc.writeKind(KindOpen, s.id, rawOpen); err != nil {
-		return zero, nil, fmt.Errorf("RunCommand: %w: %w", err, ErrOutcomeUnknown)
+	if openErr := pc.writeKind(KindOpen, s.id, rawOpen); openErr != nil {
+		return zero, nil, fmt.Errorf("RunCommand: %w: %w", openErr, ErrOutcomeUnknown)
 	}
 	d := &commandDriver{pc: pc, id: s.id, stdout: stdout, handle: handle, service: open.Service}
 	var report wire.CommandExitReport
@@ -83,15 +83,15 @@ func RunCommand(ctx context.Context, c *Client, open wire.ServiceOpen, stdin io.
 }
 
 type commandDriver struct {
-	pc       *conn
 	stdout   io.Writer
+	pc       *conn
 	handle   HookHandler
 	service  string
+	invoking string
+	refusal  wire.ErrorReply
 	stderr   []byte
 	id       uint64
 	window   uint64
-	invoking string
-	refusal  wire.ErrorReply
 	hasRef   bool
 }
 
@@ -163,8 +163,8 @@ func (d *commandDriver) awaitAccepted(ctx context.Context) (wire.CommandAccepted
 
 func (d *commandDriver) readAbortable(ctx context.Context) (Frame, error) {
 	type result struct {
-		frame Frame
 		err   error
+		frame Frame
 	}
 	box := make(chan result, 1)
 	go func() {
@@ -243,7 +243,7 @@ func (d *commandDriver) refill(ctx context.Context) error {
 			if credit.Direction != "" && credit.Direction != "stdin" {
 				return fmt.Errorf("RunCommand: %w: credit for %q", ErrProtocol, credit.Direction)
 			}
-			d.window += credit.CreditBytes
+			d.window += credit.Credit()
 			return nil
 		case KindError:
 			d.recordRefusal(frame.Payload)
@@ -253,7 +253,7 @@ func (d *commandDriver) refill(ctx context.Context) error {
 				return err
 			}
 			return commandTerminal{report: report, completed: completed}
-		default:
+		case KindOpen, KindAccepted, KindStdin, KindStdinEOF, KindStdout, KindStderr, KindCancel, KindHookCall, KindHookReply:
 			return fmt.Errorf("RunCommand: %w: kind %d during stdin", ErrProtocol, uint8(frame.Kind))
 		}
 	}
@@ -342,7 +342,7 @@ func (d *commandDriver) drain(ctx context.Context) (wire.CommandExitReport, []by
 			if credit.Direction != "" && credit.Direction != "stdin" {
 				return d.fail("credit for %q", credit.Direction)
 			}
-			d.window += credit.CreditBytes
+			d.window += credit.Credit()
 		case KindHookCall:
 			if err := d.answerHook(ctx, frame.Payload); err != nil {
 				return wire.CommandExitReport{}, d.stderr, false, err
@@ -351,7 +351,7 @@ func (d *commandDriver) drain(ctx context.Context) (wire.CommandExitReport, []by
 			d.recordRefusal(frame.Payload)
 		case KindExit:
 			return d.finishExit(frame.Payload)
-		default:
+		case KindOpen, KindAccepted, KindStdin, KindStdinEOF, KindCancel, KindHookReply:
 			return d.fail("kind %d from daemon", uint8(frame.Kind))
 		}
 	}
@@ -363,7 +363,8 @@ func (d *commandDriver) answerHook(ctx context.Context, payload []byte) error {
 		return d.sendReply(wire.RejectAllHookReply("hook call malformed"))
 	}
 	budget := defaultHookBudget
-	if call.DeadlineMs > 0 && time.Duration(call.DeadlineMs)*time.Millisecond < budget {
+	hookBudgetMs := uint64(defaultHookBudget / time.Millisecond)
+	if call.DeadlineMs > 0 && call.DeadlineMs < hookBudgetMs {
 		budget = time.Duration(call.DeadlineMs) * time.Millisecond
 	}
 	if d.handle == nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
@@ -95,11 +96,11 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 		writeText(w, http.StatusNotFound, "repository not found")
 		return
 	}
-	cap := defaultUploadCap
+	budget := defaultUploadCap
 	if name == receiveServiceName {
-		cap = defaultReceiveCap
+		budget = defaultReceiveCap
 	}
-	ctx, stop := context.WithTimeout(r.Context(), cap)
+	ctx, stop := context.WithTimeout(r.Context(), budget)
 	defer stop()
 	client, err := s.clientFor(ctx)
 	if err != nil {
@@ -127,7 +128,7 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 	out := &flushWriter{w: w}
 	if !v2 {
 		line := "# service=git-" + name + "\n"
-		if _, err := fmt.Fprintf(out, "%04x%s0000", len(line)+4, line); err != nil {
+		if _, ferr := fmt.Fprintf(out, "%04x%s0000", len(line)+4, line); ferr != nil {
 			return
 		}
 	}
@@ -193,32 +194,31 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		return
 	}
 	path := s.storePath(rt)
-	if _, err := os.Stat(path); err != nil {
+	if _, serr := os.Stat(path); serr != nil {
 		writeText(w, http.StatusNotFound, "repository not found")
 		return
 	}
 	maxStdin := s.limits.MaxStdinBytes
-	if r.ContentLength > int64(maxStdin) {
+	if r.ContentLength >= 0 && uint64(r.ContentLength) > maxStdin {
 		writeText(w, http.StatusRequestEntityTooLarge, "request body is too large")
 		return
 	}
-	body := http.MaxBytesReader(w, r.Body, int64(maxStdin))
+	var body io.Reader = http.MaxBytesReader(w, r.Body, maxBodyBytes(maxStdin))
 	if strings.Contains(r.Header.Get("Content-Encoding"), "gzip") {
-		raw := body
-		gz, err := gzip.NewReader(raw)
-		if err != nil {
+		gz, gerr := gzip.NewReader(body)
+		if gerr != nil {
 			writeText(w, http.StatusBadRequest, "invalid gzip body")
 			return
 		}
 		defer func() { _ = gz.Close() }()
 		body = gz
 	}
-	counted := &countReader{reader: body, limit: uint64(maxStdin) + 1}
-	cap := defaultUploadCap
+	counted := &countReader{reader: body, limit: maxStdin + 1}
+	budget := defaultUploadCap
 	if name == receiveServiceName {
-		cap = defaultReceiveCap
+		budget = defaultReceiveCap
 	}
-	ctx, stop := context.WithTimeout(r.Context(), cap)
+	ctx, stop := context.WithTimeout(r.Context(), budget)
 	defer stop()
 	client, err := s.clientFor(ctx)
 	if err != nil {
@@ -247,6 +247,10 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 	out := &flushWriter{w: w}
 	report, stderr, err := ruk.RunCommand(ctx, client, open, counted, out, handle)
 	if counted.overflow {
+		out.fail(http.StatusRequestEntityTooLarge, "request body is too large")
+		return
+	}
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		out.fail(http.StatusRequestEntityTooLarge, "request body is too large")
 		return
 	}
@@ -296,6 +300,13 @@ func mapCommandError(err error) (int, string) {
 	return http.StatusBadGateway, "git service failed"
 }
 
+func maxBodyBytes(maxStdin uint64) int64 {
+	if maxStdin > uint64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(maxStdin)
+}
+
 func writeUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "5")
 	writeText(w, http.StatusServiceUnavailable, "daemon is unavailable")
@@ -313,9 +324,8 @@ func firstLine(raw []byte) string {
 }
 
 type flushWriter struct {
-	w     http.ResponseWriter
-	wrote int64
-	sent  bool
+	w    http.ResponseWriter
+	sent bool
 }
 
 func (f *flushWriter) Write(p []byte) (int, error) {
@@ -324,7 +334,6 @@ func (f *flushWriter) Write(p []byte) (int, error) {
 		f.w.WriteHeader(http.StatusOK)
 	}
 	n, err := f.w.Write(p)
-	f.wrote += int64(n)
 	if flusher, ok := f.w.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -359,6 +368,9 @@ func (c *countReader) Read(p []byte) (int, error) {
 		p = p[:allowed]
 	}
 	n, err := c.reader.Read(p)
+	if n < 0 {
+		return 0, fmt.Errorf("githttp: negative read")
+	}
 	c.total += uint64(n)
 	if c.total >= c.limit {
 		c.overflow = true

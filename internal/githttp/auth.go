@@ -12,10 +12,10 @@ import (
 )
 
 type identity struct {
-	caller access.Caller
+	repos  map[int64]bool
 	user   auth.User
 	token  auth.Token
-	repos  map[int64]bool
+	caller access.Caller
 	authed bool
 }
 
