@@ -32,9 +32,9 @@ func (s SecretSource) Resolve(stdin io.Reader) (string, error) {
 		return checkSecretLength(raw)
 	}
 	if *s.stdin {
-		raw, err := io.ReadAll(io.LimitReader(stdin, secretReadCap))
-		if err != nil {
-			return "", err
+		raw, readErr := io.ReadAll(io.LimitReader(stdin, secretReadCap))
+		if readErr != nil {
+			return "", readErr
 		}
 		if len(raw) >= secretReadCap {
 			return "", errors.New("password exceeds 512 bytes")
@@ -47,9 +47,14 @@ func (s SecretSource) Resolve(stdin io.Reader) (string, error) {
 const secretReadCap = 65536
 
 func readBoundedFile(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path) //nolint:gosec // G304 is intended here: --password-file names an operator-supplied secret file
 	if err != nil {
 		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	raw, readErr := io.ReadAll(io.LimitReader(f, secretReadCap))
+	if readErr != nil {
+		return "", readErr
 	}
 	if len(raw) >= secretReadCap {
 		return "", errors.New("password exceeds 512 bytes")

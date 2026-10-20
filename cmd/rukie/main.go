@@ -16,6 +16,7 @@ import (
 
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/api"
+	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/logging"
 	"github.com/gosuda/rukie/internal/op"
@@ -28,26 +29,68 @@ func main() {
 
 func run(argv []string) int {
 	if len(argv) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rukie <command> [flags]\ncommands: serve")
+		fmt.Fprintln(os.Stderr, "usage: rukie <command> [flags]\ncommands: serve, bootstrap")
 		return 64
 	}
 	switch argv[0] {
 	case "serve":
 		return runServe(argv[1:])
+	case "bootstrap":
+		return runBootstrap(argv[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", argv[0])
 		return 64
 	}
 }
 
-type stubAuth struct{}
-
-func (stubAuth) Bearer(_ context.Context, _ string) (op.Principal, error) {
-	return op.Principal{}, op.ErrUnauthenticated
-}
-
-func (stubAuth) Session(_ context.Context, _ string) (op.Principal, error) {
-	return op.AnonymousPrincipal(), nil
+func runBootstrap(argv []string) int {
+	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+	configFlag := fs.String("config", "", "config file path")
+	username := fs.String("username", "", "admin username")
+	secret := auth.RegisterSecretFlags(fs, "password")
+	if err := fs.Parse(argv); err != nil {
+		return 64
+	}
+	if *username == "" {
+		fmt.Fprintln(os.Stderr, "bootstrap: --username is required")
+		return 64
+	}
+	password, err := secret.Resolve(os.Stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bootstrap:", err.Error())
+		return 64
+	}
+	cfg, err := config.Load(configPath(*configFlag))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 78
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	defer func() {
+		_ = st.Close(ctx)
+	}()
+	svc, err := auth.Open(cfg.Store.SQLite.Path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	defer func() {
+		_ = svc.Close()
+	}()
+	u, err := svc.BootstrapAdmin(ctx, *username, password, "")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bootstrap:", err.Error())
+		return 1
+	}
+	if _, err := fmt.Fprintln(os.Stdout, "admin "+u.Name+" created"); err != nil {
+		return 1
+	}
+	return 0
 }
 
 func configPath(flagValue string) string {
@@ -104,8 +147,33 @@ func runServe(argv []string) int {
 		logger.Error("register ops", slog.Any("err", regErr))
 		return 1
 	}
+	authSvc, err := auth.Open(cfg.Store.SQLite.Path)
+	if err != nil {
+		logger.Error("open auth", slog.Any("err", err))
+		return 1
+	}
+	defer func() {
+		_ = authSvc.Close()
+	}()
+	limiter := access.NewLimiter()
+	authDeps := api.Deps{Service: authSvc, Limiter: limiter, Reveals: auth.NewRevealCache()}
+	if regErr := api.RegisterAuth(table, authDeps); regErr != nil {
+		logger.Error("register auth ops", slog.Any("err", regErr))
+		return 1
+	}
+	if regErr := api.RegisterUser(table, authDeps); regErr != nil {
+		logger.Error("register user ops", slog.Any("err", regErr))
+		return 1
+	}
+	if regErr := api.RegisterAdmin(table, authDeps); regErr != nil {
+		logger.Error("register admin ops", slog.Any("err", regErr))
+		return 1
+	}
 	views := op.NewViews()
 	api.RegisterViews(views)
+	api.RegisterAuthViews(views)
+	api.RegisterUserViews(views)
+	api.RegisterAdminViews(views)
 	idem := op.NewMemoryIdempotency()
 	idem.StartSweeper(ctx, time.Minute)
 	auditor := op.FuncAuditor(func(_ context.Context, row op.AuditRow) error {
@@ -122,10 +190,10 @@ func runServe(argv []string) int {
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{
 		PublicOrigin:  cfg.HTTP.ExternalURL,
-		Authenticator: stubAuth{},
+		Authenticator: auth.NewAuthenticator(authSvc),
 		Idempotency:   idem,
 		Audit:         auditor,
-		Limiter:       access.NewLimiter(),
+		Limiter:       limiter,
 		CSRFKey:       csrfKey,
 		MaxBody:       cfg.HTTP.MaxRequestBodyBytes,
 		Views:         views,

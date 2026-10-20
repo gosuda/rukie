@@ -365,14 +365,14 @@ func TestPasswordFieldHasNoInlineFlag(t *testing.T) {
 	}
 	fs3 := flag.NewFlagSet("b3", flag.ContinueOnError)
 	src3 := RegisterSecretFlags(fs3, "password")
-	if err := fs3.Set("password-stdin", "true"); err != nil {
-		t.Fatalf("set: %v", err)
+	if setErr := fs3.Set("password-stdin", "true"); setErr != nil {
+		t.Fatalf("set: %v", setErr)
 	}
-	if _, err := src3.Resolve(strings.NewReader(strings.Repeat("x", 513))); err == nil {
+	if _, longErr := src3.Resolve(strings.NewReader(strings.Repeat("x", 513))); longErr == nil {
 		t.Fatal("513-byte secret silently accepted")
 	}
-	exact, err := src3.Resolve(strings.NewReader(strings.Repeat("y", 512) + "\n"))
-	if err != nil || len(exact) != 512 {
+	exact, exactErr := src3.Resolve(strings.NewReader(strings.Repeat("y", 512) + "\n"))
+	if exactErr != nil || len(exact) != 512 {
 		t.Fatalf("512-byte secret rejected: %v", len(exact))
 	}
 }
