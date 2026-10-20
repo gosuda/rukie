@@ -32,11 +32,172 @@ type HandshakeAccept struct {
 
 // InvocationOpen starts one typed call.
 type InvocationOpen struct {
-	RequestID *string `json:"request_id,omitempty"`
-	ArgsJSON  *string `json:"args_json,omitempty"`
-	SessionID *string `json:"session_id,omitempty"`
-	Repo      string  `json:"repo"`
-	Method    string  `json:"method"`
+	RequestID  *string `json:"request_id,omitempty"`
+	ArgsJSON   *string `json:"args_json,omitempty"`
+	SessionID  *string `json:"session_id,omitempty"`
+	OnBehalfOf *string `json:"on_behalf_of,omitempty"`
+	Repo       string  `json:"repo"`
+	Method     string  `json:"method"`
+}
+
+type ServiceOpen struct {
+	SessionID    *string   `json:"session_id,omitempty"`
+	RequestID    *string   `json:"request_id,omitempty"`
+	OnBehalfOf   *string   `json:"on_behalf_of,omitempty"`
+	Service      string    `json:"service"`
+	Repository   string    `json:"repository"`
+	GitProtocol  string    `json:"git_protocol"`
+	StdoutCredit uint64    `json:"stdout_credit"`
+	Advertise    bool      `json:"advertise"`
+	Limits       GitLimits `json:"limits"`
+}
+
+type GitLimits struct {
+	MaxPackBytes   uint64 `json:"max_pack_bytes"`
+	MaxObjects     uint64 `json:"max_objects"`
+	MaxObjectBytes uint64 `json:"max_object_bytes"`
+	MaxDeltaDepth  uint64 `json:"max_delta_depth"`
+	MaxStdinBytes  uint64 `json:"max_stdin_bytes"`
+	MaxPushOptions uint64 `json:"max_push_options"`
+}
+
+func DefaultGitLimits() GitLimits {
+	return GitLimits{
+		MaxPackBytes:   1 << 31,
+		MaxObjects:     5000000,
+		MaxObjectBytes: 512 << 20,
+		MaxDeltaDepth:  128,
+		MaxStdinBytes:  256 << 20,
+		MaxPushOptions: 256,
+	}
+}
+
+type CommandAccepted struct {
+	StreamID     uint64 `json:"stream_id"`
+	StdinCredit  uint64 `json:"stdin_credit"`
+	InvocationID string `json:"invocation_id"`
+}
+
+type CommandExitReport struct {
+	ExitCode     int32    `json:"exit_code"`
+	Signal       string   `json:"signal"`
+	Cancelled    bool     `json:"cancelled"`
+	Outcome      string   `json:"outcome"`
+	OperationIDs []string `json:"operation_ids"`
+	InvocationID string   `json:"invocation_id"`
+}
+
+type HookPhase string
+
+const (
+	HookPreReceive  HookPhase = "pre_receive"
+	HookPostReceive HookPhase = "post_receive"
+)
+
+type HookCommand struct {
+	Name       string `json:"name"`
+	Old        string `json:"old"`
+	New        string `json:"new"`
+	Authorized bool   `json:"authorized"`
+}
+
+type HookCall struct {
+	Phase       HookPhase     `json:"phase"`
+	Commands    []HookCommand `json:"commands"`
+	PushOptions []string      `json:"push_options"`
+	NewCommits  []string      `json:"new_commits"`
+	PackBytes   uint64        `json:"pack_bytes"`
+	DeadlineMs  uint64        `json:"deadline_ms"`
+}
+
+type HookVerdictKind string
+
+const (
+	HookAccept HookVerdictKind = "accept"
+	HookReject HookVerdictKind = "reject"
+	HookDivert HookVerdictKind = "divert"
+)
+
+type HookVerdict struct {
+	Kind      HookVerdictKind
+	Reason    string
+	ReviewRef string
+}
+
+func AcceptVerdict() HookVerdict {
+	return HookVerdict{Kind: HookAccept}
+}
+
+func RejectVerdict(reason string) HookVerdict {
+	return HookVerdict{Kind: HookReject, Reason: reason}
+}
+
+func DivertVerdict(reviewRef string) HookVerdict {
+	return HookVerdict{Kind: HookDivert, ReviewRef: reviewRef}
+}
+
+func (v HookVerdict) MarshalJSON() ([]byte, error) {
+	switch v.Kind {
+	case HookAccept:
+		return jsonv2.Marshal("accept")
+	case HookReject:
+		return jsonv2.Marshal(map[string]map[string]string{"reject": {"reason": v.Reason}})
+	case HookDivert:
+		return jsonv2.Marshal(map[string]map[string]string{"divert": {"review_ref": v.ReviewRef}})
+	default:
+		return nil, fmt.Errorf("wire hook verdict: unknown kind %q", string(v.Kind))
+	}
+}
+
+func (v *HookVerdict) UnmarshalJSON(data []byte) error {
+	var word string
+	if err := jsonv2.Unmarshal(data, &word, jsonv1.DefaultOptionsV1()); err == nil {
+		if word != "accept" {
+			return fmt.Errorf("wire hook verdict: unknown %q", word)
+		}
+		*v = AcceptVerdict()
+		return nil
+	}
+	var outer map[string]jsonv1.RawMessage
+	if err := jsonv2.Unmarshal(data, &outer, jsonv1.DefaultOptionsV1()); err != nil {
+		return fmt.Errorf("wire hook verdict: %w", err)
+	}
+	if raw, ok := outer["reject"]; ok {
+		var inner struct {
+			Reason string `json:"reason"`
+		}
+		if err := jsonv2.Unmarshal(raw, &inner, jsonv1.DefaultOptionsV1()); err != nil {
+			return fmt.Errorf("wire hook verdict: %w", err)
+		}
+		*v = RejectVerdict(inner.Reason)
+		return nil
+	}
+	if raw, ok := outer["divert"]; ok {
+		var inner struct {
+			ReviewRef string `json:"review_ref"`
+		}
+		if err := jsonv2.Unmarshal(raw, &inner, jsonv1.DefaultOptionsV1()); err != nil {
+			return fmt.Errorf("wire hook verdict: %w", err)
+		}
+		*v = DivertVerdict(inner.ReviewRef)
+		return nil
+	}
+	return fmt.Errorf("wire hook verdict: no known arm")
+}
+
+type HookRefVerdict struct {
+	Name    string      `json:"name"`
+	Verdict HookVerdict `json:"verdict"`
+}
+
+type HookReply struct {
+	RejectAll bool             `json:"reject_all"`
+	Reason    *string          `json:"reason"`
+	Verdicts  []HookRefVerdict `json:"verdicts"`
+}
+
+func RejectAllHookReply(reason string) HookReply {
+	return HookReply{RejectAll: true, Reason: &reason}
 }
 
 // InvocationAccepted admits one typed call.
