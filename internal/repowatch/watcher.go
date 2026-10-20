@@ -36,10 +36,10 @@ type Watcher struct {
 	queue    *queue.Queue
 	client   *ruk.Client
 	clock    func() time.Time
-	repoRoot string
-	mu       sync.Mutex
 	cancel   map[int64]context.CancelFunc
+	repoRoot string
 	wg       sync.WaitGroup
+	mu       sync.Mutex
 }
 
 func New(cfg Config) *Watcher {
@@ -291,13 +291,8 @@ func (w *Watcher) HandlePurge(ctx context.Context, job store.Job) error {
 	if oerr != nil {
 		return mapDaemonError(oerr)
 	}
-	derr := w.deleteDaemonRepo(ctx, repo, path)
-	if derr != nil {
-		if isDaemonNotFound(derr) {
-			derr = nil
-		} else {
-			return derr
-		}
+	if derr := w.deleteDaemonRepo(ctx, repo, path); derr != nil && !isDaemonNotFound(derr) {
+		return derr
 	}
 	return w.store.Write(ctx, func(tx *store.WriteTx) error {
 		return tx.HardDeleteRepo(row.ID)

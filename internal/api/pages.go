@@ -30,10 +30,6 @@ type Deps struct {
 	RukBin        string
 }
 
-func (d Deps) storeOf() *store.Store {
-	return d.Store
-}
-
 func (d Deps) now() time.Time {
 	if d.Clock != nil {
 		return d.Clock()

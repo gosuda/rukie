@@ -193,7 +193,7 @@ func liveStack(t *testing.T, bin string) *liveHarness {
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	seedBenchRepo(t, ctx, st, client, seedConfig{bin: bin, roots: roots, ownerID: admin.ID})
+	seedBenchRepo(ctx, t, st, client, seedConfig{bin: bin, roots: roots, ownerID: admin.ID})
 	deps := api.Deps{
 		Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(),
 		Store: st, Ruk: client, Queue: queue.Open(st, time.Now),
@@ -213,8 +213,8 @@ func liveStack(t *testing.T, bin string) *liveHarness {
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
 	} {
-		if err := step(); err != nil {
-			t.Fatalf("register: %v", err)
+		if serr := step(); serr != nil {
+			t.Fatalf("register: %v", serr)
 		}
 	}
 	views := op.NewViews()
@@ -265,7 +265,7 @@ type seedConfig struct {
 	ownerID int64
 }
 
-func seedBenchRepo(t *testing.T, ctx context.Context, st *store.Store, client *ruk.Client, cfg seedConfig) {
+func seedBenchRepo(ctx context.Context, t *testing.T, st *store.Store, client *ruk.Client, cfg seedConfig) {
 	t.Helper()
 	bin := cfg.bin
 	roots := cfg.roots
@@ -300,12 +300,12 @@ func seedBenchRepo(t *testing.T, ctx context.Context, st *store.Store, client *r
 	treeFile := filepath.Join(t.TempDir(), "tree")
 	blobRaw := mustHex(t, blob)
 	entry := append([]byte("100644 README.md\x00"), blobRaw...)
-	if err := os.WriteFile(treeFile, entry, 0o600); err != nil {
-		t.Fatalf("tree file: %v", err)
+	if werr := os.WriteFile(treeFile, entry, 0o600); werr != nil {
+		t.Fatalf("tree file: %v", werr)
 	}
-	treeOut, err := rukproc.Run(ctx, bin, []string{"git", "--git-dir=" + repoDir, "hash-object", "-w", "-t", "tree", treeFile}, env)
-	if err != nil {
-		t.Fatalf("mktree: %v", err)
+	treeOut, terr := rukproc.Run(ctx, bin, []string{"git", "--git-dir=" + repoDir, "hash-object", "-w", "-t", "tree", treeFile}, env)
+	if terr != nil {
+		t.Fatalf("mktree: %v", terr)
 	}
 	tree := strings.TrimSpace(string(treeOut))
 	commitOut, err := rukproc.Run(ctx, bin, []string{"git", "--git-dir=" + repoDir, "commit-tree", tree, "-m", "seed"}, env)

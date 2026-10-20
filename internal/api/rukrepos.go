@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,19 +19,14 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 )
 
-var (
-	errRukUnavailable = errors.New("ruk backend is not configured")
-	errRepoGone       = errors.New("repository is deleted")
-)
-
 type requester struct {
-	caller     access.Caller
-	user       auth.User
-	tokenHash  string
 	tokenRepos map[int64]bool
+	tokenHash  string
+	user       auth.User
+	caller     access.Caller
+	userID     int64
 	authed     bool
 	isToken    bool
-	userID     int64
 }
 
 func (d Deps) requester(ctx context.Context, p op.Principal) (requester, error) {
@@ -143,24 +137,6 @@ func firstLine(s string) string {
 	return s
 }
 
-func newRequestID() string {
-	var raw [16]byte
-	_, _ = rand.Read(raw[:])
-	raw[6] = raw[6]&0x0f | 0x40
-	raw[8] = raw[8]&0x3f | 0x80
-	var out [36]byte
-	hex.Encode(out[0:8], raw[0:4])
-	out[8] = '-'
-	hex.Encode(out[9:13], raw[4:6])
-	out[13] = '-'
-	hex.Encode(out[14:18], raw[6:8])
-	out[18] = '-'
-	hex.Encode(out[19:23], raw[8:10])
-	out[23] = '-'
-	hex.Encode(out[24:36], raw[10:16])
-	return string(out[:])
-}
-
 type ByteString string
 
 func (b *ByteString) UnmarshalJSON(data []byte) error {
@@ -202,17 +178,8 @@ type CommitRev struct {
 	Commit string `json:"commit,omitempty"`
 }
 
-func commitRevFor(oid string) CommitRev {
-	return CommitRev{Commit: oid}
-}
-
 type RevisionRef struct {
 	Head *CommitRev `json:"head,omitempty"`
-}
-
-func headRevision(oid string) RevisionRef {
-	rev := commitRevFor(oid)
-	return RevisionRef{Head: &rev}
 }
 
 type RukPage struct {
@@ -243,11 +210,11 @@ type PageItems[T any] struct {
 
 type CommitSummary struct {
 	Head       map[string]any   `json:"head"`
-	Parents    []map[string]any `json:"parents"`
+	Change     *string          `json:"change,omitempty"`
 	Author     RukSignature     `json:"author"`
 	Committer  RukSignature     `json:"committer"`
 	Subject    ByteString       `json:"subject"`
-	Change     *string          `json:"change,omitempty"`
+	Parents    []map[string]any `json:"parents"`
 	Conflicted bool             `json:"conflicted"`
 	Divergent  bool             `json:"divergent"`
 }
@@ -255,26 +222,26 @@ type CommitSummary struct {
 type RukSignature struct {
 	Name      ByteString `json:"name"`
 	Email     ByteString `json:"email"`
-	Timestamp int64      `json:"timestamp"`
 	Offset    string     `json:"offset"`
+	Timestamp int64      `json:"timestamp"`
 }
 
 type BlameHunk struct {
 	Head         map[string]any `json:"head"`
-	Author       RukSignature   `json:"author"`
-	OriginalPath ByteString     `json:"original_path"`
 	Change       *string        `json:"change,omitempty"`
+	OriginalPath ByteString     `json:"original_path"`
+	Author       RukSignature   `json:"author"`
 	StartLine    uint32         `json:"start_line"`
 	LineCount    uint32         `json:"line_count"`
 }
 
 type FileDiff struct {
-	Path       ByteString      `json:"path"`
 	OldPath    *ByteString     `json:"old_path,omitempty"`
-	Kind       string          `json:"kind"`
 	Body       map[string]any  `json:"body"`
 	Old        *map[string]any `json:"old,omitempty"`
 	New        *map[string]any `json:"new,omitempty"`
+	Path       ByteString      `json:"path"`
+	Kind       string          `json:"kind"`
 	Conflicted bool            `json:"conflicted"`
 }
 
@@ -284,9 +251,9 @@ type QueryMatch struct {
 }
 
 type FileBlob struct {
+	Content    map[string]any `json:"content"`
 	Oid        string         `json:"oid"`
 	Size       uint64         `json:"size"`
-	Content    map[string]any `json:"content"`
 	Executable bool           `json:"executable"`
 }
 
@@ -305,28 +272,29 @@ type FileBody struct {
 
 type ShowCommit struct {
 	Head   map[string]any `json:"head"`
-	Record ShowRecord     `json:"record"`
 	Change *string        `json:"change,omitempty"`
+	Record ShowRecord     `json:"record"`
 }
 
 type ShowRecord struct {
-	Kind        string          `json:"kind"`
-	ChangeID    string          `json:"change_id"`
 	Encoded     map[string]any  `json:"encoded"`
 	Predecessor *map[string]any `json:"predecessor,omitempty"`
+	Kind        string          `json:"kind"`
+	ChangeID    string          `json:"change_id"`
 }
 
 type ShowBody struct {
 	Commit *ShowCommit `json:"commit,omitempty"`
 	Object *struct {
+		Content map[string]any `json:"content"`
 		Oid     string         `json:"oid"`
 		Kind    string         `json:"kind"`
 		Size    uint64         `json:"size"`
-		Content map[string]any `json:"content"`
 	} `json:"object,omitempty"`
 }
 
 type AttestationRecord struct {
+	Supersedes    *string `json:"supersedes,omitempty"`
 	Subject       string  `json:"subject"`
 	Kind          string  `json:"kind"`
 	Result        string  `json:"result"`
@@ -334,7 +302,6 @@ type AttestationRecord struct {
 	PayloadDigest string  `json:"payload_digest"`
 	SignedAt      string  `json:"signed_at"`
 	Status        string  `json:"status"`
-	Supersedes    *string `json:"supersedes,omitempty"`
 }
 
 func byteSourceBytes(src map[string]any) ([]byte, error) {
@@ -372,12 +339,12 @@ func byteSourceBytes(src map[string]any) ([]byte, error) {
 }
 
 type repoContext struct {
-	row      store.RepoRow
+	resolver *access.SQLResolver
+	daemon   ruk.Repo
 	owner    string
 	name     string
-	daemon   ruk.Repo
+	row      store.RepoRow
 	request  requester
-	resolver *access.SQLResolver
 }
 
 func (d Deps) resolveRepo(ctx context.Context, r requester, owner, name string, includeDeleted bool) (repoContext, error) {
@@ -474,13 +441,25 @@ func isFullOid(s string) bool {
 	if len(s) != 40 && len(s) != 64 {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+	for i := range s {
+		if !isHexByte(s[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func isHexByte(c byte) bool {
+	switch {
+	case c >= '0' && c <= '9':
+		return true
+	case c >= 'a' && c <= 'f':
+		return true
+	case c >= 'A' && c <= 'F':
+		return true
+	default:
+		return false
+	}
 }
 
 func (d Deps) resolveRev(ctx context.Context, rc repoContext, rev string) (resolvedRev, error) {
@@ -785,7 +764,7 @@ func checkRepoName(name string) error {
 		return op.Errorf(op.CodeValidation, "repository name must not contain ..")
 	}
 	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+		if !isRepoNameByte(c) {
 			return op.Errorf(op.CodeValidation, "repository name uses an invalid character")
 		}
 	}
@@ -890,12 +869,27 @@ func etagMatches(header, etag string) bool {
 	return false
 }
 
-func clampLimit(limit, def, max int) int {
+func isRepoNameByte(c rune) bool {
+	switch {
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	case c == '.' || c == '_' || c == '-':
+		return true
+	default:
+		return false
+	}
+}
+
+func clampLimit(limit, def, maximum int) int {
 	if limit <= 0 {
 		return def
 	}
-	if limit > max {
-		return max
+	if limit > maximum {
+		return maximum
 	}
 	return limit
 }

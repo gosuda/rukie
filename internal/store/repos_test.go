@@ -57,6 +57,36 @@ func insertRepo(t *testing.T, s *Store, owner int64, name, visibility string) in
 	return id
 }
 
+func TestRepoInsertDefaultsEmptyTopics(t *testing.T) {
+	fx := openMigrated(t)
+	s := fx.store
+	var id int64
+	if err := s.Write(t.Context(), func(tx *WriteTx) error {
+		var ierr error
+		id, ierr = tx.InsertRepo(time.Now(), RepoInsert{
+			OwnerUserID:   sql.NullInt64{Int64: fx.owner, Valid: true},
+			Name:          "notopics",
+			Visibility:    "private",
+			DefaultBranch: "main",
+			RukPath:       "seed/notopics.git",
+		})
+		return ierr
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var row RepoRow
+	if err := s.Read(t.Context(), func(tx *ReadTx) error {
+		var gerr error
+		row, gerr = tx.GetRepo(id)
+		return gerr
+	}); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if row.Topics != "[]" {
+		t.Fatalf("topics = %q, want the JSON array default", row.Topics)
+	}
+}
+
 func TestRepoRoundTrip(t *testing.T) {
 	fx := openMigrated(t)
 	s := fx.store

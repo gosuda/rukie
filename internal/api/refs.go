@@ -94,9 +94,9 @@ type TagListIn struct {
 }
 
 type TagJSON struct {
+	Commit *string `json:"commit,omitempty"`
 	Name   string  `json:"name"`
 	Target string  `json:"target"`
-	Commit *string `json:"commit,omitempty"`
 }
 
 type TagListOut struct {
@@ -561,8 +561,8 @@ func tagCreateHandler(d Deps) func(context.Context, op.Principal, TagCreateIn) (
 }
 
 type tagSetReply struct {
-	Name   string         `json:"name"`
 	Target map[string]any `json:"target"`
+	Name   string         `json:"name"`
 }
 
 func refTargetString(target map[string]any) string {
@@ -743,12 +743,8 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 }
 
 func RegisterRefsViews(v *op.Views) {
-	op.PageView(v, "branch.list", func(w io.Writer, c op.ViewCtx, out BranchListOut) error {
-		return writeBranches(w, c, out)
-	})
-	op.PageView(v, "branch.get", func(w io.Writer, c op.ViewCtx, out BranchGetOut) error {
-		return writeBranch(w, c, out)
-	})
+	op.PageView(v, "branch.list", writeBranches)
+	op.PageView(v, "branch.get", writeBranch)
 	v.Form("branch.create", func(w io.Writer, c op.ViewCtx) error {
 		return writeBranches(w, c, BranchListOut{})
 	})
@@ -758,12 +754,8 @@ func RegisterRefsViews(v *op.Views) {
 	v.Form("branch.delete", func(w io.Writer, c op.ViewCtx) error {
 		return writeBranch(w, c, BranchGetOut{})
 	})
-	op.PageView(v, "tag.list", func(w io.Writer, c op.ViewCtx, out TagListOut) error {
-		return writeTags(w, c, out)
-	})
-	op.PageView(v, "tag.get", func(w io.Writer, c op.ViewCtx, out TagGetOut) error {
-		return writeTag(w, c, out)
-	})
+	op.PageView(v, "tag.list", writeTags)
+	op.PageView(v, "tag.get", writeTag)
 	v.Form("tag.create", func(w io.Writer, c op.ViewCtx) error {
 		return writeTags(w, c, TagListOut{})
 	})

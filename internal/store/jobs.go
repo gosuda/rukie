@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 )
 
 const (
@@ -161,25 +161,17 @@ func (tx *WriteTx) ClaimKindJobs(owner string, kinds []string, now time.Time, le
 	if at <= 0 {
 		return nil, fmt.Errorf("ClaimKindJobs: %w: time must be after the Unix epoch", ErrInvalid)
 	}
-	numbered := make([]string, 0, len(kinds))
-	for i := range kinds {
-		numbered = append(numbered, fmt.Sprintf("?%d", 4+i))
+	kindsJSON, jerr := jsonv2.Marshal(kinds)
+	if jerr != nil {
+		return nil, fmt.Errorf("ClaimKindJobs: %w", jerr)
 	}
-	atPos := 4 + len(kinds)
-	duePos := 5 + len(kinds)
-	limitPos := 6 + len(kinds)
-	query := `UPDATE jobs SET state = 'leased', lease_owner = ?1, lease_expires_at = ?2, updated_at = ?3
+	const query = `UPDATE jobs SET state = 'leased', lease_owner = ?1, lease_expires_at = ?2, updated_at = ?3
 WHERE id IN (SELECT id FROM jobs
-WHERE kind IN (` + strings.Join(numbered, ", ") + `) AND (state = 'queued' OR (state = 'leased' AND lease_expires_at <= ?` + fmt.Sprintf("%d", atPos) + `))
-AND (kind != 'repo_purge' OR json_extract(payload, '$.not_before') <= ?` + fmt.Sprintf("%d", duePos) + `)
-ORDER BY created_at, id LIMIT ?` + fmt.Sprintf("%d", limitPos) + `)
+WHERE kind IN (SELECT value FROM json_each(?4)) AND (state = 'queued' OR (state = 'leased' AND lease_expires_at <= ?5))
+AND (kind != 'repo_purge' OR json_extract(payload, '$.not_before') <= ?6)
+ORDER BY created_at, id LIMIT ?7)
 RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_expires_at, created_at, updated_at`
-	args := make([]any, 0, len(kinds)+6)
-	args = append(args, owner, at+lease.Milliseconds(), at)
-	for _, kind := range kinds {
-		args = append(args, kind)
-	}
-	args = append(args, at, at, limit)
+	args := []any{owner, at + lease.Milliseconds(), at, string(kindsJSON), at, at, limit}
 	rows, qerr := inner.QueryContext(tx.ctx, query, args...)
 	if qerr != nil {
 		return nil, fmt.Errorf("ClaimKindJobs: %w", qerr)

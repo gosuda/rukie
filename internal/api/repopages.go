@@ -105,6 +105,7 @@ func writeRepoHome(w io.Writer, c op.ViewCtx, out RepoGetOut) error {
 }
 
 func writeRepoList(w io.Writer, c op.ViewCtx, out RepoListOut) error {
+	_ = c
 	var b strings.Builder
 	b.WriteString(heading("Repositories"))
 	b.WriteString("<ul>\n")
@@ -194,6 +195,7 @@ func writeCollaborators(w io.Writer, c op.ViewCtx, out CollaboratorListOut) erro
 }
 
 func writeRevResolve(w io.Writer, c op.ViewCtx, out RevResolveOut) error {
+	_ = c
 	var b strings.Builder
 	b.WriteString(heading("Revision " + out.Rev))
 	b.WriteString("<dl>\n<dt>Kind</dt><dd>" + esc(out.Kind) + "</dd>\n")
@@ -302,6 +304,7 @@ func writeRaw(w io.Writer, c op.ViewCtx, out RawGetOut) error {
 }
 
 func writeBlame(w io.Writer, c op.ViewCtx, out BlameGetOut) error {
+	_ = c
 	var b strings.Builder
 	b.WriteString(heading("Blame for " + out.Path))
 	b.WriteString("<table>\n<tr><th>Lines</th><th>Commit</th><th>Author</th><th>Path</th></tr>\n")
@@ -320,6 +323,7 @@ func writeBlame(w io.Writer, c op.ViewCtx, out BlameGetOut) error {
 }
 
 func writeLog(w io.Writer, c op.ViewCtx, out LogListOut) error {
+	_ = c
 	var b strings.Builder
 	b.WriteString(heading("Commits"))
 	b.WriteString("<ul>\n")
@@ -366,6 +370,7 @@ func writeCommit(w io.Writer, c op.ViewCtx, out CommitGetOut) error {
 }
 
 func writeDiff(w io.Writer, c op.ViewCtx, out DiffGetOut) error {
+	_ = c
 	var b strings.Builder
 	b.WriteString(heading("Diff " + out.Left + ".." + out.Right))
 	for _, file := range out.Files {

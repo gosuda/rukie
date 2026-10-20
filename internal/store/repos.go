@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,7 +66,7 @@ func (tx *ReadTx) GetRepo(id int64) (RepoRow, error) {
 	}
 	row, serr := scanRepoRow(inner.QueryRowContext(tx.ctx,
 		`SELECT `+sqlRepoColumns+` FROM repos WHERE id = ?`, id).Scan)
-	if serr == sql.ErrNoRows {
+	if errors.Is(serr, sql.ErrNoRows) {
 		return RepoRow{}, fmt.Errorf("GetRepo: %w: repo %d", ErrNotFound, id)
 	}
 	return row, serr
@@ -100,7 +101,7 @@ WHERE owner_user_id = ? AND org_id = ? AND name = ?`
 	} else {
 		row, serr = scanRepoRow(inner.QueryRowContext(tx.ctx, query, nil, orgID, name).Scan)
 	}
-	if serr == sql.ErrNoRows {
+	if errors.Is(serr, sql.ErrNoRows) {
 		return RepoRow{}, fmt.Errorf("FindRepo: %w: %s", ErrNotFound, name)
 	}
 	return row, serr
@@ -116,17 +117,17 @@ func (tx *WriteTx) GetRepoForUpdate(id int64, includeDeleted bool) (RepoRow, err
 		query += ` AND deleted_at IS NULL`
 	}
 	row, serr := scanRepoRow(inner.QueryRowContext(tx.ctx, query, id).Scan)
-	if serr == sql.ErrNoRows {
+	if errors.Is(serr, sql.ErrNoRows) {
 		return RepoRow{}, fmt.Errorf("GetRepoForUpdate: %w: repo %d", ErrNotFound, id)
 	}
 	return row, serr
 }
 
 type RepoListFilter struct {
-	OwnerUserID int64
 	Visibility  string
 	Sort        string
 	Cursor      string
+	OwnerUserID int64
 	Limit       int
 }
 
@@ -161,17 +162,6 @@ func encodeRepoCursor(value string, id int64) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%s\x1f%d", value, id)))
 }
 
-func repoListOrder(sort string) string {
-	switch sort {
-	case "name":
-		return `name, id`
-	case "created":
-		return `created_at, id`
-	default:
-		return `updated_at, id`
-	}
-}
-
 func repoListValue(row RepoRow, sort string) string {
 	switch sort {
 	case "name":
@@ -199,7 +189,6 @@ func (tx *ReadTx) ListRepos(filter RepoListFilter) ([]RepoRow, string, error) {
 	if cerr != nil {
 		return nil, "", cerr
 	}
-	order := repoListOrder(filter.Sort)
 	query := `SELECT ` + sqlRepoColumns + ` FROM repos WHERE deleted_at IS NULL`
 	var args []any
 	if filter.OwnerUserID != 0 {
@@ -232,7 +221,14 @@ func (tx *ReadTx) ListRepos(filter RepoListFilter) ([]RepoRow, string, error) {
 			args = append(args, ms, cursor.ID)
 		}
 	}
-	query += ` ORDER BY ` + order + ` LIMIT ?`
+	switch filter.Sort {
+	case "name":
+		query += ` ORDER BY name, id LIMIT ?`
+	case "created":
+		query += ` ORDER BY created_at, id LIMIT ?`
+	default:
+		query += ` ORDER BY updated_at, id LIMIT ?`
+	}
 	args = append(args, limit+1)
 	rows, qerr := inner.QueryContext(tx.ctx, query, args...)
 	if qerr != nil {
@@ -325,6 +321,10 @@ func (tx *WriteTx) InsertRepo(now time.Time, in RepoInsert) (int64, error) {
 		return 0, err
 	}
 	at := msOf(now)
+	topics := in.Topics
+	if topics == "" {
+		topics = "[]"
+	}
 	var id int64
 	serr := inner.QueryRowContext(tx.ctx, `INSERT INTO repos
 (owner_user_id, org_id, name, visibility, description, website, topics,
@@ -332,7 +332,7 @@ func (tx *WriteTx) InsertRepo(now time.Time, in RepoInsert) (int64, error) {
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?)
 RETURNING id`,
 		in.OwnerUserID, in.OrgID, in.Name, in.Visibility, in.Description,
-		in.Website, in.Topics, in.DefaultBranch, in.RukPath, at, at).Scan(&id)
+		in.Website, topics, in.DefaultBranch, in.RukPath, at, at).Scan(&id)
 	if serr != nil {
 		return 0, mapErr(serr)
 	}
@@ -553,7 +553,7 @@ func (tx *ReadTx) FindRedirect(oldOwner int64, oldName string) (RedirectRow, err
 	serr := inner.QueryRowContext(tx.ctx, `SELECT old_owner_user_id, old_name, repo_id, created_at
 FROM repo_redirects WHERE old_owner_user_id = ? AND old_name = ?`, oldOwner, oldName).Scan(
 		&row.OldOwnerID, &row.OldName, &row.RepoID, &row.CreatedAt)
-	if serr == sql.ErrNoRows {
+	if errors.Is(serr, sql.ErrNoRows) {
 		return RedirectRow{}, fmt.Errorf("FindRedirect: %w: %s", ErrNotFound, oldName)
 	}
 	return row, serr

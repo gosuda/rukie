@@ -21,15 +21,15 @@ import (
 )
 
 type RepoJSON struct {
+	PurgeAfter    *int64   `json:"purge_after,omitempty"`
 	Owner         string   `json:"owner"`
 	Name          string   `json:"name"`
 	Description   string   `json:"description,omitempty"`
 	Website       string   `json:"website,omitempty"`
 	Visibility    string   `json:"visibility"`
 	DefaultBranch string   `json:"default_branch"`
-	Topics        []string `json:"topics,omitempty"`
 	State         string   `json:"state"`
-	PurgeAfter    *int64   `json:"purge_after,omitempty"`
+	Topics        []string `json:"topics,omitempty"`
 	CreatedAt     int64    `json:"created_at"`
 	UpdatedAt     int64    `json:"updated_at"`
 	Archived      bool     `json:"archived"`
@@ -106,12 +106,12 @@ type RepoReadmeJSON struct {
 }
 
 type RepoGetOut struct {
-	Repo   RepoJSON        `json:"repo"`
-	Commit string          `json:"commit,omitempty"`
-	Empty  bool            `json:"empty"`
-	Tree   []TreeEntryJSON `json:"tree,omitempty"`
-	Next   string          `json:"-"`
 	Readme *RepoReadmeJSON `json:"readme,omitempty"`
+	Commit string          `json:"commit,omitempty"`
+	Next   string          `json:"-"`
+	Tree   []TreeEntryJSON `json:"tree,omitempty"`
+	Repo   RepoJSON        `json:"repo"`
+	Empty  bool            `json:"empty"`
 }
 
 type RepoListIn struct {
@@ -130,9 +130,9 @@ type RepoListOut struct {
 type RepoUpdateBody struct {
 	Description   *string  `json:"description,omitempty" maxLength:"2048"`
 	Website       *string  `json:"website,omitempty" maxLength:"2048"`
-	Topics        []string `json:"topics,omitempty"`
 	DefaultBranch *string  `json:"default_branch,omitempty" maxLength:"255"`
 	Archived      *bool    `json:"archived,omitempty"`
+	Topics        []string `json:"topics,omitempty"`
 }
 
 type RepoUpdateIn struct {
@@ -384,10 +384,10 @@ func createRepoHandler(d Deps) func(context.Context, op.Principal, RepoCreateIn)
 }
 
 type repoInitReply struct {
+	DefaultBranch *string `json:"default_branch"`
 	Path          string  `json:"path"`
 	StoreID       string  `json:"store_id"`
 	ObjectFormat  string  `json:"object_format"`
-	DefaultBranch *string `json:"default_branch"`
 }
 
 func isHTTPURL(raw string) bool {
@@ -1251,8 +1251,8 @@ func removeCollaboratorHandler(d Deps) func(context.Context, op.Principal, Colla
 type RepoNewPageOut struct{}
 
 type RepoSettingsPageOut struct {
-	Repo RepoJSON `json:"repo"`
 	ETag string   `json:"etag"`
+	Repo RepoJSON `json:"repo"`
 }
 
 func RegisterRepos(t *op.Table, deps Deps) error {
@@ -1481,21 +1481,13 @@ func repoOutETag(repo RepoJSON) string {
 }
 
 func RegisterReposViews(v *op.Views) {
-	op.PageView(v, "repo.create.page", func(w io.Writer, c op.ViewCtx, out RepoNewPageOut) error {
-		return writeRepoNewPage(w, c, out)
-	})
+	op.PageView(v, "repo.create.page", writeRepoNewPage)
 	v.Form("repo.create", func(w io.Writer, c op.ViewCtx) error {
 		return writeRepoNewPage(w, c, RepoNewPageOut{})
 	})
-	op.PageView(v, "repo.get", func(w io.Writer, c op.ViewCtx, out RepoGetOut) error {
-		return writeRepoHome(w, c, out)
-	})
-	op.PageView(v, "repo.list", func(w io.Writer, c op.ViewCtx, out RepoListOut) error {
-		return writeRepoList(w, c, out)
-	})
-	op.PageView(v, "repo.settings.page", func(w io.Writer, c op.ViewCtx, out RepoSettingsPageOut) error {
-		return writeRepoSettings(w, c, out)
-	})
+	op.PageView(v, "repo.get", writeRepoHome)
+	op.PageView(v, "repo.list", writeRepoList)
+	op.PageView(v, "repo.settings.page", writeRepoSettings)
 	v.Form("repo.update", func(w io.Writer, c op.ViewCtx) error {
 		return writeRepoSettings(w, c, RepoSettingsPageOut{})
 	})
@@ -1511,9 +1503,7 @@ func RegisterReposViews(v *op.Views) {
 	v.Form("repo.restore", func(w io.Writer, c op.ViewCtx) error {
 		return writeRepoSettings(w, c, RepoSettingsPageOut{})
 	})
-	op.PageView(v, "repo.collaborator.list", func(w io.Writer, c op.ViewCtx, out CollaboratorListOut) error {
-		return writeCollaborators(w, c, out)
-	})
+	op.PageView(v, "repo.collaborator.list", writeCollaborators)
 	v.Form("repo.collaborator.add", func(w io.Writer, c op.ViewCtx) error {
 		return writeCollaborators(w, c, CollaboratorListOut{})
 	})

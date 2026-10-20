@@ -367,7 +367,9 @@ func TestWatcherPushProducesRefUpdated(t *testing.T) {
 	repoID := seedF1Repo(t, s, "ada", "hello", "private")
 	serveCtx, stop := context.WithCancel(t.Context())
 	defer stop()
-	h.watcher.StartAll(serveCtx)
+	if err := h.watcher.StartAll(serveCtx); err != nil {
+		t.Fatalf("watchers: %v", err)
+	}
 	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})
 	_ = oid
 	waitRefUpdated(t, s, "refs/heads/main", 2*time.Second)

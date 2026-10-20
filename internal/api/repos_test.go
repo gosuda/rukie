@@ -61,12 +61,12 @@ func buildRepoEnv(t *testing.T) *repoEnv {
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
 	} {
-		if err := step(); err != nil {
-			t.Fatalf("register: %v", err)
+		if serr := step(); serr != nil {
+			t.Fatalf("register: %v", serr)
 		}
 	}
-	if err := table.Validate(); err != nil {
-		t.Fatalf("validate: %v", err)
+	if verr := table.Validate(); verr != nil {
+		t.Fatalf("validate: %v", verr)
 	}
 	views := op.NewViews()
 	api.RegisterViews(views)

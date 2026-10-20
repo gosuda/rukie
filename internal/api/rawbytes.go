@@ -71,8 +71,8 @@ func (d Deps) rawMetadata(ctx context.Context, rc repoContext, rev, path string)
 }
 
 type RawBytes struct {
-	Deps Deps
 	mux  *http.ServeMux
+	Deps Deps
 }
 
 func (h RawBytes) routes() *http.ServeMux {
@@ -196,11 +196,11 @@ func problemStatus(code op.Code) int {
 }
 
 type rawPayload struct {
-	content     []byte
 	oid         string
-	size        uint64
 	contentType string
 	commit      string
+	content     []byte
+	size        uint64
 	fullOidRev  bool
 }
 
@@ -310,7 +310,7 @@ func (h RawBytes) setRawHeaders(w http.ResponseWriter, payload rawPayload, etag 
 	}
 }
 
-func (h RawBytes) serveRange(w http.ResponseWriter, r *http.Request, payload rawPayload, etag string, download bool, rng string) {
+func (h RawBytes) serveRange(w http.ResponseWriter, _ *http.Request, payload rawPayload, etag string, download bool, rng string) {
 	start, length, ok := parseSingleRange(rng, payload.size)
 	if !ok {
 		w.Header().Set("Content-Range", "bytes */"+strconv.FormatUint(payload.size, 10))

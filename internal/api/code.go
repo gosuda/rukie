@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,11 +20,11 @@ type RevResolveIn struct {
 }
 
 type RevResolveOut struct {
+	Ref       *string `json:"ref,omitempty"`
+	TagObject *string `json:"tag_object,omitempty"`
 	Rev       string  `json:"rev"`
 	Kind      string  `json:"kind"`
-	Ref       *string `json:"ref,omitempty"`
 	Commit    string  `json:"commit"`
-	TagObject *string `json:"tag_object,omitempty"`
 }
 
 type TreeGetIn struct {
@@ -68,17 +67,17 @@ type BlobGetIn struct {
 }
 
 type BlobGetOut struct {
+	Target     *string `json:"target,omitempty"`
+	Gitlink    *string `json:"gitlink,omitempty"`
 	Commit     string  `json:"commit"`
 	Path       string  `json:"path"`
 	Lines      string  `json:"lines,omitempty"`
 	Oid        string  `json:"oid"`
-	Size       uint64  `json:"size"`
 	Content    string  `json:"content,omitempty"`
+	Kind       string  `json:"kind"`
+	Size       uint64  `json:"size"`
 	Truncated  bool    `json:"truncated"`
 	Binary     bool    `json:"binary"`
-	Target     *string `json:"target,omitempty"`
-	Gitlink    *string `json:"gitlink,omitempty"`
-	Kind       string  `json:"kind"`
 	Executable bool    `json:"executable"`
 }
 
@@ -92,11 +91,11 @@ type RawGetIn struct {
 
 type RawGetOut struct {
 	Oid         string `json:"oid"`
-	Size        uint64 `json:"size"`
 	ContentType string `json:"content_type"`
 	Content     string `json:"content,omitempty"`
-	Truncated   bool   `json:"truncated"`
 	DownloadURL string `json:"download_url,omitempty"`
+	Size        uint64 `json:"size"`
+	Truncated   bool   `json:"truncated"`
 }
 
 type BlameGetIn struct {
@@ -104,18 +103,18 @@ type BlameGetIn struct {
 	Repo      string `path:"repo"`
 	Rev       string `path:"rev"`
 	Path      string `path:"path"`
+	Cursor    string `query:"cursor"`
 	StartLine int    `query:"start_line"`
 	EndLine   int    `query:"end_line"`
-	Cursor    string `query:"cursor"`
 	Limit     int    `query:"limit"`
 }
 
 type BlameHunkJSON struct {
+	Change       *string `json:"change,omitempty"`
 	Head         string  `json:"head"`
 	Author       string  `json:"author"`
 	Email        string  `json:"email"`
 	OriginalPath string  `json:"original_path"`
-	Change       *string `json:"change,omitempty"`
 	StartLine    uint32  `json:"start_line"`
 	LineCount    uint32  `json:"line_count"`
 }
@@ -132,9 +131,9 @@ type LogListIn struct {
 	Repo        string `path:"repo"`
 	Rev         string `path:"rev"`
 	Path        string `query:"path"`
-	FirstParent bool   `query:"first_parent"`
 	Cursor      string `query:"cursor"`
 	Limit       int    `query:"limit"`
+	FirstParent bool   `query:"first_parent"`
 }
 
 type logQuery struct {
@@ -148,12 +147,12 @@ type logQuery struct {
 }
 
 type CommitSummaryJSON struct {
+	Change     *string  `json:"change,omitempty"`
 	Head       string   `json:"head"`
-	Parents    []string `json:"parents"`
 	Author     string   `json:"author"`
 	Email      string   `json:"email"`
 	Subject    string   `json:"subject"`
-	Change     *string  `json:"change,omitempty"`
+	Parents    []string `json:"parents"`
 	Conflicted bool     `json:"conflicted"`
 	Divergent  bool     `json:"divergent"`
 }
@@ -193,19 +192,19 @@ type DiffGetIn struct {
 	Owner   string   `path:"owner"`
 	Repo    string   `path:"repo"`
 	Range   string   `path:"range"`
-	Path    []string `query:"path"`
-	Context int      `query:"context"`
 	Renames string   `query:"renames"`
 	Cursor  string   `query:"cursor"`
+	Path    []string `query:"path"`
+	Context int      `query:"context"`
 	Limit   int      `query:"limit"`
 }
 
 type DiffFileJSON struct {
-	Path       string  `json:"path"`
 	OldPath    *string `json:"old_path,omitempty"`
+	Path       string  `json:"path"`
 	Kind       string  `json:"kind"`
-	Binary     bool    `json:"binary"`
 	Patch      string  `json:"patch,omitempty"`
+	Binary     bool    `json:"binary"`
 	Conflicted bool    `json:"conflicted"`
 }
 
@@ -384,12 +383,13 @@ func blobGetHandler(d Deps) func(context.Context, op.Principal, BlobGetIn) (Blob
 			out.Oid = body.Blob.Oid
 			out.Size = body.Blob.Size
 			out.Executable = body.Blob.Executable
-			if isBinaryContent(content) {
+			switch {
+			case isBinaryContent(content):
 				out.Binary = true
-			} else if len(content) > maxInlineBytes {
+			case len(content) > maxInlineBytes:
 				out.Truncated = true
 				out.Content = string(content[:maxInlineBytes])
-			} else {
+			default:
 				out.Content = string(content)
 			}
 		case body.Symlink != nil:
@@ -1128,28 +1128,12 @@ func etagHash(s string) uint64 {
 }
 
 func RegisterCodeViews(v *op.Views) {
-	op.PageView(v, "code.rev.resolve", func(w io.Writer, c op.ViewCtx, out RevResolveOut) error {
-		return writeRevResolve(w, c, out)
-	})
-	op.PageView(v, "code.tree.get", func(w io.Writer, c op.ViewCtx, out TreeGetOut) error {
-		return writeTree(w, c, out)
-	})
-	op.PageView(v, "code.blob.get", func(w io.Writer, c op.ViewCtx, out BlobGetOut) error {
-		return writeBlob(w, c, out)
-	})
-	op.PageView(v, "code.raw.get", func(w io.Writer, c op.ViewCtx, out RawGetOut) error {
-		return writeRaw(w, c, out)
-	})
-	op.PageView(v, "code.blame.get", func(w io.Writer, c op.ViewCtx, out BlameGetOut) error {
-		return writeBlame(w, c, out)
-	})
-	op.PageView(v, "code.log.list", func(w io.Writer, c op.ViewCtx, out LogListOut) error {
-		return writeLog(w, c, out)
-	})
-	op.PageView(v, "code.commit.get", func(w io.Writer, c op.ViewCtx, out CommitGetOut) error {
-		return writeCommit(w, c, out)
-	})
-	op.PageView(v, "code.diff.get", func(w io.Writer, c op.ViewCtx, out DiffGetOut) error {
-		return writeDiff(w, c, out)
-	})
+	op.PageView(v, "code.rev.resolve", writeRevResolve)
+	op.PageView(v, "code.tree.get", writeTree)
+	op.PageView(v, "code.blob.get", writeBlob)
+	op.PageView(v, "code.raw.get", writeRaw)
+	op.PageView(v, "code.blame.get", writeBlame)
+	op.PageView(v, "code.log.list", writeLog)
+	op.PageView(v, "code.commit.get", writeCommit)
+	op.PageView(v, "code.diff.get", writeDiff)
 }
