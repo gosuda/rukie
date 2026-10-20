@@ -44,6 +44,11 @@ type Config struct {
 	SocketPath  string
 	Limits      wire.GitLimits
 	HookTimeout time.Duration
+	// Barrier takes a non-blocking shared hold on the backup mutex for
+	// one push's full write. A false ok refuses the push with 503
+	// backup/in-progress. Nil disables the gate (tests without a
+	// data dir, dev without a barrier file).
+	Barrier func() (release func(), ok bool)
 }
 
 type Server struct {
@@ -58,6 +63,7 @@ type Server struct {
 	socketPath  string
 	limits      wire.GitLimits
 	hookTimeout time.Duration
+	barrier     func() (func(), bool)
 	mu          sync.Mutex
 	// wants remembers the accepted pre-receive targets per push
 	// request id, so an unknown-outcome receive-pack reconciles
@@ -165,6 +171,7 @@ func New(cfg Config) (*Server, error) {
 		limits:      cfg.Limits,
 		hookTimeout: hookTimeout,
 		clock:       clock,
+		barrier:     cfg.Barrier,
 	}, nil
 }
 

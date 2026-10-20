@@ -188,6 +188,20 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		writeText(w, http.StatusForbidden, "token is not granted this repository")
 		return
 	}
+	// Step-0 write barrier: a live backup holds the mutex exclusively,
+	// so this push waits its turn as 503 backup/in-progress with
+	// Retry-After: 10 instead of writing past the snapshot. The shared
+	// hold covers the full stream, so the backup's exclusive take drains
+	// in-flight pushes first.
+	var releaseBarrier func() = func() {}
+	if name == receiveServiceName && s.barrier != nil {
+		var ok bool
+		if releaseBarrier, ok = s.barrier(); !ok {
+			supervisor.WriteBackupInProgress(w)
+			return
+		}
+		defer releaseBarrier()
+	}
 	path := s.storePath(rt)
 	if _, serr := os.Stat(path); serr != nil {
 		writeText(w, http.StatusNotFound, "repository not found")

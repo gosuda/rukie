@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,6 +22,11 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 )
 
+// barrierHoldSLO bounds the step-0 hold the way the 60 s bound covers
+// the wait: past it the backup still commits (it is consistent), but
+// the overrun is logged for SLO tracking per §5.2 step 4.
+const barrierHoldSLO = 60 * time.Second
+
 // ManifestVersion identifies the K10 manifest layout.
 const ManifestVersion = 1
 
@@ -31,14 +38,25 @@ type ManifestFile struct {
 }
 
 // ManifestDoc is the backup manifest. It records the secret key id so
-// restore can refuse a foreign backup; it never carries key bytes.
+// restore can refuse a foreign backup; it never carries key bytes. The
+// barrier fields prove t_M and t_R are one linearizable point per
+// ops-design §5.2: restore refuses a manifest without barrier_id unless
+// forced. Positions carries per-repo op-log tails for forward replay;
+// it stays empty until the op.log wrapper lands (F2) and reconcile
+// compares content hashes meanwhile.
 type ManifestDoc struct {
-	KeyID         string         `toml:"key_id"`
-	Files         []ManifestFile `toml:"files"`
-	Version       int            `toml:"version"`
-	CreatedAt     int64          `toml:"created_at"`
-	SchemaVersion int64          `toml:"schema_version"`
-	IncludeRepos  bool           `toml:"include_repos"`
+	BarrierID      string            `toml:"barrier_id"`
+	SnapshotSource string            `toml:"snapshot_source"`
+	KeyID          string            `toml:"key_id"`
+	Files          []ManifestFile    `toml:"files"`
+	Positions      map[string]uint64 `toml:"positions"`
+	Version        int               `toml:"version"`
+	CreatedAt      int64             `toml:"created_at"`
+	SchemaVersion  int64             `toml:"schema_version"`
+	TM             int64             `toml:"t_m"`
+	TR             int64             `toml:"t_r"`
+	BarrierHoldMs  int64             `toml:"barrier_hold_ms"`
+	IncludeRepos   bool              `toml:"include_repos"`
 }
 
 // ManifestName is the manifest file name inside a backup directory.
@@ -87,10 +105,22 @@ func copyFileHashed(src, dst string, mode os.FileMode) (ManifestFile, error) {
 	return ManifestFile{SHA256: hex.EncodeToString(h.Sum(nil)), Size: n}, nil
 }
 
-// Backup takes an online metadata snapshot plus a repo-tree copy into a
-// fresh timestamped directory under outBase and writes the manifest.
-// The secret key is hashed for its id only; no key byte enters the
-// backup. The caller must hold an open store; Backup never opens one.
+// Backup takes a paired snapshot (meta@t_M, ruk@t_R) into a fresh
+// timestamped directory under outBase and writes the manifest. The
+// secret key is hashed for its id only; no key byte enters the backup.
+// The caller must hold an open store; Backup never opens one.
+//
+// Consistency (ops-design §5.2): while a server is live, Backup holds
+// the step-0 write barrier from before the metadata snapshot until the
+// repo copy verifies, so t_M and t_R denote one linearizable point. New
+// mutations get 503 backup/in-progress during the hold, and taking the
+// barrier waits out in-flight ones up to 60 s, then aborts. Ruk's store
+// appends to segment tails in place, so no hardlink or copy trick
+// snapshots it: the copy reads repos/ only while quiesced under the
+// barrier, refs first so any interleaving stays a valid repo, and a
+// post-copy mtime sweep aborts on any write that slipped through.
+// Offline (no server lock) the copy is trivially stable and records
+// snapshot_source B.
 func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase string) (string, error) {
 	if outBase == "" {
 		return "", fmt.Errorf("sysops: backup output dir is required")
@@ -103,8 +133,41 @@ func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase str
 	if err != nil {
 		return "", err
 	}
+	var (
+		barrierID      string
+		snapshotSource = "B"
+		barrierHoldMs  int64
+		barrier        *Barrier
+		offlineLock    *DirLock
+	)
+	// Offline first: holding the data-dir lock through the whole backup
+	// stops a server from starting under the copy. When the lock is
+	// held (a server is live), fall back to the step-0 write barrier
+	// instead of refusing: the stopgap of refusing online backups is
+	// not the final state.
+	offlineLock, lerr := AcquireDataDirLock(cfg.DataDir)
+	if lerr == nil {
+		// Offline the copy is trivially stable with no concurrent
+		// writers, so the barrier is vacuous but still identified:
+		// every manifest proves its t_M/t_R lineage.
+		barrierID = ulidNow()
+		defer func() { _ = offlineLock.Release() }()
+	} else if errors.Is(lerr, ErrDataDirLive) {
+		b, berr := BeginBarrier(cfg.DataDir)
+		if berr != nil {
+			return "", berr
+		}
+		barrier = b
+		barrierID = b.ID()
+		snapshotSource = "barrier-held"
+	} else {
+		return "", lerr
+	}
 	dir, err := freshBackupDir(outBase)
 	if err != nil {
+		if barrier != nil {
+			_ = barrier.Close()
+		}
 		return "", err
 	}
 	placed := false
@@ -113,27 +176,53 @@ func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase str
 			_ = os.RemoveAll(dir)
 		}
 	}()
+	release := func() {
+		if barrier != nil {
+			barrierHoldMs = barrier.HeldFor().Milliseconds()
+			_ = barrier.Close()
+			barrier = nil
+		}
+	}
+	defer release()
 	if _, berr := st.Backup(ctx, filepath.Join(dir, "meta.sqlite")); berr != nil {
 		return "", fmt.Errorf("sysops: snapshot metadata: %w", berr)
 	}
+	tM := time.Now().UnixMilli()
 	metaHash, metaSize, herr := hashFile(filepath.Join(dir, "meta.sqlite"))
 	if herr != nil {
 		return "", fmt.Errorf("sysops: hash metadata snapshot: %w", herr)
 	}
 	doc := ManifestDoc{
-		Version:       ManifestVersion,
-		CreatedAt:     time.Now().UnixMilli(),
-		SchemaVersion: schema,
-		KeyID:         KeyID(key),
-		IncludeRepos:  true,
-		Files:         []ManifestFile{{Path: "meta.sqlite", SHA256: metaHash, Size: metaSize}},
+		BarrierID:      barrierID,
+		SnapshotSource: snapshotSource,
+		Version:        ManifestVersion,
+		CreatedAt:      time.Now().UnixMilli(),
+		SchemaVersion:  schema,
+		TM:             tM,
+		KeyID:          KeyID(key),
+		IncludeRepos:   true,
+		Positions:      map[string]uint64{},
+		Files:          []ManifestFile{{Path: "meta.sqlite", SHA256: metaHash, Size: metaSize}},
 	}
 	skip, _ := filepath.Abs(cfg.SecretKeyFile)
+	copyStart := time.Now()
 	repoFiles, rerr := copyRepoTree(cfg.Ruk.RepoRoot, filepath.Join(dir, "repos"), skip)
 	if rerr != nil {
 		return "", rerr
 	}
+	if barrier != nil {
+		if verr := verifyNoWritesDuringCopy(cfg.Ruk.RepoRoot, copyStart); verr != nil {
+			return "", verr
+		}
+	}
 	doc.Files = append(doc.Files, repoFiles...)
+	doc.TR = time.Now().UnixMilli()
+	release()
+	doc.BarrierHoldMs = barrierHoldMs
+	if held := time.Duration(barrierHoldMs) * time.Millisecond; held > barrierHoldSLO {
+		slog.Default().Warn("backup barrier hold exceeded its SLO",
+			slog.String("hold", held.String()), slog.String("manifest", filepath.Join(dir, ManifestName)))
+	}
 	if merr := writeManifest(dir, doc); merr != nil {
 		return "", merr
 	}
@@ -170,7 +259,7 @@ func copyRepoTree(repoRoot, backupDst, excludedAbsPath string) ([]ManifestFile, 
 	if !info.IsDir() {
 		return nil, fmt.Errorf("sysops: repo root %s is not a directory", repoRoot)
 	}
-	var files []ManifestFile
+	var rels []string
 	walk := func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -188,19 +277,81 @@ func copyRepoTree(repoRoot, backupDst, excludedAbsPath string) ([]ManifestFile, 
 		if rerr != nil {
 			return rerr
 		}
-		rec, cerr := copyFileHashed(path, filepath.Join(backupDst, rel), 0o600)
-		if cerr != nil {
-			return cerr
-		}
-		rec.Path = filepath.Join("repos", rel)
-		files = append(files, rec)
+		rels = append(rels, rel)
 		return nil
 	}
 	if err := filepath.WalkDir(repoRoot, walk); err != nil {
 		return nil, fmt.Errorf("sysops: copy repo tree: %w", err)
 	}
+	// Refs first: the daemon publishes a push by renaming refs last, so
+	// copying every ref, HEAD, and config before any object keeps every
+	// interleaving a valid repo: (pre,pre), (pre,post), or (post,post),
+	// never post-refs with pre-objects.
+	slices.SortFunc(rels, func(a, b string) int {
+		return cmp.Or(refFirstRank(a)-refFirstRank(b), cmp.Compare(a, b))
+	})
+	files := make([]ManifestFile, 0, len(rels))
+	for _, rel := range rels {
+		rec, cerr := copyFileHashed(filepath.Join(repoRoot, rel), filepath.Join(backupDst, rel), 0o600)
+		if cerr != nil {
+			return nil, cerr
+		}
+		rec.Path = filepath.Join("repos", rel)
+		files = append(files, rec)
+	}
 	slices.SortFunc(files, func(a, b ManifestFile) int { return cmp.Compare(a.Path, b.Path) })
 	return files, nil
+}
+
+func refFirstRank(rel string) int {
+	base := filepath.Base(rel)
+	if base == "HEAD" || base == "config" || base == "packed-refs" {
+		return 0
+	}
+	for part := rel; ; {
+		var head string
+		head, part, _ = strings.Cut(part, string(filepath.Separator))
+		if head == "refs" {
+			return 0
+		}
+		if part == "" {
+			break
+		}
+	}
+	return 1
+}
+
+// verifyNoWritesDuringCopy aborts the backup when any repo entry changed
+// at or after copyStart: a write slipped through the barrier (a stuck
+// pre-barrier writer, or daemon-internal maintenance), and the tree may
+// mix generations. Aborting beats installing a torn repo.
+func verifyNoWritesDuringCopy(repoRoot string, copyStart time.Time) error {
+	var changed []string
+	walk := func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return ierr
+		}
+		if !info.ModTime().Before(copyStart) {
+			rel, _ := filepath.Rel(repoRoot, path)
+			changed = append(changed, rel)
+		}
+		return nil
+	}
+	if err := filepath.WalkDir(repoRoot, walk); err != nil {
+		return fmt.Errorf("sysops: sweep repo tree: %w", err)
+	}
+	if len(changed) > 0 {
+		slices.Sort(changed)
+		if len(changed) > 5 {
+			changed = append(changed[:5], fmt.Sprintf("... and %d more", len(changed)-5))
+		}
+		return fmt.Errorf("sysops: repos changed under the barrier during copy (%s); aborting rather than installing a torn repo", strings.Join(changed, ", "))
+	}
+	return nil
 }
 
 func writeManifest(dir string, doc ManifestDoc) error {

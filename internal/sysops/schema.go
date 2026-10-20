@@ -16,6 +16,12 @@ import (
 
 const ExitDowngradeRefused = 3
 
+// ExitLockHeld reports a held data-dir lock where serve expected to be
+// the sole owner. It is distinct from the downgrade code: a newer
+// on-disk schema is a precondition the binary cannot satisfy, while a
+// held lock means another server is already running.
+const ExitLockHeld = 4
+
 // DowngradeError reports a database newer than the running binary.
 // There is no override: restore an older backup instead.
 type DowngradeError struct {

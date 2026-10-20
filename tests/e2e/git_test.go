@@ -30,6 +30,7 @@ import (
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/rukproc"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/sysops"
 )
 
 type userRec struct {
@@ -149,6 +150,9 @@ func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string
 		Feed:     events.OpenHookSink(st, spool, time.Now),
 		RepoRoot: roots,
 		Limits:   useLimits,
+		Barrier: func() (func(), bool) {
+			return sysops.HoldSharedBarrier(dir)
+		},
 	})
 	if err != nil {
 		t.Fatalf("githttp: %v", err)

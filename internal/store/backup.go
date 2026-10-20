@@ -60,7 +60,13 @@ func (s *Store) Backup(ctx context.Context, dst string) (BackupInfo, error) {
 	if err = fsyncPath(filepath.Dir(target)); err != nil {
 		return BackupInfo{}, err
 	}
-	return fileInfo(target, int64(len(s.migrations)))
+	var newest int64
+	for _, m := range s.migrations {
+		if m.version > newest {
+			newest = m.version
+		}
+	}
+	return fileInfo(target, newest)
 }
 
 func createEmpty(path string) error {
@@ -112,8 +118,14 @@ func (s *Store) verifyBackup(ctx context.Context, path string) error {
 	if err = conn.QueryRowContext(ctx, sqlMaxMigration).Scan(&maxVersion); err != nil {
 		return fmt.Errorf("verifyBackup: %w", err)
 	}
-	if maxVersion != int64(len(s.migrations)) {
-		return fmt.Errorf("verifyBackup: schema version %d, want %d", maxVersion, len(s.migrations))
+	var newest int64
+	for _, m := range s.migrations {
+		if m.version > newest {
+			newest = m.version
+		}
+	}
+	if maxVersion != newest {
+		return fmt.Errorf("verifyBackup: schema version %d, want %d", maxVersion, newest)
 	}
 	if _, err = selectFTS(ctx, conn, ftsCandidates); err != nil {
 		return fmt.Errorf("verifyBackup: %w", err)

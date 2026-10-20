@@ -52,6 +52,37 @@ func WriteUnavailable(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(body))
 }
 
+// backupRetryAfterSeconds is the fail-slow hint a live backup carries
+// while the step-0 write barrier holds: new mutations wait their turn
+// per ops-design §5.2 step 0.
+const backupRetryAfterSeconds = 10
+
+// WriteBackupInProgress answers one refused mutation with 503 and
+// Retry-After: 10 while a backup holds the step-0 write barrier. Like
+// WriteUnavailable it follows the op-table catalogue entry for
+// CodeUnavailable (type /-/problems/unavailable, retryable) with
+// trace_id and recovery per DX-09 and DX-15; backoff_ms matches the
+// Retry-After so agents back off once instead of polling.
+func WriteBackupInProgress(w http.ResponseWriter) {
+	trace := "unknown"
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		trace = hex.EncodeToString(raw[:])
+	}
+	body := `{"type":"/-/problems/unavailable",` +
+		`"title":"Unavailable",` +
+		`"status":503,` +
+		`"detail":"backup in progress; retry the mutation shortly",` +
+		`"code":"unavailable",` +
+		`"trace_id":"` + trace + `",` +
+		`"recovery":{"docs":"/-/problems/unavailable","backoff_ms":10000,"next":"retry with backoff"},` +
+		`"retryable":true}`
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Retry-After", strconv.Itoa(backupRetryAfterSeconds))
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(body))
+}
+
 // FailFast wraps next so daemon-backed routes answer 503 with
 // Retry-After: 5 while the child is down instead of hanging or
 // queueing. Readiness and liveness routes must not sit behind it.

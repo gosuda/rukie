@@ -48,7 +48,9 @@ func PendingMigrations(cfg config.Config) (MigrateResult, error) {
 }
 
 // Migrate applies pending migrations offline. A newer on-disk schema
-// refuses as a downgrade; a live server refuses as ErrDataDirLive.
+// refuses as a downgrade; a live server refuses as ErrDataDirLive. The
+// data-dir lock is held for the whole migration, not merely probed, so
+// no server can start under the files being migrated.
 func Migrate(ctx context.Context, cfg config.Config) (MigrateResult, error) {
 	res, err := PendingMigrations(cfg)
 	if err != nil {
@@ -57,9 +59,11 @@ func Migrate(ctx context.Context, cfg config.Config) (MigrateResult, error) {
 	if len(res.Pending) == 0 {
 		return res, nil
 	}
-	if IsDataDirLive(cfg.DataDir) {
+	lock, lerr := AcquireDataDirLock(cfg.DataDir)
+	if lerr != nil {
 		return MigrateResult{}, fmt.Errorf("%w: migrate needs the server stopped", ErrDataDirLive)
 	}
+	defer func() { _ = lock.Release() }()
 	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path})
 	if err != nil {
 		return MigrateResult{}, fmt.Errorf("sysops: migrate: %w", err)

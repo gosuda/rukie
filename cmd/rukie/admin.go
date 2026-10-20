@@ -324,9 +324,9 @@ func runBackup(argv []string) int {
 	}
 	doc, _ := sysops.ReadManifest(filepath.Dir(manifest))
 	if *asJSON {
-		return emitJSON(map[string]any{"manifest": manifest, "key_id": doc.KeyID, "files": len(doc.Files)})
+		return emitJSON(map[string]any{"manifest": manifest, "key_id": doc.KeyID, "files": len(doc.Files), "barrier_id": doc.BarrierID, "snapshot_source": doc.SnapshotSource})
 	}
-	fmt.Printf("backup %s (%d files, key id %s)\n", manifest, len(doc.Files), doc.KeyID)
+	fmt.Printf("backup %s (%d files, key id %s, barrier %s via %s)\n", manifest, len(doc.Files), doc.KeyID, doc.BarrierID, doc.SnapshotSource)
 	return exitOK
 }
 

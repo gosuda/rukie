@@ -161,3 +161,23 @@ func TestAdminStatusDaemonFieldAndExpectLive(t *testing.T) {
 		t.Fatalf("admin status --expect-live = %d with the lock held, want 0", code)
 	}
 }
+
+func TestServeHeldLockIsNotDowngrade(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := writeTestConfig(t, dir, "")
+	cfg, _, err := loadAdminConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	lock, err := sysops.AcquireDataDirLock(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("acquire lock: %v", err)
+	}
+	defer func() { _ = lock.Release() }()
+	if code := run([]string{"serve", "--config", cfgPath}); code != sysops.ExitLockHeld {
+		t.Fatalf("serve with a held lock = %d, want %d (distinct from the downgrade code 3)", code, sysops.ExitLockHeld)
+	}
+	if sysops.ExitLockHeld == sysops.ExitDowngradeRefused {
+		t.Fatal("ExitLockHeld equals the downgrade code; the refusal is ambiguous")
+	}
+}

@@ -45,12 +45,20 @@ func RestoreLenient(ctx context.Context, cfg config.Config, backupDir string) (R
 }
 
 func restore(ctx context.Context, cfg config.Config, backupDir string, force bool) (RestoreReport, error) {
-	if IsDataDirLive(cfg.DataDir) {
+	// Offline-only, and the lock is HELD for the whole restore: probing
+	// then releasing would let a server start mid-place and migrate a
+	// fresh empty database under the files being installed.
+	lock, err := AcquireDataDirLock(cfg.DataDir)
+	if err != nil {
 		return RestoreReport{}, fmt.Errorf("%w: restore needs the server stopped", ErrDataDirLive)
 	}
+	defer func() { _ = lock.Release() }()
 	doc, err := ReadManifest(backupDir)
 	if err != nil {
 		return RestoreReport{}, err
+	}
+	if doc.BarrierID == "" && !force {
+		return RestoreReport{}, fmt.Errorf("sysops: manifest carries no barrier_id (pre-barrier legacy backup); restore only with --force followed by `rukie admin reconcile --from-manifest` and operator review")
 	}
 	key, err := LoadSecretKey(cfg.SecretKeyFile)
 	if err != nil {
@@ -61,12 +69,15 @@ func restore(ctx context.Context, cfg config.Config, backupDir string, force boo
 			ErrKeyMismatch, doc.KeyID, KeyID(key))
 	}
 	var report RestoreReport
+	if doc.BarrierID == "" {
+		report.Warnings = append(report.Warnings, "pre-barrier manifest without barrier_id: run `rukie admin reconcile --from-manifest` and review before serving")
+	}
 	if !force {
 		if verr := VerifyManifest(backupDir, doc); verr != nil {
 			return RestoreReport{}, verr
 		}
 	} else {
-		report.Warnings = InspectManifest(backupDir, doc)
+		report.Warnings = append(report.Warnings, InspectManifest(backupDir, doc)...)
 	}
 	code, err := CodeSchemaVersion()
 	if err != nil {
@@ -78,7 +89,7 @@ func restore(ctx context.Context, cfg config.Config, backupDir string, force boo
 	if err := EnsureDataDir(cfg.DataDir); err != nil {
 		return RestoreReport{}, err
 	}
-	placed, rerr := placeFiles(cfg, backupDir, doc)
+	placed, rerr := placeFilesStaged(cfg, backupDir, doc)
 	if rerr != nil {
 		return RestoreReport{}, rerr
 	}
@@ -97,45 +108,158 @@ func restore(ctx context.Context, cfg config.Config, backupDir string, force boo
 	return report, nil
 }
 
-func placeFiles(cfg config.Config, backupDir string, doc ManifestDoc) (RestoreReport, error) {
+// resolveRestoreDst maps one manifest path to its live destination,
+// refusing anything outside the restore set.
+func resolveRestoreDst(cfg config.Config, manifestPath string) (string, error) {
+	if manifestPath == "meta.sqlite" {
+		return cfg.Store.SQLite.Path, nil
+	}
+	rel, ok := strings.CutPrefix(manifestPath, "repos/")
+	if !ok || rel == "" || strings.Contains(rel, "..") {
+		return "", fmt.Errorf("sysops: manifest path %q is outside the restore set", manifestPath)
+	}
+	return filepath.Join(cfg.Ruk.RepoRoot, rel), nil
+}
+
+// placeFilesStaged installs a backup without ever deleting live state
+// before its replacement is verified on disk. Every file is staged into
+// a temp dir first and rehashed against the manifest; then each live
+// destination is moved aside (not deleted) and the staged file is
+// atomically renamed into place. Any failure rolls the moved-aside
+// originals back, so a copy error, a hash change, or a bad manifest
+// path never leaves the store half replaced. Staging lives under
+// data_dir/tmp, so every rename is same-filesystem and atomic.
+func placeFilesStaged(cfg config.Config, backupDir string, doc ManifestDoc) (RestoreReport, error) {
 	var report RestoreReport
-	seen := map[string]bool{}
-	for _, f := range doc.Files {
-		var dst string
-		switch f.Path {
-		case "meta.sqlite":
-			dst = cfg.Store.SQLite.Path
-			dropStaleSQLiteSiblings(dst)
-		default:
-			rel, ok := strings.CutPrefix(f.Path, "repos/")
-			if !ok || rel == "" || strings.Contains(rel, "..") {
-				return RestoreReport{}, fmt.Errorf("sysops: manifest path %q is outside the restore set", f.Path)
+	staging, err := os.MkdirTemp(filepath.Join(cfg.DataDir, "tmp"), "restore-*")
+	if err != nil {
+		return RestoreReport{}, fmt.Errorf("sysops: stage restore: %w", err)
+	}
+	// Only the success path keeps staged content (as live files, via
+	// rename); every error path removes the whole staging tree.
+	stagedKept := false
+	defer func() {
+		if !stagedKept {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+	type placement struct {
+		staged    string
+		dst       string
+		aside     string
+		moved     bool
+		installed bool
+	}
+	rollbackDir := filepath.Join(staging, "rollback")
+	if err := os.MkdirAll(rollbackDir, 0o700); err != nil {
+		return RestoreReport{}, fmt.Errorf("sysops: stage rollback dir: %w", err)
+	}
+	var placements []placement
+	// Reverse the install: parked originals move back with their SQLite
+	// WAL/SHM siblings, and files that had no original (fresh
+	// destinations) are deleted, so a mid-copy failure leaves exactly
+	// the pre-restore tree.
+	rollback := func() {
+		for i := len(placements) - 1; i >= 0; i-- {
+			p := placements[i]
+			if !p.installed {
+				continue
 			}
-			dst = filepath.Join(cfg.Ruk.RepoRoot, rel)
+			if p.moved {
+				_ = os.Rename(p.aside, p.dst)
+				for _, suffix := range []string{"-wal", "-shm"} {
+					if _, serr := os.Stat(p.aside + suffix); serr == nil {
+						_ = os.Rename(p.aside+suffix, p.dst+suffix)
+					}
+				}
+			} else {
+				_ = os.Remove(p.dst)
+			}
+		}
+	}
+	stage := func(f ManifestFile) (placement, error) {
+		var p placement
+		var err error
+		if p.dst, err = resolveRestoreDst(cfg, f.Path); err != nil {
+			return p, err
+		}
+		p.staged = filepath.Join(staging, "files", filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(p.staged), 0o700); err != nil {
+			return p, fmt.Errorf("sysops: stage %s: %w", f.Path, err)
 		}
 		src := filepath.Join(backupDir, f.Path)
+		// Manifest integrity is judged by the caller (VerifyManifest,
+		// or recorded warnings under --force). Here only the read is
+		// guarded: the staged copy must match a fresh hash of the
+		// source, or the source changed under the stage.
 		srcSum, _, herr := hashFile(src)
 		if herr != nil {
-			return RestoreReport{}, fmt.Errorf("sysops: restore %s: %w", f.Path, herr)
+			return p, fmt.Errorf("sysops: stage %s: %w", f.Path, herr)
 		}
-		rec, cerr := copyFileHashed(src, dst, 0o600)
+		rec, cerr := copyFileHashed(src, p.staged, 0o600)
 		if cerr != nil {
-			return RestoreReport{}, fmt.Errorf("sysops: restore %s: %w", f.Path, cerr)
+			return p, fmt.Errorf("sysops: stage %s: %w", f.Path, cerr)
 		}
 		if rec.SHA256 != srcSum {
-			return RestoreReport{}, fmt.Errorf("sysops: %s changed between read and place", f.Path)
+			return p, fmt.Errorf("sysops: staged %s changed between read and place", f.Path)
 		}
-		seen[dst] = true
+		p.aside = filepath.Join(rollbackDir, filepath.FromSlash(f.Path))
+		return p, nil
+	}
+	for _, f := range doc.Files {
+		p, serr := stage(f)
+		if serr != nil {
+			return RestoreReport{}, serr
+		}
+		placements = append(placements, p)
+	}
+	// SQLite WAL siblings belong to the pre-restore generation: move
+	// them aside with the database so a stale WAL can never replay
+	// over the restored snapshot, and a rollback restores all three.
+	siblings := []string{"-wal", "-shm"}
+	seen := map[string]bool{}
+	for i := range placements {
+		p := &placements[i]
+		if err := os.MkdirAll(filepath.Dir(p.dst), 0o700); err != nil {
+			rollback()
+			return RestoreReport{}, fmt.Errorf("sysops: restore %s: %w", p.dst, err)
+		}
+		if _, serr := os.Stat(p.dst); serr == nil {
+			if err := os.MkdirAll(filepath.Dir(p.aside), 0o700); err != nil {
+				rollback()
+				return RestoreReport{}, fmt.Errorf("sysops: park %s: %w", p.dst, err)
+			}
+			if rerr := os.Rename(p.dst, p.aside); rerr != nil {
+				rollback()
+				return RestoreReport{}, fmt.Errorf("sysops: park %s: %w", p.dst, rerr)
+			}
+			p.moved = true
+			if p.dst == cfg.Store.SQLite.Path {
+				for _, suffix := range siblings {
+					if _, serr := os.Stat(p.dst + suffix); serr == nil {
+						aside := p.aside + suffix
+						if rerr := os.Rename(p.dst+suffix, aside); rerr != nil {
+							rollback()
+							return RestoreReport{}, fmt.Errorf("sysops: park %s: %w", p.dst+suffix, rerr)
+						}
+					}
+				}
+			}
+		}
+		if rerr := os.Rename(p.staged, p.dst); rerr != nil {
+			rollback()
+			return RestoreReport{}, fmt.Errorf("sysops: place %s: %w", p.dst, rerr)
+		}
+		p.installed = true
+		seen[p.dst] = true
 		report.Files++
 	}
 	report.Untracked = listUntrackedForReconcileReview(cfg, seen)
+	stagedKept = true
+	if rerr := os.RemoveAll(staging); rerr != nil {
+		return report, fmt.Errorf("sysops: clean restore staging: %w", rerr)
+	}
 	return report, nil
-}
-
-func dropStaleSQLiteSiblings(dbPath string) {
-	_ = os.Remove(dbPath + "-wal")
-	_ = os.Remove(dbPath + "-shm")
-	_ = os.Remove(dbPath)
 }
 
 func listUntrackedForReconcileReview(cfg config.Config, seen map[string]bool) []string {
