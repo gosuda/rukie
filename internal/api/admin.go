@@ -72,8 +72,8 @@ type AdminUpdateOut struct {
 }
 
 type AdminListIn struct {
-	After string `query:"after"`
-	Limit int    `query:"limit"`
+	Cursor string `query:"cursor"`
+	Limit  int    `query:"limit"`
 }
 
 type AdminListItem struct {
@@ -96,8 +96,8 @@ func adminETag(out AdminListOut) string {
 	return fmt.Sprintf("admins-%d-%d", len(out.Users), h)
 }
 
-func listUsers(ctx context.Context, deps Deps, after string, limit int) (AdminListOut, error) {
-	users, next, err := deps.Service.ListUsers(ctx, after, limit)
+func listUsers(ctx context.Context, deps Deps, cursor string, limit int) (AdminListOut, error) {
+	users, next, err := deps.Service.ListUsers(ctx, cursor, limit)
 	if err != nil {
 		return AdminListOut{}, mapAuthError(err)
 	}
@@ -115,11 +115,17 @@ func RegisterAdmin(t *op.Table, deps Deps) error {
 		Description: "Site admins only. Cursor pages by username.",
 		Problems:    []op.Code{op.CodeForbidden},
 		ETag:        adminETag,
+		Pagination: &op.Pagination[AdminListOut]{Default: 25, Max: 100, Next: func(out AdminListOut) (string, bool) {
+			if out.Next == "" {
+				return "", false
+			}
+			return out.Next, true
+		}},
 		Handler: func(ctx context.Context, p op.Principal, in AdminListIn) (AdminListOut, error) {
 			if _, err := requireAdmin(ctx, deps.Service, p); err != nil {
 				return AdminListOut{}, err
 			}
-			return listUsers(ctx, deps, in.After, in.Limit)
+			return listUsers(ctx, deps, in.Cursor, in.Limit)
 		},
 	}); err != nil {
 		return err

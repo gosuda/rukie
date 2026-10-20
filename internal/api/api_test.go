@@ -440,6 +440,69 @@ func TestAdminLastAdmin(t *testing.T) {
 	}
 }
 
+func TestAdminUserListPagination(t *testing.T) {
+	e := buildEnv(t)
+	pw := randomPW(t)
+	createAdmin(t, e, "ada", pw)
+	cookie := loginCookie(t, e, "ada", pw)
+	for _, name := range []string{"bob", "carol"} {
+		rec := doJSON(t, e, "POST", "/admin/users", cookie, `{"name":"`+name+`","password":"`+randomPW(t)+`"}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s = %d: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	rec := doJSON(t, e, "GET", "/admin/users?limit=1", cookie, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("limit=1 = %d: %s", rec.Code, rec.Body.String())
+	}
+	if users, _ := decodeBody(t, rec)["users"].([]any); len(users) != 1 {
+		t.Fatalf("limit=1 users = %d, want 1", len(users))
+	}
+	link := rec.Header().Get("Link")
+	if !strings.Contains(link, `rel="next"`) {
+		t.Fatalf("limit=1 link = %q, want rel=next", link)
+	}
+	cursor := linkCursor(t, link)
+	rec = doJSON(t, e, "GET", "/admin/users?limit=1&cursor="+cursor, cookie, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page two = %d: %s", rec.Code, rec.Body.String())
+	}
+	if users, _ := decodeBody(t, rec)["users"].([]any); len(users) != 1 {
+		t.Fatalf("page two users = %d, want 1", len(users))
+	}
+	rec = doJSON(t, e, "GET", "/admin/users?limit=100", cookie, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("limit=100 = %d: %s", rec.Code, rec.Body.String())
+	}
+	if users, _ := decodeBody(t, rec)["users"].([]any); len(users) != 3 {
+		t.Fatalf("limit=100 users = %d, want 3", len(users))
+	}
+	if link := rec.Header().Get("Link"); strings.Contains(link, `rel="next"`) {
+		t.Fatalf("full page link = %q, want no rel=next", link)
+	}
+	rec = doJSON(t, e, "GET", "/admin/users?limit=101", cookie, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("limit=101 = %d, want 400", rec.Code)
+	}
+	if typ := decodeBody(t, rec)["type"]; typ != "/-/problems/invalid" {
+		t.Fatalf("limit=101 type = %v, want /-/problems/invalid", typ)
+	}
+}
+
+func linkCursor(t *testing.T, link string) string {
+	t.Helper()
+	start := strings.Index(link, "cursor=")
+	if start < 0 {
+		t.Fatalf("link %q has no cursor", link)
+	}
+	rest := link[start+len("cursor="):]
+	end := strings.IndexAny(rest, "&>")
+	if end < 0 {
+		t.Fatalf("link %q has unterminated cursor", link)
+	}
+	return rest[:end]
+}
+
 func adminETagFor(t *testing.T, e *testEnv, name string) string {
 	t.Helper()
 	u, err := e.svc.GetUser(t.Context(), name)

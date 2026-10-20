@@ -158,11 +158,11 @@ func BuildCommands(specs []Spec, d *Document) (*Command, error) {
 		for name, raw := range props {
 			prop, _ := raw.(map[string]any)
 			in, _ := prop["x-rukie-in"].(string)
-			if in == "path" || in == "header" {
+			if in == "path" || in == "header" || name == "cursor" {
 				continue
 			}
 			flagName := kebab(name)
-			if reservedGlobals[flagName] && name != "cursor" {
+			if reservedGlobals[flagName] {
 				return nil, fmt.Errorf("cli: op %q property %q collides with a global flag", s.Name, name)
 			}
 			if seen[flagName] {

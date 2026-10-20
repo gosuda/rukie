@@ -67,31 +67,70 @@ func TestCLIInputStdin(t *testing.T) {
 	if err := os.WriteFile(tokenPath, []byte(minted.Secret+"\n"), 0o600); err != nil {
 		t.Fatalf("token file: %v", err)
 	}
-	c := newIO()
-	c.stdin = `{"after": "zzz-no-such-user"}`
-	if code := runCLI(t, []string{"admin", "user", "list", "--server", e.url, "--token-file", tokenPath, "--json", "--input", "-"}, c); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, c.stdout.String(), c.stderr.String())
+	first := newIO()
+	if code := runCLI(t, []string{"admin", "user", "list", "--server", e.url, "--token-file", tokenPath, "--json", "--limit", "1"}, first); code != 0 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, first.stdout.String(), first.stderr.String())
 	}
-	decoded := decodeStdout(t, c)
-	if users, ok := decoded["users"].([]any); ok && len(users) != 0 {
-		t.Fatalf("users = %v, want the empty page past zzz", decoded)
-	} else if !ok && decoded["users"] != nil {
-		t.Fatalf("users = %v", decoded)
+	if names := userNames(t, decodeStdout(t, first)); len(names) != 1 || names[0] != "aaron" {
+		t.Fatalf("first page = %v, want [aaron]", first.stdout.String())
+	}
+	cursor := pageCursor(t, e.url, minted.Secret)
+	paged := newIO()
+	paged.stdin = `{"cursor": "` + cursor + `"}`
+	if code := runCLI(t, []string{"admin", "user", "list", "--server", e.url, "--token-file", tokenPath, "--json", "--input", "-"}, paged); code != 0 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, paged.stdout.String(), paged.stderr.String())
+	}
+	if names := userNames(t, decodeStdout(t, paged)); len(names) != 1 || names[0] != "inputadmin" {
+		t.Fatalf("second page = %v, want [inputadmin]", paged.stdout.String())
 	}
 	flagged := newIO()
-	flagged.stdin = `{"after": "zzz-no-such-user"}`
-	if code := runCLI(t, []string{"admin", "user", "list", "--server", e.url, "--token-file", tokenPath, "--json", "--input", "-", "--after", "aaron"}, flagged); code != 0 {
+	flagged.stdin = `{"cursor": "bogus"}`
+	if code := runCLI(t, []string{"admin", "user", "list", "--server", e.url, "--token-file", tokenPath, "--json", "--input", "-", "--cursor", cursor}, flagged); code != 0 {
 		t.Fatalf("exit %d: %s", code, flagged.stderr.String())
 	}
 	flaggedDecoded := decodeStdout(t, flagged)
 	if names := userNames(t, flaggedDecoded); len(names) != 1 || names[0] != "inputadmin" {
 		t.Fatalf("flag must win over --input: %v", flaggedDecoded)
 	}
+	rejected := newIO()
+	rejected.stdin = `{"cursor": "bogus"}`
+	if code := runCLI(t, []string{"admin", "user", "list", "--server", e.url, "--token-file", tokenPath, "--json", "--input", "-"}, rejected); code != 65 {
+		t.Fatalf("forged cursor exit %d, want 65", code)
+	}
 	broken := newIO()
 	broken.stdin = `{"limit": `
 	if code := runCLI(t, []string{"admin", "user", "list", "--server", e.url, "--json", "--input", "-"}, broken); code != 64 {
 		t.Fatalf("malformed input exit %d, want 64", code)
 	}
+}
+
+func pageCursor(t *testing.T, baseURL, secret string) string {
+	t.Helper()
+	req, err := http.NewRequest("GET", baseURL+"/admin/users?limit=1", nil)
+	if err != nil {
+		t.Fatalf("cursor request: %v", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("cursor fetch: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cursor fetch = %d", resp.StatusCode)
+	}
+	link := resp.Header.Get("Link")
+	start := strings.Index(link, "cursor=")
+	if start < 0 {
+		t.Fatalf("link %q has no cursor", link)
+	}
+	rest := link[start+len("cursor="):]
+	end := strings.IndexAny(rest, "&>")
+	if end < 0 {
+		t.Fatalf("link %q has unterminated cursor", link)
+	}
+	return rest[:end]
 }
 
 func userNames(t *testing.T, decoded map[string]any) []string {
@@ -200,11 +239,11 @@ func TestCLIAllMergesPages(t *testing.T) {
 		n := hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if n == 1 {
-			w.Header().Set("Link", `</admin/users?after=c1>; rel="next"`)
+			w.Header().Set("Link", `</admin/users?cursor=c1>; rel="next"`)
 			_, _ = w.Write([]byte(`{"users":[{"name":"a"}],"next":"c1"}`))
 			return
 		}
-		if r.URL.Query().Get("after") == "" && r.URL.Query().Get("cursor") == "" {
+		if r.URL.Query().Get("cursor") == "" {
 			w.WriteHeader(500)
 			_, _ = w.Write([]byte(`{}`))
 			return

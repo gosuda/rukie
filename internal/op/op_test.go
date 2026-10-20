@@ -551,6 +551,24 @@ func TestPaginationLink(t *testing.T) {
 	}
 }
 
+func TestCLIParsePaginatedOpUsesGlobalCursor(t *testing.T) {
+	srv, _ := buildTestServer(t)
+	root, err := op.BuildCommands(srv.Specs(), srv.Document())
+	if err != nil {
+		t.Fatalf("commands: %v", err)
+	}
+	inv, err := op.Parse(root, []string{"test", "paged", "list", "--cursor", "sealed", "--limit", "2"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if inv.Args["cursor"] != "sealed" {
+		t.Fatalf("cursor arg = %v, want sealed", inv.Args["cursor"])
+	}
+	if inv.Args["limit"] != 2 {
+		t.Fatalf("limit arg = %v, want 2", inv.Args["limit"])
+	}
+}
+
 func TestProblemCatalogue(t *testing.T) {
 	problems := op.Problems()
 	if len(problems) != 27 {
