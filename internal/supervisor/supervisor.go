@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,26 @@ const (
 	MaxRestarts    = 3
 	StopGrace      = 10 * time.Second
 )
+
+// stableResetAfter clears the consecutive-restart count once the child
+// has served this long without dying, so one crash a week never exhausts
+// the O35 budget. The MaxRestarts doc ("caps consecutive child restarts")
+// describes this counter.
+const stableResetAfter = 60 * time.Second
+
+// externalReprobeInterval re-checks an externally managed daemon, so a
+// dead external socket flips /readyz false and the fail-fast 503 gates
+// engage until it answers again.
+const externalReprobeInterval = 5 * time.Second
+
+// childExitError reports a child that died before its startup probe
+// succeeded. Unlike a probe timeout on a live child, the waiter already
+// reaped it, so the caller must not Kill it again.
+type childExitError struct{ err error }
+
+func (e *childExitError) Error() string { return e.err.Error() }
+
+func (e *childExitError) Unwrap() error { return e.err }
 
 // RestartBackoffs holds the O35 backoff schedule: attempt n sleeps
 // RestartBackoffs[n-1]. The test suite pins this table through an
@@ -111,11 +132,12 @@ type Config struct {
 // them safe for 32-bit atomic access while satisfying the packing
 // order below.
 type Supervisor struct {
-	clock    Clock
-	cfg      Config
-	restarts atomic.Int64
-	starts   atomic.Int64
-	ready    atomic.Bool
+	clock     Clock
+	cfg       Config
+	restarts  atomic.Int64
+	starts    atomic.Int64
+	ready     atomic.Bool
+	everReady atomic.Bool
 }
 
 // New validates the config and returns a supervisor. It starts nothing.
@@ -223,19 +245,29 @@ func (s *Supervisor) stderr() io.Writer {
 	return io.Discard
 }
 
-func (s *Supervisor) pollDaemonProbeUntilTimeout(ctx context.Context) error {
+func (s *Supervisor) pollDaemonProbeUntilTimeout(ctx context.Context, exit <-chan error) error {
 	probe := s.cfg.Probe
 	if probe == nil {
 		return fmt.Errorf("supervisor: no daemon probe configured")
 	}
 	deadline := s.clock.Now().Add(s.startupTimeout())
 	for {
+		select {
+		case werr := <-exit:
+			return &childExitError{err: fmt.Errorf("supervisor: child exited during startup: %w", werr)}
+		default:
+		}
 		if perr := probe(ctx); perr == nil {
 			return nil
 		} else if ctx.Err() != nil {
 			return fmt.Errorf("supervisor: startup wait: %w", ctx.Err())
 		}
 		if !s.clock.Now().Before(deadline) {
+			select {
+			case werr := <-exit:
+				return &childExitError{err: fmt.Errorf("supervisor: child exited during startup: %w", werr)}
+			default:
+			}
 			return fmt.Errorf("supervisor: daemon did not answer within %s", s.startupTimeout())
 		}
 		if serr := s.clock.Sleep(ctx, s.pollInterval()); serr != nil {
@@ -247,15 +279,30 @@ func (s *Supervisor) pollDaemonProbeUntilTimeout(ctx context.Context) error {
 // Run supervises until ctx ends or the restart budget is exhausted.
 // A cancelled context is a clean shutdown and returns nil; an exhausted
 // budget returns a non-nil error so the process exits non-zero.
+//
+// A child that dies before its first probe succeeds still spends one
+// budget unit (with the O35 backoff) once the supervisor has ever been
+// ready or restarted before; only a stillborn first start fails fast.
+// A crash after stableResetAfter of serving resets the consecutive
+// counter first, so an occasional crash never exhausts the budget.
 func (s *Supervisor) Run(ctx context.Context) error {
 	if s.cfg.ExternalSocket != "" {
-		if err := s.pollDaemonProbeUntilTimeout(ctx); err != nil {
+		if err := s.pollDaemonProbeUntilTimeout(ctx, nil); err != nil {
 			return err
 		}
 		s.ready.Store(true)
-		<-ctx.Done()
-		s.ready.Store(false)
-		return nil
+		s.everReady.Store(true)
+		for {
+			if serr := s.clock.Sleep(ctx, externalReprobeInterval); serr != nil {
+				s.ready.Store(false)
+				return nil
+			}
+			if perr := s.probeOnce(ctx); perr != nil {
+				s.ready.Store(false)
+			} else {
+				s.ready.Store(true)
+			}
+		}
 	}
 	backoffs := s.backoffs()
 	for {
@@ -265,14 +312,30 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			return fmt.Errorf("supervisor: start ruk serve: %w", err)
 		}
 		s.starts.Add(1)
-		if err := s.pollDaemonProbeUntilTimeout(ctx); err != nil {
-			s.ready.Store(false)
-			_ = child.Kill()
-			return err
-		}
-		s.ready.Store(true)
 		exit := make(chan error, 1)
 		go func() { exit <- child.Wait() }()
+		if perr := s.pollDaemonProbeUntilTimeout(ctx, exit); perr != nil {
+			s.ready.Store(false)
+			_, exited := errors.AsType[*childExitError](perr)
+			if !exited {
+				// The child may still be alive (probe timeout on a
+				// live child): SIGKILL it and reap it through the
+				// single waiter before spending the restart, or the
+				// orphan keeps the socket and every later probe fails.
+				_ = child.Signal(killSignal())
+				<-exit
+			}
+			if exited || s.restarts.Load() > 0 || s.everReady.Load() {
+				if bend := s.spendRestart(ctx, backoffs, perr); bend != nil {
+					return bend
+				}
+				continue
+			}
+			return perr
+		}
+		s.ready.Store(true)
+		s.everReady.Store(true)
+		readyAt := s.clock.Now()
 		select {
 		case <-ctx.Done():
 			s.ready.Store(false)
@@ -283,21 +346,42 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			werr = daemonLossAgainstBudget(werr)
-			n := s.restarts.Load()
-			if int(n) >= s.maxRestarts() {
-				return fmt.Errorf("supervisor: ruk serve failed after %d restarts: %w", n, werr)
+			if s.clock.Now().Sub(readyAt) >= stableResetAfter {
+				s.restarts.Store(0)
 			}
-			delay := backoffs[len(backoffs)-1]
-			if int(n) < len(backoffs) {
-				delay = backoffs[n]
+			if bend := s.spendRestart(ctx, backoffs, daemonLossAgainstBudget(werr)); bend != nil {
+				return bend
 			}
-			if serr := s.clock.Sleep(ctx, delay); serr != nil {
-				return nil
-			}
-			s.restarts.Add(1)
 		}
 	}
+}
+
+// spendRestart sleeps one O35 backoff and consumes one restart-budget
+// unit. It returns non-nil when the run must end: an exhausted budget
+// carries the cause as an error, and a cancelled context returns nil
+// for a clean shutdown.
+func (s *Supervisor) spendRestart(ctx context.Context, backoffs []time.Duration, cause error) error {
+	n := s.restarts.Load()
+	if int(n) >= s.maxRestarts() {
+		return fmt.Errorf("supervisor: ruk serve failed after %d restarts: %w", n, cause)
+	}
+	delay := backoffs[len(backoffs)-1]
+	if int(n) < len(backoffs) {
+		delay = backoffs[n]
+	}
+	if serr := s.clock.Sleep(ctx, delay); serr != nil {
+		return nil
+	}
+	s.restarts.Add(1)
+	return nil
+}
+
+func (s *Supervisor) probeOnce(ctx context.Context) error {
+	probe := s.cfg.Probe
+	if probe == nil {
+		return fmt.Errorf("supervisor: no daemon probe configured")
+	}
+	return probe(ctx)
 }
 
 func daemonLossAgainstBudget(werr error) error {

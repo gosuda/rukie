@@ -311,3 +311,170 @@ func equalDurations(a, b []time.Duration) bool {
 	}
 	return true
 }
+
+func TestSupervisorStartupDeathSpendsBudget(t *testing.T) {
+	clock := newFakeClock()
+	var mu sync.Mutex
+	var starts int
+	var first *fakeProc
+	s, err := New(Config{
+		Binary:       "ruk",
+		DaemonConfig: "/tmp/ruk.toml",
+		Clock:        clock,
+		Starter: starterFunc(func(string, string, []string, io.Writer, io.Writer) (Proc, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			starts++
+			if starts == 1 {
+				first = blockingProc()
+				return first, nil
+			}
+			return crashingProc(fmt.Errorf("boot boom")), nil
+		}),
+		Probe: func(context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if starts == 1 {
+				return nil
+			}
+			return fmt.Errorf("connection refused")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.Run(context.Background()) }()
+	waitFor(t, "first readiness", s.Ready)
+	mu.Lock()
+	proc := first
+	mu.Unlock()
+	proc.waitGate <- fmt.Errorf("segfault")
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run returned nil after repeated boot deaths, want budget exhaustion")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the restart budget was spent")
+	}
+	mu.Lock()
+	n := starts
+	mu.Unlock()
+	if n != 4 {
+		t.Fatalf("starts = %d, want 4 (1 initial + 3 restarts): a boot death must spend budget, not end the run", n)
+	}
+	if got := s.Restarts(); got != 3 {
+		t.Fatalf("restarts = %d, want 3", got)
+	}
+	if s.Ready() {
+		t.Fatal("Ready is true after the budget is exhausted")
+	}
+}
+
+func TestSupervisorResetsBudgetAfterStableReady(t *testing.T) {
+	clock := newFakeClock()
+	var mu sync.Mutex
+	var procs []*fakeProc
+	s, err := New(Config{
+		Binary:       "ruk",
+		DaemonConfig: "/tmp/ruk.toml",
+		Clock:        clock,
+		Starter: starterFunc(func(string, string, []string, io.Writer, io.Writer) (Proc, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			proc := blockingProc()
+			procs = append(procs, proc)
+			return proc, nil
+		}),
+		Probe: okProbe,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("supervisor did not stop after cancel")
+		}
+	})
+	for crash := range 4 {
+		waitFor(t, "readiness", s.Ready)
+		mu.Lock()
+		have := len(procs)
+		mu.Unlock()
+		if serr := clock.Sleep(context.Background(), 61*time.Second); serr != nil {
+			t.Fatalf("advance past the stable window: %v", serr)
+		}
+		mu.Lock()
+		victim := procs[len(procs)-1]
+		mu.Unlock()
+		victim.waitGate <- fmt.Errorf("crash %d", crash)
+		waitFor(t, "restart", func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(procs) == have+1
+		})
+	}
+	waitFor(t, "readiness after the fourth crash", s.Ready)
+	mu.Lock()
+	n := len(procs)
+	mu.Unlock()
+	if n != 5 {
+		t.Fatalf("starts = %d, want 5: stable service must reset the consecutive counter", n)
+	}
+	if got := s.Restarts(); got != 1 {
+		t.Fatalf("restarts = %d, want 1: every crash followed 61s of serving", got)
+	}
+}
+
+func TestSupervisorExternalSocketReprobes(t *testing.T) {
+	var mu sync.Mutex
+	healthy := true
+	s, err := New(Config{
+		ExternalSocket: "/run/ruk.sock",
+		Clock:          newFakeClock(),
+		Probe: func(context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if healthy {
+				return nil
+			}
+			return fmt.Errorf("dial refused")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("external Run did not return after cancel")
+		}
+	})
+	waitFor(t, "external readiness", s.Ready)
+	mu.Lock()
+	healthy = false
+	mu.Unlock()
+	waitFor(t, "unreadiness after the external daemon dies", func() bool { return !s.Ready() })
+	if ready, reason := s.DaemonProbe(); ready || reason == "" {
+		t.Fatalf("DaemonProbe = (%v, %q) while the external daemon is down, want (false, non-empty)", ready, reason)
+	}
+	mu.Lock()
+	healthy = true
+	mu.Unlock()
+	waitFor(t, "re-readiness after the external daemon recovers", s.Ready)
+	if got := s.Starts(); got != 0 {
+		t.Fatalf("starts = %d, want 0 in external mode", got)
+	}
+}
