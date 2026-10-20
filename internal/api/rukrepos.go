@@ -768,9 +768,6 @@ func checkRepoName(name string) error {
 			return op.Errorf(op.CodeValidation, "repository name uses an invalid character")
 		}
 	}
-	if auth.ReservedName(name) {
-		return op.Errorf(op.CodeValidation, "repository name is reserved")
-	}
 	return nil
 }
 

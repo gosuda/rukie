@@ -7,20 +7,14 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+
+	"github.com/gosuda/rukie/internal/reserved"
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,38}$`)
 
-var reservedNames = map[string]bool{
-	"admin": true, "root": true, "system": true, "rukie": true, "api": true,
-	"git": true, "support": true, "abuse": true, "login": true, "logout": true,
-	"settings": true, "account": true, "explore": true, "ops": true, "problems": true,
-	"mcp": true, "static": true, "session": true, "healthz": true, "readyz": true,
-	"llms.txt": true, "llms-full.txt": true, "-": true,
-}
-
 func ReservedName(name string) bool {
-	return reservedNames[strings.ToLower(name)]
+	return reserved.Is(strings.ToLower(name))
 }
 
 func CheckUsername(name string) error {

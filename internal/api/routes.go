@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/reserved"
 )
 
 var siteSegments = func() map[string]bool {
@@ -76,12 +77,9 @@ func Routes() []Route {
 }
 
 func Reserved() []string {
-	set := map[string]bool{
-		"healthz": true, "readyz": true, "llms.txt": true, "llms-full.txt": true,
-		"ops": true, "problems": true, "mcp": true, "openapi.json": true,
-		"static": true, "session": true, "account": true, "explore": true,
-		"favicon.ico": true, "robots.txt": true, ".well-known": true,
-		"search": true, "inbox": true, "changes": true, "tasks": true, "ci": true,
+	set := map[string]bool{}
+	for _, name := range reserved.Names() {
+		set[name] = true
 	}
 	for _, r := range Routes() {
 		trimmed := strings.TrimPrefix(r.Pattern, "GET ")
