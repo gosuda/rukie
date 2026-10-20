@@ -2,6 +2,8 @@ package supervisor
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,12 +28,24 @@ func (s *Supervisor) Gate() error {
 }
 
 // WriteUnavailable answers one request with 503 and Retry-After: 5 while
-// the daemon is down. The body is a minimal RFC 9457 problem.
+// the daemon is down. The body follows the op-table catalogue entry for
+// CodeUnavailable (type /-/problems/unavailable, exit 4, retryable) and
+// carries trace_id and recovery per DX-09 and DX-15, with
+// recovery.backoff_ms matching Retry-After: 5.
 func WriteUnavailable(w http.ResponseWriter) {
-	body := `{"type":"https://rukie/problems/backend-unavailable",` +
-		`"title":"backend unavailable",` +
+	trace := "unknown"
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		trace = hex.EncodeToString(raw[:])
+	}
+	body := `{"type":"/-/problems/unavailable",` +
+		`"title":"Unavailable",` +
 		`"status":503,` +
-		`"detail":"the ruk daemon is down; retry the request shortly"}`
+		`"detail":"the ruk daemon is down; retry the request shortly",` +
+		`"code":"unavailable",` +
+		`"trace_id":"` + trace + `",` +
+		`"recovery":{"docs":"/-/problems/unavailable","backoff_ms":5000,"next":"retry with backoff"},` +
+		`"retryable":true}`
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.Header().Set("Retry-After", strconv.Itoa(RetryAfterSeconds))
 	w.WriteHeader(http.StatusServiceUnavailable)

@@ -97,3 +97,24 @@ func TestKeyIDIsStable(t *testing.T) {
 		t.Fatal("KeyID ignores key bytes")
 	}
 }
+
+func TestSecretKeyRefusesLoosePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret.key")
+	if _, err := GenerateSecretKey(path); err != nil {
+		t.Fatalf("GenerateSecretKey: %v", err)
+	}
+	for _, mode := range []os.FileMode{0o644, 0o640, 0o601} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatalf("chmod %o: %v", mode, err)
+		}
+		if _, err := LoadSecretKey(path); err == nil {
+			t.Fatalf("LoadSecretKey accepted mode %04o, want refusal", mode)
+		}
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod 0600: %v", err)
+	}
+	if _, err := LoadSecretKey(path); err != nil {
+		t.Fatalf("LoadSecretKey refused mode 0600: %v", err)
+	}
+}

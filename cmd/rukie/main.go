@@ -238,7 +238,7 @@ func runServe(argv []string) int {
 		}
 		return 1
 	}
-	app, cleanup, err := setupApp(ctx, cfg, logger, sup.DaemonProbe)
+	app, cleanup, err := setupApp(ctx, cfg, logger, sup)
 	if err != nil {
 		logger.Error("setup app", slog.Any("err", err))
 		supStop()
@@ -463,9 +463,8 @@ type app struct {
 }
 
 type gitFallback struct {
+	git      http.Handler
 	fallback http.Handler
-	git      *githttp.Server
-	daemon   func() (bool, string)
 	keys     api.Deps
 }
 
@@ -477,12 +476,6 @@ func (h gitFallback) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, _, ok := githttp.RouteGitPath(r.URL.Path); ok {
-		if h.daemon != nil {
-			if ready, _ := h.daemon(); !ready {
-				supervisor.WriteUnavailable(w)
-				return
-			}
-		}
 		h.git.ServeHTTP(w, r)
 		return
 	}
@@ -499,7 +492,7 @@ func llmsBase(cfg config.Config) string {
 	return ""
 }
 
-func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemonProbe func() (bool, string)) (*app, func(), error) {
+func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *supervisor.Supervisor) (*app, func(), error) {
 	cleanup := func() {}
 	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, Logger: logger})
 	if err != nil {
@@ -648,8 +641,12 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	}
 	docs.Set(server.OpenAPI())
 	fillLLMS(server.Document())
+	daemon := api.NotReadyDaemon
+	if sup != nil {
+		daemon = sup.DaemonProbe
+	}
 	server.Handle("GET /healthz", api.Healthz())
-	server.Handle("GET /readyz", api.Readiness{Store: st, Daemon: daemonProbe}.Handler())
+	server.Handle("GET /readyz", api.Readiness{Store: st, Daemon: daemon}.Handler())
 	mcpMount, err := mcp.NewMount(authSvc, server, cfg.HTTP.ExternalURL)
 	if err != nil {
 		cleanup()
@@ -675,16 +672,16 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
-	daemon := daemonProbe
-	if daemon == nil {
-		daemon = api.NotReadyDaemon
+	gitHandler := http.Handler(git)
+	if sup != nil {
+		gitHandler = sup.FailFast(git)
 	}
 	sshSrv, err := setupSSH(cfg, authSvc, limiter, st, spool)
 	if err != nil {
 		cleanup()
 		return nil, cleanup, err
 	}
-	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: git, keys: authDeps, fallback: server, daemon: daemon}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv}, cleanup, nil
+	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {

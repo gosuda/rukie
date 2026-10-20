@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	jsonv1 "encoding/json"
+	jsonv2 "encoding/json/v2"
 )
 
 func runSupervised(t *testing.T, proc *fakeProc) *Supervisor {
@@ -108,6 +111,31 @@ func TestDaemonCallsFailFast503(t *testing.T) {
 	}
 	if got := res.Header.Get("Content-Type"); got != "application/problem+json" {
 		t.Fatalf("Content-Type = %q, want application/problem+json", got)
+	}
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read 503 body: %v", err)
+	}
+	var decoded map[string]any
+	if err := jsonv2.Unmarshal(raw, &decoded, jsonv1.DefaultOptionsV1()); err != nil {
+		t.Fatalf("decode 503 body: %v", err)
+	}
+	if decoded["type"] != "/-/problems/unavailable" {
+		t.Fatalf("type = %v, want /-/problems/unavailable from the op-table catalogue", decoded["type"])
+	}
+	trace, _ := decoded["trace_id"].(string)
+	if trace == "" {
+		t.Fatal("503 body carries no trace_id, want one per DX-09")
+	}
+	recovery, _ := decoded["recovery"].(map[string]any)
+	if recovery == nil {
+		t.Fatal("503 body carries no recovery, want one per DX-15")
+	}
+	if recovery["backoff_ms"] != float64(5000) {
+		t.Fatalf("recovery.backoff_ms = %v, want 5000 to match Retry-After: 5", recovery["backoff_ms"])
+	}
+	if decoded["retryable"] != true {
+		t.Fatalf("retryable = %v, want true from the catalogue entry", decoded["retryable"])
 	}
 
 	down, err := New(Config{ExternalSocket: "/run/ruk.sock", Clock: newFakeClock(), Probe: okProbe})

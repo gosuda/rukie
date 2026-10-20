@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // SecretKeySize is the raw key length in bytes.
@@ -108,9 +109,22 @@ func RotateSecretKey(path string) (string, error) {
 	return KeyID(key), nil
 }
 
-// LoadSecretKey reads and validates the 32-byte key file.
+// LoadSecretKey reads and validates the 32-byte key file. The file must
+// be owner-only (mode 0600 or stricter) and owned by the process uid;
+// anything looser is fatal per ops-design §3.1 step 1, so serve exits 2.
 func LoadSecretKey(path string) ([]byte, error) {
-	raw, err := os.ReadFile(filepath.Clean(path))
+	clean := filepath.Clean(path)
+	info, serr := os.Stat(clean)
+	if serr != nil {
+		return nil, fmt.Errorf("sysops: stat key file: %w", serr)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return nil, fmt.Errorf("sysops: key file %s has mode %04o, want 0600 or stricter (no group or other access)", path, perm)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid != uint32(os.Getuid()) {
+		return nil, fmt.Errorf("sysops: key file %s is owned by uid %d, want uid %d", path, stat.Uid, os.Getuid())
+	}
+	raw, err := os.ReadFile(clean)
 	if err != nil {
 		return nil, fmt.Errorf("sysops: read key file: %w", err)
 	}
