@@ -73,6 +73,7 @@ func TestWireMatchesModel(t *testing.T) {
 	checkDef(t, defs, "SessionResumeArgs", SessionResumeArgs{})
 	checkDef(t, defs, "SessionResumeReply", SessionResumeReply{})
 	checkDef(t, defs, "Capabilities", Capabilities{})
+	checkDef(t, defs, "ReadIntents", ReadIntents{})
 	checkDef(t, defs, "IdentityClaim", IdentityClaim{})
 	checkDef(t, defs, "ErrorReply", ErrorReply{})
 	got := fieldNames(t, SessionOpened{})

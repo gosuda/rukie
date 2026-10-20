@@ -16,6 +16,8 @@ import (
 
 	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
+
+	"github.com/gosuda/rukie/internal/ruk/wire"
 )
 
 func rukBin(t *testing.T) string {
@@ -79,6 +81,17 @@ func (d *daemon) kill() {
 	}
 	_ = d.cmd.Process.Kill()
 	_, _ = d.cmd.Process.Wait()
+}
+
+func seedStore(t *testing.T, dir string) {
+	t.Helper()
+	bin := rukBin(t)
+	//nolint:gosec // G204: bin is RUK_BIN or the pinned debug binary; args are fixed git init flags.
+	cmd := exec.Command(bin, "git", "init", dir)
+	cmd.Env = append(os.Environ(), "RUK_COORDINATOR=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seed store: %v\n%s", err, out)
+	}
 }
 
 func currentUID(t *testing.T) int {
@@ -145,6 +158,71 @@ func TestDaemonRefusesUnlistedPeer(t *testing.T) {
 	}
 	if !errors.Is(err, ErrHandshake) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDaemonSessionOpen(t *testing.T) {
+	d := spawnDaemon(t, currentUID(t))
+	repoDir := filepath.Join(filepath.Dir(d.socket), "roots", "repo")
+	seedStore(t, repoDir)
+	client := dialDaemon(t, d.socket)
+	ctx, cancel := testCtx(t)
+	defer cancel()
+	repo, err := client.OpenRepo(ctx, filepath.Join(repoDir, ".ruk"))
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	if repo.Handle == "" {
+		t.Fatal("empty handle")
+	}
+	opened, err := SessionOpen(ctx, client, repo, wire.SessionOpenArgs{})
+	if err != nil {
+		t.Fatalf("session open: %v", err)
+	}
+	if opened.Session == "" || opened.ReconnectSecret.Raw() == "" || opened.Principal == "" {
+		t.Fatalf("session opened = %+v", opened)
+	}
+	resumed, err := SessionResume(ctx, client, repo, wire.SessionResumeArgs{
+		Session:         opened.Session,
+		ReconnectSecret: opened.ReconnectSecret,
+	})
+	if err != nil {
+		t.Fatalf("session resume: %v", err)
+	}
+	if !resumed.Authority.IsActive() {
+		t.Fatal("resumed authority inactive")
+	}
+}
+
+func TestDaemonClaimListRead(t *testing.T) {
+	d := spawnDaemon(t, currentUID(t))
+	repoDir := filepath.Join(filepath.Dir(d.socket), "roots", "repo")
+	seedStore(t, repoDir)
+	client := dialDaemon(t, d.socket)
+	ctx, cancel := testCtx(t)
+	defer cancel()
+	repo, err := client.OpenRepo(ctx, filepath.Join(repoDir, ".ruk"))
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	raw, err := Call[map[string]any, jsonv1.RawMessage](ctx, client, repo, wire.MethodClaimList, map[string]any{})
+	if err != nil {
+		t.Fatalf("claim list: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Fatal("empty claim list reply")
+	}
+	const requestID = "123e4567-e89b-12d3-a456-426614174000"
+	first, err := Retry[map[string]any, jsonv1.RawMessage](ctx, client, repo, wire.MethodClaimList, requestID, map[string]any{})
+	if err != nil {
+		t.Fatalf("retry one: %v", err)
+	}
+	second, err := Retry[map[string]any, jsonv1.RawMessage](ctx, client, repo, wire.MethodClaimList, requestID, map[string]any{})
+	if err != nil {
+		t.Fatalf("retry two: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("same request id gave different replies")
 	}
 }
 

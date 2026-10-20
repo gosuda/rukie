@@ -21,10 +21,10 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
-      - run: git clone --depth 1 https://github.com/gosuda/ruk.git ../ruk
-      - run: git -C ../ruk fetch --depth 1 origin $(cat tools/ruk.pin) && git -C ../ruk checkout $(cat tools/ruk.pin)
+      - run: git clone --depth 1 https://github.com/gosuda/ruk.git ruk
+      - run: git -C ruk fetch --depth 1 origin $(cat tools/ruk.pin) && git -C ruk checkout $(cat tools/ruk.pin)
       - run: rustup toolchain install 1.99.1 --profile minimal
-      - run: cargo +1.99.1 build --manifest-path ../ruk/Cargo.toml --locked -p ruk
+      - run: cargo +1.99.1 build --manifest-path ruk/Cargo.toml --locked -p ruk
       - run: tools/passgate.sh '--- PASS: ' -- env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off go test -race -count=1 -v -tags integration ./internal/ruk/...
 
   ruk:

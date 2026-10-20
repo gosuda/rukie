@@ -88,7 +88,9 @@ func decodeErrorReply(payload []byte) (wire.ErrorReply, error) {
 	return reply, nil
 }
 
-// IsExitCode reports whether err carries the typed exit status.
+// IsExitCode reports whether err carries the model exit status, not the
+// wire status byte: a cancelled call exits 130 on the wire while its code
+// still maps to 1.
 func IsExitCode(err error, code int) bool {
 	rerr, ok := errors.AsType[*Error](err)
 	if !ok {

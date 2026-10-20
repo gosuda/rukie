@@ -20,6 +20,7 @@ type conn struct {
 	nc         net.Conn
 	streams    map[uint64]*stream
 	readerDone chan struct{}
+	firstErr   error
 	id         uint64
 	nextID     uint64
 	writeEvery time.Duration
@@ -159,13 +160,14 @@ func (c *conn) writeKind(kind Kind, stream uint64, payload []byte) error {
 	return nil
 }
 
-func (c *conn) fail(_ error) {
+func (c *conn) fail(err error) {
 	c.mu.Lock()
 	if c.broken {
 		c.mu.Unlock()
 		return
 	}
 	c.broken = true
+	c.firstErr = err
 	live := make([]*stream, 0, len(c.streams))
 	for _, s := range c.streams {
 		live = append(live, s)
@@ -180,6 +182,12 @@ func (c *conn) fail(_ error) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+func (c *conn) cause() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.firstErr
 }
 
 func (c *conn) lookup(id uint64) (*stream, bool) {

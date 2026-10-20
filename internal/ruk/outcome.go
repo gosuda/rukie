@@ -34,7 +34,6 @@ var preDispatchCodes = map[wire.Code]bool{
 	wire.CodeNotFound:              true,
 	wire.CodeForbidden:             true,
 	wire.CodeVersion:               true,
-	wire.CodeLimit:                 true,
 	wire.CodeRequestReused:         true,
 	wire.CodeHosted:                true,
 	wire.CodeObjectFormat:          true,

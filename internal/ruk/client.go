@@ -3,6 +3,7 @@ package ruk
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"path/filepath"
@@ -203,6 +204,9 @@ func dialBackoff(ctx context.Context, c *Client, timeouts Timeouts) (*conn, erro
 		pc, err = dialConn(ctx, c.pool.nextID(), c.socket, c.profile, timeouts, c.hooks)
 		if err == nil {
 			return pc, nil
+		}
+		if errors.Is(err, ErrVersionMismatch) {
+			return nil, err
 		}
 	}
 	return nil, err

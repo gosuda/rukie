@@ -83,11 +83,19 @@ type SessionOpenArgs struct {
 
 // Capabilities bounds one session.
 type Capabilities struct {
-	Attest      []string `json:"attest,omitempty"`
-	ClaimPaths  []string `json:"claim_paths,omitempty"`
-	Land        []string `json:"land,omitempty"`
-	PushRefs    []string `json:"push_refs,omitempty"`
-	ReadIntents []string `json:"read_intents,omitempty"`
+	Attest       []string          `json:"attest,omitempty"`
+	ClaimPaths   []string          `json:"claim_paths,omitempty"`
+	Land         []string          `json:"land,omitempty"`
+	PushRefs     []string          `json:"push_refs,omitempty"`
+	ReadIntents  *ReadIntents      `json:"read_intents,omitempty"`
+	Undo         jsonv1.RawMessage `json:"undo,omitempty"`
+	WriteChanges jsonv1.RawMessage `json:"write_changes,omitempty"`
+}
+
+// ReadIntents grants private read access.
+type ReadIntents struct {
+	Claims     bool `json:"claims"`
+	Provenance bool `json:"provenance"`
 }
 
 // IdentityClaim names one author.

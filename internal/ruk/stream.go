@@ -6,7 +6,7 @@ import (
 	"github.com/gosuda/rukie/internal/ruk/wire"
 )
 
-const typedOutputCap = 8 << 20
+const typedOutputCap = 16 << 20
 
 type streamState uint8
 

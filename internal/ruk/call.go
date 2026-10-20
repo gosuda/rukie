@@ -219,6 +219,9 @@ func attemptCall[Resp any](ctx context.Context, c *Client, repo Repo, op string,
 		}
 		facts := snap.facts
 		outcome = outcomeTyped(facts)
+		if cause := pc.cause(); cause != nil {
+			waitErr = fmt.Errorf("attemptCall: %w: %w", waitErr, cause)
+		}
 		if kind == wire.MethodRead {
 			return zero, outcome, "", int64(len(snap.output)), autoRetry, fmt.Errorf("attemptCall: %w", waitErr)
 		}
