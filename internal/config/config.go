@@ -76,11 +76,13 @@ type RukConfig struct {
 	RetentionIntervalMs    uint64   `toml:"retention_interval_ms"`
 	ClientDialTimeoutMs    uint     `toml:"client_dial_timeout_ms"`
 	ClientPoolSize         uint     `toml:"client_pool_size"`
-	ClientRequestTimeoutMs uint     `toml:"client_request_timeout_ms"`
-	ClientPackTimeoutMs    uint     `toml:"client_pack_timeout_ms"`
-	StartupTimeoutMs       uint     `toml:"startup_timeout_ms"`
-	RestartMaxAttempts     uint     `toml:"restart_max_attempts"`
-	RestartBackoffMs       uint     `toml:"restart_backoff_ms"`
+	ClientRequestTimeoutMs uint `toml:"client_request_timeout_ms"`
+	ClientPackTimeoutMs    uint `toml:"client_pack_timeout_ms"`
+	// StartupTimeoutMs bounds the socket-plus-handshake wait; it feeds
+	// the supervisor probe and WaitReady. Restart attempts and backoff
+	// are O35 constants (at most 3 restarts, 1 s, 2 s, 4 s) with no
+	// config keys: setting them is an unknown key and fails startup.
+	StartupTimeoutMs uint `toml:"startup_timeout_ms"`
 }
 
 type AuthConfig struct {
@@ -190,7 +192,7 @@ func Defaults() Config {
 			BinaryPath: "ruk", MaxConnections: 128, BlockingPoolSize: 16,
 			HandshakeTimeoutMs: 5000, FrameTimeoutMs: 60000, StreamWindowBytes: 262144, RetentionIntervalMs: 60000,
 			ClientDialTimeoutMs: 5000, ClientPoolSize: 32, ClientRequestTimeoutMs: 120000, ClientPackTimeoutMs: 1800000,
-			StartupTimeoutMs: 15000, RestartMaxAttempts: 3, RestartBackoffMs: 1000,
+			StartupTimeoutMs: 15000,
 		},
 		Auth: AuthConfig{
 			PasswordMinLength: 12, Argon2MemoryKib: 19456, Argon2Iterations: 2, Argon2Parallelism: 1,

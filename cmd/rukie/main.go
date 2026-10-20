@@ -186,7 +186,7 @@ func runServe(argv []string) int {
 	lock, lerr := sysops.AcquireDataDirLock(cfg.DataDir)
 	if lerr != nil {
 		fmt.Fprintln(os.Stderr, lerr.Error())
-		return 3
+		return sysops.ExitLockHeld
 	}
 	defer func() { _ = lock.Release() }()
 	sup, serr := startSupervisor(cfg)
@@ -444,9 +444,14 @@ func (hd *halveDeadline) stop() {
 }
 
 func startSupervisor(cfg config.Config) (*supervisor.Supervisor, error) {
+	timeout, err := startupTimeout(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if externalDaemonSelected(cfg) {
 		return supervisor.New(supervisor.Config{
 			ExternalSocket: cfg.Ruk.Socket,
+			StartupTimeout: timeout,
 		})
 	}
 	bin, err := rukproc.ResolveBinary(cfg.Ruk.BinaryPath)
@@ -458,12 +463,13 @@ func startSupervisor(cfg config.Config) (*supervisor.Supervisor, error) {
 		return nil, err
 	}
 	return supervisor.New(supervisor.Config{
-		Binary:       bin,
-		DaemonConfig: daemonPath,
-		SocketPath:   cfg.Ruk.SocketPath,
-		Env:          supervisor.HermeticEnv(os.Environ()),
-		Stdout:       os.Stderr,
-		Stderr:       os.Stderr,
+		Binary:         bin,
+		DaemonConfig:   daemonPath,
+		SocketPath:     cfg.Ruk.SocketPath,
+		StartupTimeout: timeout,
+		Env:            supervisor.HermeticEnv(os.Environ()),
+		Stdout:         os.Stderr,
+		Stderr:         os.Stderr,
 	})
 }
 
@@ -746,6 +752,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
+	dataDir := cfg.DataDir
 	git, err := githttp.New(githttp.Config{
 		Auth:       authSvc,
 		Limiter:    limiter,
@@ -753,6 +760,9 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		RepoRoot:   cfg.Ruk.RepoRoot,
 		Limits:     wire.DefaultGitLimits(),
 		Feed:       events.OpenHookSink(st, spool, time.Now),
+		Barrier: func() (func(), bool) {
+			return sysops.HoldSharedBarrier(dataDir)
+		},
 	})
 	if err != nil {
 		cleanup()

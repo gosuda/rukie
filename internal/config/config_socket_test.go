@@ -67,3 +67,20 @@ func TestRukSocketUnknownKeyStillFails(t *testing.T) {
 		t.Fatal("Load accepted unknown key ruk.sockett; unknown keys must fail startup")
 	}
 }
+
+func TestRukRestartKeysAreRejected(t *testing.T) {
+	for _, key := range []string{"restart_max_attempts = 3", "restart_backoff_ms = 1000"} {
+		path := writeSocketConfig(t, "[ruk]\n"+key+"\n")
+		if _, err := Load(path); err == nil {
+			t.Fatalf("Load accepted removed key %q; O35 fixes attempts (3) and backoff (1s,2s,4s)", key)
+		}
+	}
+	path := writeSocketConfig(t, "[ruk]\nstartup_timeout_ms = 20000\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load refused startup_timeout_ms: %v", err)
+	}
+	if cfg.Ruk.StartupTimeoutMs != 20000 {
+		t.Fatalf("ruk.startup_timeout_ms = %d, want 20000", cfg.Ruk.StartupTimeoutMs)
+	}
+}
