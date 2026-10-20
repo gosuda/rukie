@@ -20,9 +20,11 @@ import (
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/cli"
 	"github.com/gosuda/rukie/internal/config"
+	"github.com/gosuda/rukie/internal/githttp"
 	"github.com/gosuda/rukie/internal/logging"
 	"github.com/gosuda/rukie/internal/mcp"
 	"github.com/gosuda/rukie/internal/op"
+	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/store"
 )
 
@@ -153,14 +155,28 @@ func runServe(argv []string) int {
 		logger.Error("setup app", slog.Any("err", err))
 		return 1
 	}
-	return serveHTTP(ctx, logger, app.server, cfg.HTTP)
+	return serveHTTP(ctx, logger, app.handler, cfg.HTTP)
 }
 
 type app struct {
-	server *op.Server
-	store  *store.Store
-	auth   *auth.Service
-	docs   *api.DocStore
+	server  *op.Server
+	handler http.Handler
+	store   *store.Store
+	auth    *auth.Service
+	docs    *api.DocStore
+}
+
+type gitFallback struct {
+	git      *githttp.Server
+	fallback http.Handler
+}
+
+func (h gitFallback) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := githttp.RouteGitPath(r.URL.Path); ok {
+		h.git.ServeHTTP(w, r)
+		return
+	}
+	h.fallback.ServeHTTP(w, r)
 }
 
 func llmsBase(cfg config.Config) string {
@@ -264,7 +280,18 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app
 	server.Handle("POST /-/mcp", mcpMount.Authenticated())
 	server.Handle("GET /-/mcp", mcpMount.MethodNotAllowed())
 	server.Handle("DELETE /-/mcp", mcpMount.MethodNotAllowed())
-	return &app{server: server, store: st, auth: authSvc, docs: docs}, cleanup, nil
+	git, err := githttp.New(githttp.Config{
+		Auth:       authSvc,
+		Limiter:    limiter,
+		SocketPath: cfg.Ruk.SocketPath,
+		RepoRoot:   cfg.Ruk.RepoRoot,
+		Limits:     wire.DefaultGitLimits(),
+	})
+	if err != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
+	}
+	return &app{server: server, handler: gitFallback{git: git, fallback: server}, store: st, auth: authSvc, docs: docs}, cleanup, nil
 }
 
 func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, httpCfg config.HTTPConfig) int {
