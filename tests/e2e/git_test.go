@@ -499,6 +499,35 @@ func TestGitAnonymousReadInternalDenied(t *testing.T) {
 	}
 }
 
+func (s *stack) addGrant(t *testing.T, repoID, userID int64, role string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO repo_grants (repo_id, user_id, role) VALUES (?, ?, ?)`, repoID, userID, role); err != nil {
+		t.Fatalf("insert grant: %v", err)
+	}
+}
+
+func TestGitReadOnlyTokenCannotPush(t *testing.T) {
+	s := newStack(t, nil)
+	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+	mallory := s.addUser(t, "mallory", "repo:read")
+	repoID := s.addRepo(t, "ada", "hello", "private")
+	s.addGrant(t, repoID, mallory.user.ID, "read")
+	work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+	pushURL := s.repoURL("ada", "hello", "mallory", mallory.token)
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+	out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main")
+	if err == nil {
+		t.Fatalf("read-only push succeeded\n%s", out)
+	}
+	adaPush := s.repoURL("ada", "hello", "ada", ada.token)
+	if refs := s.lsRemote(t, adaPush); refs["refs/heads/main"] != "" {
+		t.Fatalf("read-only push landed: %q", refs["refs/heads/main"])
+	}
+}
+
 func TestGitLandOnlyDirectPushDenied(t *testing.T) {
 	s := newStack(t, nil)
 	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
