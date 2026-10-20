@@ -12,17 +12,21 @@ import (
 
 func tailEvent(seq uint64, name, old, current string) ruk.RefEvent {
 	return ruk.RefEvent{
-		At:     "2026-10-20T00:00:00Z",
+		At:     1729468800000,
 		Name:   name,
 		Old:    ruk.DirectTarget(old),
 		New:    ruk.DirectTarget(current),
-		Source: "receive_pack",
+		Source: "ReceivePack",
 		Seq:    seq,
 	}
 }
 
-func tailReply(status string, head, oldest, nextAfter uint64, events []ruk.RefEvent) ruk.EventsTailReply {
-	return ruk.EventsTailReply{Events: events, Status: status, Head: head, Oldest: oldest, NextAfter: nextAfter}
+func expiredReply(head, oldest uint64) ruk.EventsTailReply {
+	return ruk.EventsTailReply{Head: head, Oldest: oldest, Expired: true}
+}
+
+func liveReply(head, oldest uint64, events []ruk.RefEvent) ruk.EventsTailReply {
+	return ruk.EventsTailReply{Events: events, Head: head, Oldest: oldest}
 }
 
 func listReply(asOf uint64, tips map[string]string) ruk.RefsListReply {
@@ -41,10 +45,10 @@ func TestFollowerIngestDedupesReplay(t *testing.T) {
 		tailEvent(5, "refs/heads/main", strings.Repeat("a", 40), strings.Repeat("b", 40)),
 		tailEvent(6, "refs/heads/main", strings.Repeat("b", 40), strings.Repeat("c", 40)),
 	}
-	if err := f.Ingest(ctx, batch, 6); err != nil {
+	if err := f.Ingest(ctx, batch); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
-	if err := f.Ingest(ctx, batch, 6); err != nil {
+	if err := f.Ingest(ctx, batch); err != nil {
 		t.Fatalf("replay ingest: %v", err)
 	}
 	if n := countOutboxKind(t, st, kindRefUpdated); n != 2 {
@@ -64,11 +68,11 @@ func TestFollowerIngestSkipsBelowCursor(t *testing.T) {
 	f := OpenFollowerWith(st, 11, nil, nil, feedTime)
 	ctx := feedCtx(t)
 	batch := []ruk.RefEvent{tailEvent(6, "refs/heads/main", strings.Repeat("a", 40), strings.Repeat("b", 40))}
-	if err := f.Ingest(ctx, batch, 6); err != nil {
+	if err := f.Ingest(ctx, batch); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
 	old := []ruk.RefEvent{tailEvent(5, "refs/heads/main", strings.Repeat("0", 40), strings.Repeat("a", 40))}
-	if err := f.Ingest(ctx, old, 5); err != nil {
+	if err := f.Ingest(ctx, old); err != nil {
 		t.Fatalf("old ingest: %v", err)
 	}
 	if n := countOutboxKind(t, st, kindRefUpdated); n != 1 {
@@ -84,7 +88,7 @@ func TestFollowerIngestOrdersOutOfOrder(t *testing.T) {
 		tailEvent(7, "refs/heads/main", strings.Repeat("b", 40), strings.Repeat("c", 40)),
 		tailEvent(5, "refs/heads/main", strings.Repeat("a", 40), strings.Repeat("b", 40)),
 	}
-	if err := f.Ingest(ctx, batch, 7); err != nil {
+	if err := f.Ingest(ctx, batch); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
 	cursor, err := f.Cursor(ctx)
@@ -104,7 +108,7 @@ func TestFollowerIngestRejectsMalformed(t *testing.T) {
 	f := OpenFollowerWith(st, 11, nil, nil, feedTime)
 	ctx := feedCtx(t)
 	batch := []ruk.RefEvent{tailEvent(5, "", strings.Repeat("a", 40), strings.Repeat("b", 40))}
-	if err := f.Ingest(ctx, batch, 5); err == nil {
+	if err := f.Ingest(ctx, batch); err == nil {
 		t.Fatal("nameless event ingested")
 	}
 	if n := countOutboxKind(t, st, kindRefUpdated); n != 0 {
@@ -124,11 +128,11 @@ func TestFollowerIngestDeletesNullNew(t *testing.T) {
 	f := OpenFollowerWith(st, 21, nil, nil, feedTime)
 	ctx := feedCtx(t)
 	create := []ruk.RefEvent{tailEvent(5, "refs/heads/gone", strings.Repeat("0", 40), strings.Repeat("b", 40))}
-	if err := f.Ingest(ctx, create, 5); err != nil {
+	if err := f.Ingest(ctx, create); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	remove := ruk.RefEvent{At: "t", Name: "refs/heads/gone", Old: ruk.DirectTarget(strings.Repeat("b", 40)), Source: "receive_pack", Seq: 6}
-	if err := f.Ingest(ctx, []ruk.RefEvent{remove}, 6); err != nil {
+	remove := ruk.RefEvent{At: 1729468800000, Name: "refs/heads/gone", Old: ruk.DirectTarget(strings.Repeat("b", 40)), Source: "ReceivePack", Seq: 6}
+	if err := f.Ingest(ctx, []ruk.RefEvent{remove}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	var tips map[string]string
@@ -151,27 +155,74 @@ func TestFollowerIngestDeletesNullNew(t *testing.T) {
 	}
 }
 
+func TestListAllPagesThroughNextAfter(t *testing.T) {
+	next := "refs/heads/b"
+	calls := 0
+	list := func(_ context.Context, prefix, after string) (ruk.RefsListReply, error) {
+		calls++
+		if prefix != "" {
+			t.Fatalf("prefix = %q, want empty", prefix)
+		}
+		if after == "" {
+			return ruk.RefsListReply{
+				Refs: ruk.RefPage{Items: []ruk.RefEntry{{Name: "refs/heads/a", Target: ruk.DirectTarget("a")}}, NextAfter: &next},
+				AsOf: 8,
+			}, nil
+		}
+		if after != "refs/heads/b" {
+			t.Fatalf("after = %q, want the page cursor", after)
+		}
+		return ruk.RefsListReply{
+			Refs: ruk.RefPage{Items: []ruk.RefEntry{{Name: "refs/heads/b", Target: ruk.DirectTarget("b")}}},
+			AsOf: 9,
+		}, nil
+	}
+	items, asOf, err := ListAll(feedCtx(t), list, "")
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(items) != 2 || asOf != 8 {
+		t.Fatalf("items = %+v, as_of = %d, want the first page head", items, asOf)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestListAllRefusesEndlessPages(t *testing.T) {
+	after := "refs/heads/a"
+	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
+		return ruk.RefsListReply{
+			Refs: ruk.RefPage{NextAfter: &after},
+			AsOf: 1,
+		}, nil
+	}
+	if _, _, err := ListAll(feedCtx(t), list, ""); err == nil {
+		t.Fatal("endless paging accepted")
+	}
+}
+
 func TestFollowerPollOnceExpiredResnapshots(t *testing.T) {
 	st := openFeedStore(t)
 	ctx := feedCtx(t)
 	seed := OpenFollowerWith(st, 31, nil, nil, feedTime)
 	if err := seed.Ingest(ctx, []ruk.RefEvent{
 		tailEvent(4, "refs/heads/main", strings.Repeat("a", 40), strings.Repeat("b", 40)),
-	}, 4); err != nil {
+	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	calls := 0
 	tail := func(_ context.Context, after uint64) (ruk.EventsTailReply, error) {
 		calls++
 		if after == 4 {
-			return tailReply(ruk.TailStatusExpired, 12, 9, 12, nil), nil
+			return expiredReply(12, 9), nil
 		}
 		if after == 12 {
-			return tailReply(ruk.TailStatusOK, 12, 9, 12, nil), nil
+			return liveReply(12, 9, nil), nil
 		}
 		return ruk.EventsTailReply{}, errors.New("tail resumed from the wrong cursor")
 	}
-	list := func(_ context.Context, _ string) (ruk.RefsListReply, error) {
+	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
 		return listReply(12, map[string]string{
 			"refs/heads/main": strings.Repeat("c", 40),
 			"refs/heads/keep": strings.Repeat("k", 40),

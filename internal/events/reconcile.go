@@ -30,12 +30,12 @@ func OpenReconciler(st *store.Store, repoID int64, list Lister, clock func() tim
 }
 
 func (r *Reconciler) ReconcileRepo(ctx context.Context) (int, error) {
-	reply, lerr := r.list(ctx, "")
+	items, asOf, lerr := ListAll(ctx, r.list, "")
 	if lerr != nil {
 		return 0, lerr
 	}
-	listed := make(map[string]string, len(reply.Refs.Items))
-	for _, ref := range reply.Refs.Items {
+	listed := make(map[string]string, len(items))
+	for _, ref := range items {
 		target := ref.Target.Hex()
 		if ref.Name == "" || target == "" {
 			return 0, fmt.Errorf("ReconcileRepo: %w: ref entry misses name or target", store.ErrInvalid)
@@ -59,7 +59,7 @@ func (r *Reconciler) ReconcileRepo(ctx context.Context) (int, error) {
 		if cursor < 0 {
 			return fmt.Errorf("ReconcileRepo: stored cursor %d is negative", cursor)
 		}
-		if uint64(cursor) < reply.AsOf {
+		if uint64(cursor) < asOf {
 			return nil
 		}
 		for name, target := range listed {

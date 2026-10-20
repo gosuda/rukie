@@ -27,13 +27,12 @@ func TestEventsTailAgainstDaemon(t *testing.T) {
 	repo := openSeededRepo(t, d)
 	ctx, cancel := testCtx(t)
 	defer cancel()
-	after := uint64(0)
-	reply, err := EventsTail(ctx, client, repo, EventsTailArgs{After: &after, Limit: 10, WaitMs: 0})
+	reply, err := EventsTail(ctx, client, repo, EventsTailArgs{After: 0, Limit: 10, WaitMs: 0})
 	if err != nil {
 		t.Fatalf("events.tail: %v", err)
 	}
-	if reply.Status != TailStatusOK {
-		t.Fatalf("status = %q, want ok", reply.Status)
+	if reply.Expired {
+		t.Fatal("fresh tail reported expired")
 	}
 	if len(reply.Events) != 0 {
 		t.Fatalf("fresh repo returned %d events", len(reply.Events))

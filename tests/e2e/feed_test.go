@@ -177,11 +177,11 @@ func TestSpoolSurvivesRukieCrash(t *testing.T) {
 			t.Fatalf("job %s = %+v", id, job)
 		}
 	}
-	if n := refUpdatedCount(t, s); n != 1 {
-		t.Fatalf("ref.updated rows = %d, want 1", n)
+	if n := pushReceivedCount(t, s); n != 1 {
+		t.Fatalf("push.received rows = %d, want 1", n)
 	}
-	if tips := feedTips(t, s, 777); tips["refs/heads/main"] != strings.Repeat("b", 40) {
-		t.Fatalf("tips = %+v", tips)
+	if tips := feedTips(t, s, 777); len(tips) != 0 {
+		t.Fatalf("tips = %+v, want empty: the follower owns ref tips", tips)
 	}
 	pending, err := sp.Pending()
 	if err != nil {
@@ -235,8 +235,16 @@ func TestPushProducesSpoolThenOutboxThenRemoves(t *testing.T) {
 	if received != 1 {
 		t.Fatalf("push.received rows = %d, want 1", received)
 	}
+	if n := refUpdatedCount(t, s); n != 0 {
+		t.Fatalf("ref.updated rows = %d, want 0 before the follower runs", n)
+	}
+	repo := openFeedRepo(t, s, "ada", "hello")
+	follower := events.OpenFollower(s.st, repoID, repo, s.client, time.Now)
+	if err := follower.PollOnce(ctx); err != nil {
+		t.Fatalf("follower poll: %v", err)
+	}
 	if n := refUpdatedCount(t, s); n != 1 {
-		t.Fatalf("ref.updated rows = %d, want 1", n)
+		t.Fatalf("ref.updated rows = %d, want 1 after the follower runs", n)
 	}
 	if tips := feedTips(t, s, repoID); tips["refs/heads/main"] != oid {
 		t.Fatalf("tips = %+v, want main at %s", tips, oid)
@@ -314,14 +322,14 @@ func TestSpoolKillBetweenFsyncAndCommit(t *testing.T) {
 	if err = sp.Replay(ctx, st, events.EnqueuePush); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
-	before := refUpdatedCountOn(t, st)
+	before := pushReceivedCountOn(t, st)
 	if before != 1 {
-		t.Fatalf("ref.updated rows = %d, want 1", before)
+		t.Fatalf("push.received rows = %d, want 1", before)
 	}
 	if err = sp.Replay(ctx, st, events.EnqueuePush); err != nil {
 		t.Fatalf("second replay: %v", err)
 	}
-	if after := refUpdatedCountOn(t, st); after != before {
+	if after := pushReceivedCountOn(t, st); after != before {
 		t.Fatalf("second replay changed rows from %d to %d", before, after)
 	}
 }
@@ -349,7 +357,12 @@ func runSpoolCrashChild() {
 	time.Sleep(60 * time.Second)
 }
 
-func refUpdatedCountOn(t *testing.T, st *store.Store) int {
+func pushReceivedCount(t *testing.T, s *stack) int {
+	t.Helper()
+	return pushReceivedCountOn(t, s.st)
+}
+
+func pushReceivedCountOn(t *testing.T, st *store.Store) int {
 	t.Helper()
 	var rows []store.OutboxRow
 	err := st.Read(e2eCtx(t), func(tx *store.ReadTx) error {
@@ -365,7 +378,7 @@ func refUpdatedCountOn(t *testing.T, st *store.Store) int {
 	}
 	n := 0
 	for _, row := range rows {
-		if row.Kind == "ref.updated" {
+		if row.Kind == "push.received" {
 			n++
 		}
 	}
@@ -376,10 +389,16 @@ func TestReconcilerRepairsMissedPush(t *testing.T) {
 	s := newStack(t, nil)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")
 	repoID := s.addRepo(t, "ada", "hello", "private")
-	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})
+	work, oid := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+	pushURL := s.repoURL("ada", "hello", "ada", s.users["ada"].token)
+	pushCtx, pushCancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer pushCancel()
+	if out, err := gitRun(pushCtx, t, work, "push", pushURL, "HEAD:refs/heads/main", "HEAD:refs/tags/v1"); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
 	repo := openFeedRepo(t, s, "ada", "hello")
 	ctx := e2eCtx(t)
-	listed, err := ruk.RefsList(ctx, s.client, repo, ruk.RefsListArgs{Prefix: "refs/heads/"})
+	listed, err := ruk.RefsList(ctx, s.client, repo, ruk.RefsListArgs{})
 	if err != nil {
 		t.Fatalf("refs.list: %v", err)
 	}
@@ -390,21 +409,34 @@ func TestReconcilerRepairsMissedPush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("simulate consumed cursor: %v", err)
 	}
-	reconciler := events.OpenReconciler(s.st, repoID, func(ctx context.Context, prefix string) (ruk.RefsListReply, error) {
-		return ruk.RefsList(ctx, s.client, repo, ruk.RefsListArgs{Prefix: prefix})
+	reconciler := events.OpenReconciler(s.st, repoID, func(ctx context.Context, prefix, after string) (ruk.RefsListReply, error) {
+		args := ruk.RefsListArgs{Prefix: prefix}
+		if after != "" {
+			cursor := after
+			args.After = &cursor
+		}
+		return ruk.RefsList(ctx, s.client, repo, args)
 	}, time.Now)
 	n, err := reconciler.ReconcileRepo(ctx)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("synthesized = %d, want 1", n)
+	if n != 2 {
+		t.Fatalf("synthesized = %d, want 2 (branch plus tag)", n)
 	}
-	if got := refUpdatedCount(t, s); got != 1 {
-		t.Fatalf("ref.updated rows = %d, want 1", got)
+	if got := refUpdatedCount(t, s); got != 2 {
+		t.Fatalf("ref.updated rows = %d, want 2", got)
 	}
-	if tips := feedTips(t, s, repoID); tips["refs/heads/main"] != oid {
-		t.Fatalf("tips = %+v, want main at %s", tips, oid)
+	tips := feedTips(t, s, repoID)
+	if tips["refs/heads/main"] != oid || tips["refs/tags/v1"] != oid {
+		t.Fatalf("tips = %+v, want main and v1 at %s", tips, oid)
+	}
+	again, err := reconciler.ReconcileRepo(ctx)
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if again != 0 {
+		t.Fatalf("second synthesized = %d, want 0", again)
 	}
 }
 
@@ -535,8 +567,13 @@ func TestFaultKillNine(t *testing.T) {
 		restartDaemon(t, s)
 		repo := openFeedRepo(t, s, "ada", "hello")
 		rctx := e2eCtx(t)
-		reconciler := events.OpenReconciler(s.st, repoID, func(ctx context.Context, prefix string) (ruk.RefsListReply, error) {
-			return ruk.RefsList(ctx, s.client, repo, ruk.RefsListArgs{Prefix: prefix})
+		reconciler := events.OpenReconciler(s.st, repoID, func(ctx context.Context, prefix, after string) (ruk.RefsListReply, error) {
+			args := ruk.RefsListArgs{Prefix: prefix}
+			if after != "" {
+				cursor := after
+				args.After = &cursor
+			}
+			return ruk.RefsList(ctx, s.client, repo, args)
 		}, time.Now)
 		n, err := reconciler.ReconcileRepo(rctx)
 		if err != nil {
@@ -568,28 +605,27 @@ func TestEventsTailExpiredResnapshot(t *testing.T) {
 	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})
 	repo := openFeedRepo(t, s, "ada", "hello")
 	ctx := e2eCtx(t)
-	after := uint64(0)
-	live, err := ruk.EventsTail(ctx, s.client, repo, ruk.EventsTailArgs{After: &after, Limit: 100, WaitMs: 0})
+	live, err := ruk.EventsTail(ctx, s.client, repo, ruk.EventsTailArgs{After: 0, Limit: 100, WaitMs: 0})
 	if err != nil {
 		t.Fatalf("events.tail: %v", err)
 	}
-	if live.Status != ruk.TailStatusOK {
-		t.Fatalf("status = %q, want ok", live.Status)
+	if live.Expired {
+		t.Fatal("fresh tail reported expired")
 	}
 	if len(live.Events) == 0 {
 		t.Fatal("push produced no events")
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		stale, serr := ruk.EventsTail(ctx, s.client, repo, ruk.EventsTailArgs{After: &after, Limit: 100, WaitMs: 0})
+		stale, serr := ruk.EventsTail(ctx, s.client, repo, ruk.EventsTailArgs{After: 0, Limit: 100, WaitMs: 0})
 		if serr != nil {
 			t.Fatalf("retention tail: %v", serr)
 		}
-		if stale.Status == ruk.TailStatusExpired {
+		if stale.Expired {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("tail never expired: status = %q, oldest = %d", stale.Status, stale.Oldest)
+			t.Fatalf("tail never expired: expired = %v, oldest = %d", stale.Expired, stale.Oldest)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

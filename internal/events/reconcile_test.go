@@ -56,7 +56,7 @@ func TestReconcilerSynthesizesMissedUpdate(t *testing.T) {
 	st := openFeedStore(t)
 	seedTips(t, st, 41, map[string]string{"refs/heads/main": strings.Repeat("a", 40)})
 	setCursor(t, st, 41, 10)
-	list := func(_ context.Context, _ string) (ruk.RefsListReply, error) {
+	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
 		return listReply(9, map[string]string{"refs/heads/main": strings.Repeat("b", 40)}), nil
 	}
 	r := OpenReconciler(st, 41, list, feedTime)
@@ -83,7 +83,7 @@ func TestReconcilerSkipsEventsInFlight(t *testing.T) {
 	st := openFeedStore(t)
 	seedTips(t, st, 41, map[string]string{"refs/heads/main": strings.Repeat("a", 40)})
 	setCursor(t, st, 41, 5)
-	list := func(_ context.Context, _ string) (ruk.RefsListReply, error) {
+	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
 		return listReply(9, map[string]string{"refs/heads/main": strings.Repeat("b", 40)}), nil
 	}
 	r := OpenReconciler(st, 41, list, feedTime)
@@ -106,7 +106,7 @@ func TestReconcilerHandlesDeletion(t *testing.T) {
 		"refs/heads/gone": strings.Repeat("g", 40),
 	})
 	setCursor(t, st, 41, 10)
-	list := func(_ context.Context, _ string) (ruk.RefsListReply, error) {
+	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
 		return listReply(10, map[string]string{"refs/heads/main": strings.Repeat("a", 40)}), nil
 	}
 	r := OpenReconciler(st, 41, list, feedTime)
@@ -138,7 +138,7 @@ func TestReconcilerRejectsMalformedEntry(t *testing.T) {
 	st := openFeedStore(t)
 	seedTips(t, st, 41, map[string]string{})
 	setCursor(t, st, 41, 10)
-	list := func(_ context.Context, _ string) (ruk.RefsListReply, error) {
+	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
 		return ruk.RefsListReply{
 			Refs: ruk.RefPage{Items: []ruk.RefEntry{{Name: "", Target: ruk.DirectTarget("a")}}},
 			AsOf: 10,
@@ -157,7 +157,7 @@ func TestReconcilerRunProcessesOnce(t *testing.T) {
 	st := openFeedStore(t)
 	seedTips(t, st, 41, map[string]string{"refs/heads/main": strings.Repeat("a", 40)})
 	setCursor(t, st, 41, 10)
-	list := func(_ context.Context, _ string) (ruk.RefsListReply, error) {
+	list := func(_ context.Context, _, _ string) (ruk.RefsListReply, error) {
 		return listReply(10, map[string]string{"refs/heads/main": strings.Repeat("b", 40)}), nil
 	}
 	r := OpenReconciler(st, 41, list, feedTime)

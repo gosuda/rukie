@@ -8,24 +8,14 @@ import (
 )
 
 const (
-	MethodEventsTail wire.Method = "events.tail"
-	MethodRefsList   wire.Method = "refs.list"
-)
-
-const (
 	MaxTailLimit  = 1000
 	MaxTailWaitMs = 30000
 	MaxRefsLimit  = 1000
 )
 
-const (
-	TailStatusOK      = "ok"
-	TailStatusExpired = "expired"
-)
-
 type EventsTailArgs struct {
-	After  *uint64
 	Prefix string
+	After  uint64
 	Limit  int
 	WaitMs uint64
 }
@@ -42,11 +32,9 @@ func (a EventsTailArgs) Validate() error {
 
 func (a EventsTailArgs) marshal() map[string]any {
 	out := map[string]any{
+		"after":   a.After,
 		"limit":   a.Limit,
 		"wait_ms": a.WaitMs,
-	}
-	if a.After != nil {
-		out["after"] = *a.After
 	}
 	if a.Prefix != "" {
 		out["prefix"] = a.Prefix
@@ -79,27 +67,28 @@ func (t RefTarget) Null() bool {
 }
 
 type RefEvent struct {
-	At        string    `json:"at"`
-	Name      string    `json:"name"`
 	Old       RefTarget `json:"old"`
 	New       RefTarget `json:"new"`
-	Operation *string   `json:"operation,omitempty"`
+	Operation *uint64   `json:"operation,omitempty"`
 	RequestID *string   `json:"request_id,omitempty"`
 	Session   *string   `json:"session,omitempty"`
+	Name      string    `json:"name"`
 	Source    string    `json:"source"`
+	At        uint64    `json:"at"`
 	Seq       uint64    `json:"seq"`
 }
 
-type EventsTailReply struct {
-	Status    string     `json:"status"`
-	Events    []RefEvent `json:"events"`
-	Head      uint64     `json:"head"`
-	Oldest    uint64     `json:"oldest"`
-	NextAfter uint64     `json:"next_after"`
+type ViewInfo struct {
+	Store string `json:"store"`
+	View  uint64 `json:"view"`
 }
 
-func (r EventsTailReply) Expired() bool {
-	return r.Status == TailStatusExpired
+type EventsTailReply struct {
+	View    ViewInfo   `json:"view"`
+	Events  []RefEvent `json:"events"`
+	Head    uint64     `json:"head"`
+	Oldest  uint64     `json:"oldest"`
+	Expired bool       `json:"expired"`
 }
 
 func EventsTail(ctx context.Context, c *Client, repo Repo, args EventsTailArgs) (EventsTailReply, error) {
@@ -107,7 +96,7 @@ func EventsTail(ctx context.Context, c *Client, repo Repo, args EventsTailArgs) 
 	if err := args.Validate(); err != nil {
 		return zero, err
 	}
-	return Call[map[string]any, EventsTailReply](ctx, c, repo, MethodEventsTail, args.marshal())
+	return Call[map[string]any, EventsTailReply](ctx, c, repo, wire.MethodEventsTail, args.marshal())
 }
 
 type RefsListArgs struct {
@@ -148,8 +137,9 @@ type RefPage struct {
 }
 
 type RefsListReply struct {
-	Refs RefPage `json:"refs"`
-	AsOf uint64  `json:"as_of"`
+	Refs RefPage  `json:"refs"`
+	View ViewInfo `json:"view"`
+	AsOf uint64   `json:"as_of"`
 }
 
 func RefsList(ctx context.Context, c *Client, repo Repo, args RefsListArgs) (RefsListReply, error) {
@@ -157,5 +147,5 @@ func RefsList(ctx context.Context, c *Client, repo Repo, args RefsListArgs) (Ref
 	if err := args.Validate(); err != nil {
 		return zero, err
 	}
-	return Call[map[string]any, RefsListReply](ctx, c, repo, MethodRefsList, args.marshal())
+	return Call[map[string]any, RefsListReply](ctx, c, repo, wire.MethodRefsList, args.marshal())
 }

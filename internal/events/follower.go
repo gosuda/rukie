@@ -3,6 +3,7 @@ package events
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -26,7 +27,36 @@ const (
 
 type Tailer func(ctx context.Context, after uint64) (ruk.EventsTailReply, error)
 
-type Lister func(ctx context.Context, prefix string) (ruk.RefsListReply, error)
+type Lister func(ctx context.Context, prefix, after string) (ruk.RefsListReply, error)
+
+const (
+	ListPageLimit = 1000
+	MaxListPages  = 10000
+)
+
+func ListAll(ctx context.Context, list Lister, prefix string) ([]ruk.RefEntry, uint64, error) {
+	var out []ruk.RefEntry
+	var asOf uint64
+	after := ""
+	for page := range MaxListPages {
+		if ctx.Err() != nil {
+			return nil, 0, ctx.Err()
+		}
+		reply, err := list(ctx, prefix, after)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, reply.Refs.Items...)
+		if page == 0 {
+			asOf = reply.AsOf
+		}
+		if reply.Refs.NextAfter == nil {
+			return out, asOf, nil
+		}
+		after = *reply.Refs.NextAfter
+	}
+	return nil, 0, errors.New("events: refs.list paging exceeded its page cap")
+}
 
 type Follower struct {
 	client *ruk.Client
@@ -65,14 +95,19 @@ func OpenFollowerWith(st *store.Store, repoID int64, tail Tailer, list Lister, c
 
 func (f *Follower) daemonTail(ctx context.Context, after uint64) (ruk.EventsTailReply, error) {
 	return ruk.EventsTail(ctx, f.client, f.repo, ruk.EventsTailArgs{
-		After:  &after,
+		After:  after,
 		Limit:  FollowerBatchLimit,
 		WaitMs: FollowerWaitMs,
 	})
 }
 
-func (f *Follower) daemonList(ctx context.Context, prefix string) (ruk.RefsListReply, error) {
-	return ruk.RefsList(ctx, f.client, f.repo, ruk.RefsListArgs{Prefix: prefix})
+func (f *Follower) daemonList(ctx context.Context, prefix, after string) (ruk.RefsListReply, error) {
+	args := ruk.RefsListArgs{Prefix: prefix, Limit: ListPageLimit}
+	if after != "" {
+		cursor := after
+		args.After = &cursor
+	}
+	return ruk.RefsList(ctx, f.client, f.repo, args)
 }
 
 func (f *Follower) Cursor(ctx context.Context) (uint64, error) {
@@ -94,8 +129,8 @@ func (f *Follower) Cursor(ctx context.Context) (uint64, error) {
 	return uint64(cursor), nil
 }
 
-func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent, nextAfter uint64) error {
-	if len(events) == 0 && nextAfter == 0 {
+func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent) error {
+	if len(events) == 0 {
 		return nil
 	}
 	ordered := make([]ruk.RefEvent, len(events))
@@ -113,13 +148,7 @@ func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent, nextAfter 
 		if cursor < 0 {
 			return fmt.Errorf("Ingest: stored cursor %d is negative", cursor)
 		}
-		if nextAfter > math.MaxInt64 {
-			return fmt.Errorf("Ingest: %w: next_after overflows int64", store.ErrInvalid)
-		}
 		front := cursor
-		if int64(nextAfter) > front {
-			front = int64(nextAfter)
-		}
 		for _, event := range ordered {
 			if event.Seq > math.MaxInt64 {
 				return fmt.Errorf("Ingest: %w: event seq %d overflows int64", store.ErrInvalid, event.Seq)
@@ -208,20 +237,20 @@ func (f *Follower) PollOnce(ctx context.Context) error {
 	if terr != nil {
 		return terr
 	}
-	if reply.Expired() {
+	if reply.Expired {
 		return f.resnapshot(ctx)
 	}
-	return f.Ingest(ctx, reply.Events, reply.NextAfter)
+	return f.Ingest(ctx, reply.Events)
 }
 
 func (f *Follower) resnapshot(ctx context.Context) error {
-	reply, err := f.list(ctx, "")
+	items, asOf, err := ListAll(ctx, f.list, "")
 	if err != nil {
 		return err
 	}
 	now := f.clock()
-	tips := make(map[string]string, len(reply.Refs.Items))
-	for _, ref := range reply.Refs.Items {
+	tips := make(map[string]string, len(items))
+	for _, ref := range items {
 		target := ref.Target.Hex()
 		if ref.Name == "" || target == "" {
 			return fmt.Errorf("resnapshot: %w: ref entry misses name or target", store.ErrInvalid)
@@ -256,13 +285,13 @@ func (f *Follower) resnapshot(ctx context.Context) error {
 		if cerr != nil {
 			return cerr
 		}
-		if reply.AsOf > math.MaxInt64 {
+		if asOf > math.MaxInt64 {
 			return fmt.Errorf("resnapshot: %w: as_of overflows int64", store.ErrInvalid)
 		}
-		if int64(reply.AsOf) <= cursor {
+		if int64(asOf) <= cursor {
 			return nil
 		}
-		return tx.Outbox().Advance(eventConsumer(f.repoID), cursor, int64(reply.AsOf))
+		return tx.Outbox().Advance(eventConsumer(f.repoID), cursor, int64(asOf))
 	})
 }
 

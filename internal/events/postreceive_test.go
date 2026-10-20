@@ -100,8 +100,8 @@ func TestHandlePostReceiveEnqueuesAll(t *testing.T) {
 	if n := countOutboxKind(t, st, kindPushReceived); n != 1 {
 		t.Fatalf("push.received rows = %d, want 1", n)
 	}
-	if n := countOutboxKind(t, st, kindRefUpdated); n != 2 {
-		t.Fatalf("ref.updated rows = %d, want 2", n)
+	if n := countOutboxKind(t, st, kindRefUpdated); n != 0 {
+		t.Fatalf("ref.updated rows = %d, want 0: the follower owns ref.updated", n)
 	}
 	var tips map[string]string
 	err = st.Read(feedCtx(t), func(tx *store.ReadTx) error {
@@ -115,8 +115,8 @@ func TestHandlePostReceiveEnqueuesAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tips: %v", err)
 	}
-	if tips["refs/heads/main"] != strings.Repeat("b", 40) || tips["refs/tags/v1"] != strings.Repeat("c", 40) {
-		t.Fatalf("tips = %+v", tips)
+	if len(tips) != 0 {
+		t.Fatalf("tips = %+v, want empty: the follower owns ref tips", tips)
 	}
 }
 
@@ -129,12 +129,12 @@ func TestHandlePostReceiveDedupe(t *testing.T) {
 	if first.RejectAll {
 		t.Fatalf("first rejected: %v", first.Reason)
 	}
-	jobsBefore := countOutboxKind(t, st, kindRefUpdated)
+	jobsBefore := countOutboxKind(t, st, kindPushReceived)
 	second := HandlePostReceive(ctx, st, sp, meta, postReceiveCall(), feedTime())
 	if second.RejectAll {
 		t.Fatalf("replay rejected: %v", second.Reason)
 	}
-	if n := countOutboxKind(t, st, kindRefUpdated); n != jobsBefore {
+	if n := countOutboxKind(t, st, kindPushReceived); n != jobsBefore {
 		t.Fatalf("replay enqueued %d rows, want %d", n, jobsBefore)
 	}
 	pending, err := sp.Pending()
@@ -207,8 +207,8 @@ func TestHandlePostReceiveResolvesPreRecorded(t *testing.T) {
 	if !strings.Contains(landed, "refs/heads/main") {
 		t.Fatalf("landed = %s, want the post-receive refs", landed)
 	}
-	if n := countOutboxKind(t, st, kindRefUpdated); n != 2 {
-		t.Fatalf("ref.updated rows = %d, want 2", n)
+	if n := countOutboxKind(t, st, kindRefUpdated); n != 0 {
+		t.Fatalf("ref.updated rows = %d, want 0: the follower owns ref.updated", n)
 	}
 }
 
@@ -235,7 +235,7 @@ func TestHandlePostReceiveRejectsMismatchedInvocation(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("spool kept %+v, want the rejected record for drain inspection", pending)
 	}
-	if n := countOutboxKind(t, st, kindRefUpdated); n != 0 {
+	if n := countOutboxKind(t, st, kindPushReceived); n != 0 {
 		t.Fatalf("mismatched invocation enqueued %d rows", n)
 	}
 }
@@ -297,22 +297,14 @@ func TestHandlePostReceiveEmptyCommands(t *testing.T) {
 	}
 }
 
-func TestHandlePostReceiveZeroTipDeletes(t *testing.T) {
+func TestHandlePostReceiveLeavesTipsToFollower(t *testing.T) {
 	st := openFeedStore(t)
 	sp := openFeedSpool(t)
 	meta := PushMeta{InvocationID: "push-del", RepoID: 21, ActorID: 7}
-	seed := wire.HookCall{
-		Phase:    wire.HookPostReceive,
-		Commands: []wire.HookCommand{{Name: "refs/heads/gone", Old: strings.Repeat("a", 40), New: strings.Repeat("b", 40)}},
-	}
-	if reply := HandlePostReceive(feedCtx(t), st, sp, meta, seed, feedTime()); reply.RejectAll {
-		t.Fatalf("seed rejected: %v", reply.Reason)
-	}
 	wipe := wire.HookCall{
 		Phase:    wire.HookPostReceive,
 		Commands: []wire.HookCommand{{Name: "refs/heads/gone", Old: strings.Repeat("b", 40), New: strings.Repeat("0", 40)}},
 	}
-	meta.InvocationID = "push-del-2"
 	if reply := HandlePostReceive(feedCtx(t), st, sp, meta, wipe, feedTime()); reply.RejectAll {
 		t.Fatalf("delete rejected: %v", reply.Reason)
 	}
@@ -328,11 +320,11 @@ func TestHandlePostReceiveZeroTipDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tips: %v", err)
 	}
-	if _, ok := tips["refs/heads/gone"]; ok {
-		t.Fatalf("deleted tip kept: %+v", tips)
+	if len(tips) != 0 {
+		t.Fatalf("tips = %+v, want empty: the follower owns ref tips", tips)
 	}
-	if n := countOutboxKind(t, st, kindRefUpdated); n != 2 {
-		t.Fatalf("ref.updated rows = %d, want 2", n)
+	if n := countOutboxKind(t, st, kindRefUpdated); n != 0 {
+		t.Fatalf("ref.updated rows = %d, want 0: the follower owns ref.updated", n)
 	}
 }
 

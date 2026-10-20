@@ -143,6 +143,48 @@ var (
 
 	// MethodGitCommit names the git.commit method.
 	MethodGitCommit Method = "git.commit"
+
+	// MethodRepoStat names the repo.stat method.
+	MethodRepoStat Method = "repo.stat"
+
+	// MethodTree names the tree method.
+	MethodTree Method = "tree"
+
+	// MethodRefsList names the refs.list method.
+	MethodRefsList Method = "refs.list"
+
+	// MethodCompare names the compare method.
+	MethodCompare Method = "compare"
+
+	// MethodSearch names the search method.
+	MethodSearch Method = "search"
+
+	// MethodArchive names the archive method.
+	MethodArchive Method = "archive"
+
+	// MethodEventsTail names the events.tail method.
+	MethodEventsTail Method = "events.tail"
+
+	// MethodRepoInit names the repo.init method.
+	MethodRepoInit Method = "repo.init"
+
+	// MethodRepoDelete names the repo.delete method.
+	MethodRepoDelete Method = "repo.delete"
+
+	// MethodRepoRename names the repo.rename method.
+	MethodRepoRename Method = "repo.rename"
+
+	// MethodRepoFork names the repo.fork method.
+	MethodRepoFork Method = "repo.fork"
+
+	// MethodRemoteRefs names the remote.refs method.
+	MethodRemoteRefs Method = "remote.refs"
+
+	// MethodClaimRenew names the claim.renew method.
+	MethodClaimRenew Method = "claim.renew"
+
+	// MethodPolicySet names the policy.set method.
+	MethodPolicySet Method = "policy.set"
 )
 
 type MethodKind uint8
@@ -152,6 +194,7 @@ const (
 	MethodBootstrap MethodKind = 2
 	MethodMutation  MethodKind = 3
 	MethodRead      MethodKind = 4
+	MethodAdmin     MethodKind = 5
 )
 
 func (k MethodKind) String() string {
@@ -164,6 +207,8 @@ func (k MethodKind) String() string {
 		return "mutation"
 	case MethodRead:
 		return "read"
+	case MethodAdmin:
+		return "admin"
 	default:
 		return "unknown"
 	}
@@ -265,6 +310,34 @@ func (m Method) Kind() MethodKind {
 		return MethodRead
 	case MethodGitCommit:
 		return MethodMutation
+	case MethodRepoStat:
+		return MethodRead
+	case MethodTree:
+		return MethodRead
+	case MethodRefsList:
+		return MethodRead
+	case MethodCompare:
+		return MethodRead
+	case MethodSearch:
+		return MethodRead
+	case MethodArchive:
+		return MethodRead
+	case MethodEventsTail:
+		return MethodRead
+	case MethodRepoInit:
+		return MethodAdmin
+	case MethodRepoDelete:
+		return MethodAdmin
+	case MethodRepoRename:
+		return MethodAdmin
+	case MethodRepoFork:
+		return MethodAdmin
+	case MethodRemoteRefs:
+		return MethodRead
+	case MethodClaimRenew:
+		return MethodMutation
+	case MethodPolicySet:
+		return MethodMutation
 	default:
 		return 0
 	}
@@ -319,6 +392,20 @@ func AllMethods() []Method {
 		MethodBlame,
 		MethodQuery,
 		MethodGitCommit,
+		MethodRepoStat,
+		MethodTree,
+		MethodRefsList,
+		MethodCompare,
+		MethodSearch,
+		MethodArchive,
+		MethodEventsTail,
+		MethodRepoInit,
+		MethodRepoDelete,
+		MethodRepoRename,
+		MethodRepoFork,
+		MethodRemoteRefs,
+		MethodClaimRenew,
+		MethodPolicySet,
 	}
 }
 

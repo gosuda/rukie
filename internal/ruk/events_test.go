@@ -6,6 +6,8 @@ import (
 
 	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
+
+	"github.com/gosuda/rukie/internal/ruk/wire"
 )
 
 func TestEventsTailLimitBoundaries(t *testing.T) {
@@ -58,7 +60,7 @@ func TestRefsListLimitBoundaries(t *testing.T) {
 }
 
 func TestEventsTailMarshalShape(t *testing.T) {
-	args := EventsTailArgs{After: new(uint64(7)), Limit: 50, WaitMs: 500, Prefix: "refs/heads/"}
+	args := EventsTailArgs{After: 7, Limit: 50, WaitMs: 500, Prefix: "refs/heads/"}
 	raw, err := jsonv2.Marshal(args.marshal(), jsonv1.DefaultOptionsV1())
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -75,13 +77,16 @@ func TestEventsTailMarshalShape(t *testing.T) {
 	if len(got) != 4 {
 		t.Fatalf("args carry %d keys: %s", len(got), string(raw))
 	}
-	bare := EventsTailArgs{Limit: 1, WaitMs: 0}
+	bare := EventsTailArgs{After: 0, Limit: 1, WaitMs: 0}
 	raw, err = jsonv2.Marshal(bare.marshal(), jsonv1.DefaultOptionsV1())
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(raw), "prefix") || strings.Contains(string(raw), "after") {
-		t.Fatalf("absent after and prefix must be omitted: %s", string(raw))
+	if strings.Contains(string(raw), "prefix") {
+		t.Fatalf("empty prefix must be omitted: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), `"after":0`) {
+		t.Fatalf("required after must always be sent: %s", string(raw))
 	}
 }
 
@@ -112,14 +117,14 @@ func TestRefsListMarshalShape(t *testing.T) {
 }
 
 func TestRefEventWireNames(t *testing.T) {
-	operation := "receive-pack"
+	operation := uint64(3)
 	request := "push-01"
 	session := "s1"
 	event := RefEvent{
-		At: "2026-10-20T00:00:00Z", Name: "refs/heads/main",
+		At: 1729468800000, Name: "refs/heads/main",
 		Old: RefTarget{}, New: DirectTarget("abc"),
 		Operation: new(operation), RequestID: new(request), Session: new(session),
-		Source: "receive_pack", Seq: 9,
+		Source: "ReceivePack", Seq: 9,
 	}
 	raw, err := jsonv2.Marshal(event, jsonv1.DefaultOptionsV1())
 	if err != nil {
@@ -157,32 +162,49 @@ func TestRefEventWireNames(t *testing.T) {
 	}
 }
 
-func TestEventsTailReplyDecodesStatus(t *testing.T) {
-	raw := []byte(`{"status": "expired", "head": 12, "oldest": 9, "events": [], "next_after": 12}`)
+func TestEventsTailReplyDecodesExpired(t *testing.T) {
+	raw := []byte(`{"view": {}, "head": 12, "oldest": 9, "events": [], "expired": true}`)
 	var reply EventsTailReply
 	if err := jsonv2.Unmarshal(raw, &reply, jsonv1.DefaultOptionsV1()); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !reply.Expired() {
-		t.Fatal("status expired decoded as live")
+	if !reply.Expired {
+		t.Fatal("expired decoded as live")
 	}
-	if reply.Head != 12 || reply.Oldest != 9 || reply.NextAfter != 12 {
+	if reply.Head != 12 || reply.Oldest != 9 {
 		t.Fatalf("reply = %+v", reply)
 	}
-	raw = []byte(`{"status": "ok", "head": 12, "oldest": 9, "events": [{"seq": 12, "name": "refs/heads/main", "old": {"direct": "a"}, "new": {"direct": "b"}, "at": "t", "source": "receive_pack", "operation": null, "request_id": null, "session": null}], "next_after": 12}`)
+	raw = []byte(`{"view": {}, "head": 12, "oldest": 9, "events": [{"seq": 12, "name": "refs/heads/main", "old": {"direct": "a"}, "new": {"direct": "b"}, "at": 1729468800000, "source": "ReceivePack", "operation": 3, "request_id": null, "session": null}], "expired": false}`)
 	if err := jsonv2.Unmarshal(raw, &reply, jsonv1.DefaultOptionsV1()); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if reply.Expired() {
-		t.Fatal("status ok decoded as expired")
+	if reply.Expired {
+		t.Fatal("live decoded as expired")
 	}
 	if len(reply.Events) != 1 || reply.Events[0].Old.Hex() != "a" || reply.Events[0].New.Hex() != "b" {
 		t.Fatalf("events = %+v", reply.Events)
 	}
+	if reply.Events[0].Operation == nil || *reply.Events[0].Operation != 3 {
+		t.Fatalf("operation = %+v", reply.Events[0].Operation)
+	}
+}
+
+func TestRefEventToleratesNullTargets(t *testing.T) {
+	raw := []byte(`{"seq": 5, "name": "refs/heads/main", "old": null, "new": null, "at": 1729468800000, "source": "ReceivePack", "operation": null, "request_id": null, "session": null}`)
+	var event RefEvent
+	if err := jsonv2.Unmarshal(raw, &event, jsonv1.DefaultOptionsV1()); err != nil {
+		t.Fatalf("null targets rejected: %v", err)
+	}
+	if !event.Old.Null() || !event.New.Null() {
+		t.Fatalf("null targets decoded as %+v %+v", event.Old, event.New)
+	}
+	if event.At != 1729468800000 || event.Seq != 5 {
+		t.Fatalf("event = %+v", event)
+	}
 }
 
 func TestRefsListReplyDecodesItems(t *testing.T) {
-	raw := []byte(`{"as_of": 12, "refs": {"items": [{"name": "refs/heads/main", "target": {"direct": "abc"}}], "next_after": null}}`)
+	raw := []byte(`{"view": {}, "as_of": 12, "refs": {"items": [{"name": "refs/heads/main", "target": {"direct": "abc"}}], "next_after": null}}`)
 	var reply RefsListReply
 	if err := jsonv2.Unmarshal(raw, &reply, jsonv1.DefaultOptionsV1()); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -199,10 +221,10 @@ func TestRefsListReplyDecodesItems(t *testing.T) {
 }
 
 func TestTailMethodNames(t *testing.T) {
-	if string(MethodEventsTail) != "events.tail" {
-		t.Fatalf("tail method = %q", string(MethodEventsTail))
+	if string(wire.MethodEventsTail) != "events.tail" {
+		t.Fatalf("tail method = %q", string(wire.MethodEventsTail))
 	}
-	if string(MethodRefsList) != "refs.list" {
-		t.Fatalf("refs method = %q", string(MethodRefsList))
+	if string(wire.MethodRefsList) != "refs.list" {
+		t.Fatalf("refs method = %q", string(wire.MethodRefsList))
 	}
 }

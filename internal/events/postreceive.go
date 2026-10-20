@@ -52,15 +52,6 @@ type scanPayload struct {
 	Repo       int64  `json:"repo"`
 }
 
-type refUpdatedBody struct {
-	Name       string `json:"name"`
-	New        string `json:"new"`
-	Old        string `json:"old"`
-	Source     string `json:"source"`
-	Invocation string `json:"invocation"`
-	Repo       int64  `json:"repo"`
-}
-
 type pushReceivedBody struct {
 	Source     string      `json:"source"`
 	Invocation string      `json:"invocation"`
@@ -229,35 +220,6 @@ func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
 		Body:       jsontext.Value(received),
 	}); rerr != nil {
 		return rerr
-	}
-	for _, ref := range rec.Landed {
-		body, berr := jsonv2.Marshal(refUpdatedBody{
-			Name:       ref.Name,
-			New:        ref.New,
-			Old:        ref.Old,
-			Source:     sourcePush,
-			Invocation: rec.InvocationID,
-			Repo:       rec.RepoID,
-		})
-		if berr != nil {
-			return berr
-		}
-		if _, berr = tx.Outbox().Emit(store.Event{
-			OccurredAt: at,
-			Kind:       kindRefUpdated,
-			Body:       jsontext.Value(body),
-		}); berr != nil {
-			return berr
-		}
-		if isZeroID(ref.New) {
-			if derr := tx.DeleteRefTip(rec.RepoID, ref.Name); derr != nil {
-				return derr
-			}
-			continue
-		}
-		if terr := tx.PutRefTip(rec.RepoID, ref.Name, ref.New, at); terr != nil {
-			return terr
-		}
 	}
 	return tx.MarkPushEnqueued(rec.InvocationID)
 }
