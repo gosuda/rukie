@@ -41,6 +41,7 @@ type stack struct {
 	server  *httptest.Server
 	auth    *auth.Service
 	db      *sql.DB
+	st      *store.Store
 	client  *ruk.Client
 	child   *rukproc.Child
 	handler http.Handler
@@ -70,6 +71,11 @@ func rukBin(t *testing.T) string {
 
 func newStack(t *testing.T, limits *wire.GitLimits) *stack {
 	t.Helper()
+	return newStackWithConfig(t, limits, "")
+}
+
+func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string) *stack {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	dir := t.TempDir()
@@ -87,8 +93,12 @@ func newStack(t *testing.T, limits *wire.GitLimits) *stack {
 		t.Fatalf("auth open: %v", err)
 	}
 	socket := filepath.Join(dir, "ruk.sock")
-	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\nframe_timeout_ms = 5000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n",
-		socket, roots, os.Getuid())
+	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\nframe_timeout_ms = 5000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n%s",
+		socket, roots, os.Getuid(), extraConfig)
+	if strings.Contains(extraConfig, "retention_interval_ms") {
+		config = fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\nframe_timeout_ms = 5000\nhook_timeout_ms = 5000\n%s",
+			socket, roots, os.Getuid(), extraConfig)
+	}
 	configPath := filepath.Join(dir, "daemon.toml")
 	if werr := os.WriteFile(configPath, []byte(config), 0o600); werr != nil {
 		t.Fatalf("daemon config: %v", werr)
@@ -98,7 +108,7 @@ func newStack(t *testing.T, limits *wire.GitLimits) *stack {
 	if err != nil {
 		t.Fatalf("daemon start: %v\n%s", err, logs.String())
 	}
-	s := &stack{t: t, dir: dir, roots: roots, socket: socket, auth: svc, db: svc.DB(), child: child, users: map[string]userRec{}}
+	s := &stack{t: t, dir: dir, roots: roots, socket: socket, auth: svc, db: svc.DB(), st: st, child: child, users: map[string]userRec{}}
 	t.Cleanup(func() {
 		_ = child.Kill()
 		_ = svc.Close()
