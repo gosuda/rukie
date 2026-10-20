@@ -328,6 +328,11 @@ func TestBootstrapRefusesSecondAdmin(t *testing.T) {
 	if _, err := svc.CreateUser(ctx, 0, CreateUserInput{Name: "login", Password: randomPassword(t, 16)}, ""); err == nil {
 		t.Fatal("reserved username accepted")
 	}
+	for _, squat := range []string{"llms.txt", "llms-full.txt"} {
+		if _, err := svc.CreateUser(ctx, 0, CreateUserInput{Name: squat, Password: randomPassword(t, 16)}, ""); err == nil {
+			t.Fatalf("route-squat username %q accepted", squat)
+		}
+	}
 	if _, err := svc.CreateUser(ctx, 0, CreateUserInput{Name: "Bad Name!", Password: randomPassword(t, 16)}, ""); err == nil {
 		t.Fatal("invalid username accepted")
 	}

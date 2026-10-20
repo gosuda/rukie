@@ -728,6 +728,23 @@ func TestParityGate(t *testing.T) {
 	if node.Spec == nil || node.Spec.Name != "test.page.get" {
 		t.Fatalf("cli leaf mismatch")
 	}
+	entries := op.ReferenceEntries(specs)
+	if len(entries) != len(specs) {
+		t.Fatalf("reference holds %d entries for %d ops", len(entries), len(specs))
+	}
+	var ref strings.Builder
+	if err := op.RenderReference(&ref, op.ViewCtx{}, entries); err != nil {
+		t.Fatalf("reference: %v", err)
+	}
+	rendered := ref.String()
+	for _, s := range specs {
+		if !strings.Contains(rendered, s.Name) {
+			t.Fatalf("reference misses %q", s.Name)
+		}
+		if !strings.Contains(rendered, s.Path) {
+			t.Fatalf("reference misses path %q", s.Path)
+		}
+	}
 }
 
 func TestOpenAPIGolden(t *testing.T) {

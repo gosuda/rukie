@@ -30,7 +30,7 @@ func TestCLISessionFile(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("session mode %o, want 600", info.Mode().Perm())
 	}
-	raw, err := os.ReadFile(sessionPath) //nolint:gosec // G304 is intended here: the test reads back the session file it just wrote
+	raw, err := os.ReadFile(filepath.Clean(sessionPath))
 	if err != nil {
 		t.Fatalf("read session: %v", err)
 	}

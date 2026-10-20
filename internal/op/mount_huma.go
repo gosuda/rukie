@@ -1276,9 +1276,9 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request, st *reqState, st
 			body = nil
 		}
 	}
-	if st.failure == nil && status < 400 {
+	if st.failure == nil && status < 400 && status != http.StatusNotModified {
 		status, header, body = s.renderSuccess(st, status, header, body)
-	} else {
+	} else if status != http.StatusNotModified {
 		status, header, body = s.renderProblemMedia(st, status, header, body)
 	}
 	out := header

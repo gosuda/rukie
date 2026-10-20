@@ -16,7 +16,7 @@ var reservedNames = map[string]bool{
 	"git": true, "support": true, "abuse": true, "login": true, "logout": true,
 	"settings": true, "account": true, "explore": true, "ops": true, "problems": true,
 	"mcp": true, "static": true, "session": true, "healthz": true, "readyz": true,
-	"-": true,
+	"llms.txt": true, "llms-full.txt": true, "-": true,
 }
 
 func ReservedName(name string) bool {

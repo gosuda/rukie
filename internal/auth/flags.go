@@ -5,6 +5,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -47,7 +48,7 @@ func (s SecretSource) Resolve(stdin io.Reader) (string, error) {
 const secretReadCap = 65536
 
 func readBoundedFile(path string) (string, error) {
-	f, err := os.Open(path) //nolint:gosec // G304 is intended here: --password-file names an operator-supplied secret file
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return "", err
 	}

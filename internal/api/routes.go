@@ -16,6 +16,8 @@ func Routes() []Route {
 	return []Route{
 		{Pattern: "GET /-/api", Op: "api.index"},
 		{Pattern: "GET /-/api/openapi.json", Op: "api.openapi"},
+		{Pattern: "GET /llms.txt", Op: "api.llms.get"},
+		{Pattern: "GET /llms-full.txt", Op: "api.llmsfull.get"},
 		{Pattern: "GET /healthz"},
 		{Pattern: "GET /readyz"},
 		{Pattern: "POST /-/mcp"},

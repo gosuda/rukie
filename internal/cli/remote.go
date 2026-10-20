@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -50,13 +51,18 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	if err := api.RegisterAdmin(table, deps); err != nil {
 		return nil, err
 	}
+	fillLLMS, err := api.RegisterLLMS(table, "")
+	if err != nil {
+		return nil, err
+	}
 	views := op.NewViews()
 	api.RegisterViews(views)
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterLLMSViews(views)
 	mux := http.NewServeMux()
-	return op.Mount(mux, table, op.Config{
+	server, err := op.Mount(mux, table, op.Config{
 		Authenticator: authn,
 		Idempotency:   op.NewMemoryIdempotency(),
 		Audit:         op.FuncAuditor(func(context.Context, op.AuditRow) error { return nil }),
@@ -66,6 +72,11 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 		Title:         "rukie",
 		Version:       "0.0.0",
 	})
+	if err != nil {
+		return nil, err
+	}
+	fillLLMS(server.Document())
+	return server, nil
 }
 
 func buildRemote() (*op.Server, error) {
@@ -239,7 +250,7 @@ func credentials(std IO, inv *op.Invocation, w wrapperOpts) (token, session stri
 }
 
 func readSecretFile(path string) (string, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // G304 is intended here: --token-file and --session-file name operator-supplied credential files
+	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return "", fmt.Errorf("read secret file: %w", err)
 	}
@@ -259,7 +270,7 @@ func applyInput(std IO, inv *op.Invocation) int {
 	if inv.Global.Input == "-" {
 		raw, err = io.ReadAll(std.Stdin)
 	} else {
-		raw, err = os.ReadFile(inv.Global.Input) //nolint:gosec // G304 is intended here: --input names an operator-supplied JSON file
+		raw, err = os.ReadFile(inv.Global.Input)
 	}
 	if err != nil {
 		emit(std.Stderr, "rukie:", err.Error())
