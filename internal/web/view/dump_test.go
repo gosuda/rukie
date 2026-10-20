@@ -3,12 +3,9 @@
 package view
 
 import (
-	"cmp"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 )
 
@@ -22,20 +19,19 @@ func TestDumpRenderedPages(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("MkdirAll = %v", err)
 	}
-	for _, r := range Routes() {
-		h := http.Header{}
-		var buf strings.Builder
-		if err := r.Render(h, &buf); err != nil {
-			t.Fatalf("Render %s = %v", r.Path, err)
+	e := buildRenderEnv(t)
+	pages := collectHTMLPages(t, e)
+	assertHTMLCoverage(t, e, pages)
+	for _, p := range pages {
+		if p.Check != nil {
+			p.Check(t, p.Body)
 		}
-		name := cmp.Or(strings.Trim(r.Path, "/"), "index")
-		name = strings.ReplaceAll(name, "/", "_") + ".html"
-		if !dumpName.MatchString(name) {
-			t.Fatalf("unsafe dump name %q", name)
+		if !dumpName.MatchString(p.File) {
+			t.Fatalf("unsafe dump name %q", p.File)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(buf.String()), 0o600); err != nil {
-			t.Fatalf("WriteFile %s = %v", name, err)
+		if err := os.WriteFile(filepath.Join(dir, p.File), []byte(p.Body), 0o600); err != nil {
+			t.Fatalf("WriteFile %s = %v", p.File, err)
 		}
-		t.Logf("wrote %s (%d bytes)", name, len(buf.String()))
+		t.Logf("wrote %s (%d bytes)", p.File, len(p.Body))
 	}
 }

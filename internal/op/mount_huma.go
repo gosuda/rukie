@@ -802,6 +802,21 @@ func (s *Server) OpenAPI() []byte {
 
 func (s *Server) Specs() []Spec { return slices.Clone(s.specs) }
 
+func (s *Server) HTMLPages() []Spec {
+	pages := make([]Spec, 0)
+	for _, spec := range s.specs {
+		if spec.Kind != KindRead {
+			continue
+		}
+		if _, ok := s.views.pages[spec.Name]; !ok {
+			continue
+		}
+		pages = append(pages, spec)
+	}
+	slices.SortFunc(pages, func(a, b Spec) int { return strings.Compare(a.Path, b.Path) })
+	return pages
+}
+
 func (s *Server) Document() *Document { return s.doc }
 
 func (s *Server) Handle(pattern string, h http.Handler) {

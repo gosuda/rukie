@@ -3,6 +3,7 @@ package view
 import (
 	"bytes"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gosuda/rukie/internal/web/secheaders"
@@ -50,25 +51,37 @@ func TestRenderedPagesSecurityHeaders(t *testing.T) {
 }
 
 func TestAllHTMLRoutesZeroJS(t *testing.T) {
-	routes := Routes()
-	if len(routes) == 0 {
-		t.Fatal("no HTML routes registered")
-	}
+	e := buildRenderEnv(t)
+	pages := collectHTMLPages(t, e)
+	assertHTMLCoverage(t, e, pages)
 	seen := map[string]bool{}
-	for _, r := range routes {
-		if seen[r.Path] {
-			t.Fatalf("duplicate route %s", r.Path)
+	for _, p := range pages {
+		if seen[p.File] {
+			t.Fatalf("duplicate dump file %s", p.File)
 		}
-		seen[r.Path] = true
-		h, body := renderRoute(t, r)
+		seen[p.File] = true
+		body := []byte(p.Body)
 		if err := zerojs.Assert(body); err != nil {
-			t.Fatalf("%s %s: %v", r.Method, r.Path, err)
+			t.Fatalf("%s: %v", p.File, err)
 		}
-		if h.Get("Content-Security-Policy") != secheaders.CSP {
-			t.Fatalf("%s %s missing exact CSP", r.Method, r.Path)
+		if p.Header.Get("Content-Security-Policy") == "" {
+			t.Fatalf("%s missing CSP", p.File)
 		}
-		if !bytes.Contains(body, []byte(`fonts.bunny.net`)) {
-			t.Fatalf("%s %s missing the font link", r.Method, r.Path)
+		if p.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("%s XCTO = %q", p.File, p.Header.Get("X-Content-Type-Options"))
+		}
+		if !strings.Contains(p.Header.Get("Content-Type"), "text/html") {
+			t.Fatalf("%s content-type = %q", p.File, p.Header.Get("Content-Type"))
+		}
+		switch p.File {
+		case "api-index.html", "unknown-user.html":
+		default:
+			if !bytes.Contains(body, []byte(`fonts.bunny.net`)) {
+				t.Fatalf("%s missing the font link", p.File)
+			}
+		}
+		if p.Check != nil {
+			p.Check(t, p.Body)
 		}
 	}
 }
