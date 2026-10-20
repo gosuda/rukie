@@ -17,7 +17,7 @@ vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 check: vet lint test vuln
-	test -z "$$(gofmt -l .)"
+	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)"
 	go mod tidy -diff
 	go mod verify
 
