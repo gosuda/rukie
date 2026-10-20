@@ -135,3 +135,29 @@ func TestAdminLeavesFallThrough(t *testing.T) {
 		t.Fatal("tryHandWrittenAdmin did not claim the owned leaf admin status")
 	}
 }
+
+func TestAdminStatusDaemonFieldAndExpectLive(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := writeTestConfig(t, dir, "")
+	cfg, _, err := loadAdminConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if sysops.IsDataDirLive(cfg.DataDir) {
+		t.Fatal("fresh temp data dir reports live with no server running")
+	}
+	if code := run([]string{"admin", "status", "--config", cfgPath}); code != 0 {
+		t.Fatalf("admin status = %d, want 0: read-only inspection works offline", code)
+	}
+	if code := run([]string{"admin", "status", "--config", cfgPath, "--expect-live"}); code == 0 {
+		t.Fatal("admin status --expect-live exited 0 with no server; HEALTHCHECK would stay healthy")
+	}
+	lock, err := sysops.AcquireDataDirLock(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("acquire lock: %v", err)
+	}
+	defer func() { _ = lock.Release() }()
+	if code := run([]string{"admin", "status", "--config", cfgPath, "--expect-live"}); code != 0 {
+		t.Fatalf("admin status --expect-live = %d with the lock held, want 0", code)
+	}
+}

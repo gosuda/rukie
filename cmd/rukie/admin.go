@@ -197,6 +197,7 @@ func runStatus(argv []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	configFlag := fs.String("config", "", "config file path")
 	asJSON := fs.Bool("json", false, "machine output")
+	expectLive := fs.Bool("expect-live", false, "exit non-zero unless a server holds the data_dir lock")
 	if err := fs.Parse(argv); err != nil {
 		return exitUsage
 	}
@@ -210,9 +211,18 @@ func runStatus(argv []string) int {
 		fmt.Fprintln(os.Stderr, "admin status:", err.Error())
 		return adminExit(err)
 	}
-	daemon := "down"
-	if !sysops.IsDataDirLive(cfg.DataDir) {
-		daemon = "unknown"
+	live := sysops.IsDataDirLive(cfg.DataDir)
+	daemon := "stopped"
+	if live {
+		daemon = "live"
+	}
+	if *expectLive && !live {
+		if *asJSON {
+			_ = emitJSON(map[string]any{"daemon": daemon, "data_dir": rep.DataDir})
+		} else {
+			fmt.Printf("daemon: %s (no server holds %s)\n", daemon, cfg.DataDir)
+		}
+		return exitRuntime
 	}
 	if *asJSON {
 		return emitJSON(map[string]any{

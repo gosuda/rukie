@@ -40,4 +40,4 @@ USER 65532:65532
 ENTRYPOINT ["/usr/bin/rukie", "serve"]
 EXPOSE 3000
 VOLUME /var/lib/rukie
-HEALTHCHECK --interval=10s --timeout=5s --start-period=20s CMD ["/usr/bin/rukie", "admin", "status"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s CMD ["/usr/bin/rukie", "admin", "status", "--expect-live"]
