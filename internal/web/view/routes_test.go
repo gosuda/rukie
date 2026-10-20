@@ -64,8 +64,8 @@ func TestAllHTMLRoutesZeroJS(t *testing.T) {
 		if err := zerojs.Assert(body); err != nil {
 			t.Fatalf("%s: %v", p.File, err)
 		}
-		if p.Header.Get("Content-Security-Policy") == "" {
-			t.Fatalf("%s missing CSP", p.File)
+		if p.Header.Get("Content-Security-Policy") != secheaders.CSP {
+			t.Fatalf("%s CSP = %q", p.File, p.Header.Get("Content-Security-Policy"))
 		}
 		if p.Header.Get("X-Content-Type-Options") != "nosniff" {
 			t.Fatalf("%s XCTO = %q", p.File, p.Header.Get("X-Content-Type-Options"))
@@ -73,12 +73,8 @@ func TestAllHTMLRoutesZeroJS(t *testing.T) {
 		if !strings.Contains(p.Header.Get("Content-Type"), "text/html") {
 			t.Fatalf("%s content-type = %q", p.File, p.Header.Get("Content-Type"))
 		}
-		switch p.File {
-		case "api-index.html", "unknown-user.html":
-		default:
-			if !bytes.Contains(body, []byte(`fonts.bunny.net`)) {
-				t.Fatalf("%s missing the font link", p.File)
-			}
+		if !bytes.Contains(body, []byte(`fonts.bunny.net`)) {
+			t.Fatalf("%s missing the font link", p.File)
 		}
 		if p.Check != nil {
 			p.Check(t, p.Body)

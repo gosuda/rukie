@@ -26,6 +26,8 @@ import (
 	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+
+	"github.com/gosuda/rukie/internal/web/secheaders"
 )
 
 var ErrUnauthenticated = errors.New("unauthenticated")
@@ -1320,7 +1322,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request, st *reqState, st
 	out.Set("Vary", "Accept, Cookie")
 	out.Set("X-Content-Type-Options", "nosniff")
 	if st.media == MediaHTML {
-		out.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; script-src 'none'")
+		out.Set("Content-Security-Policy", secheaders.CSP)
 		out.Set("Referrer-Policy", "same-origin")
 	}
 	if st.etag != "" {

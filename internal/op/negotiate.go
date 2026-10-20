@@ -541,7 +541,7 @@ func RenderMarkdownIndent(w io.Writer, v any, depth int) error {
 
 var errorPageTemplate = template.Must(template.New("error").Parse(`<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>{{.Status}} {{.Title}}</title></head>
+<head><meta charset="utf-8"><title>{{.Status}} {{.Title}}</title><link rel="stylesheet" href="https://fonts.bunny.net/css?family=space-grotesk:500,600,700%7Csource-sans-3:400,600%7Cibm-plex-mono:400,500,600&amp;display=swap" referrerpolicy="no-referrer"></head>
 <body>
 <main>
 <h1>{{.Status}} {{.Title}}</h1>
@@ -633,7 +633,7 @@ func ReferenceEntries(specs []Spec) []ReferenceEntry {
 
 var referenceTemplate = template.Must(template.New("reference").Parse(`<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Operation index</title></head>
+<head><meta charset="utf-8"><title>Operation index</title><link rel="stylesheet" href="https://fonts.bunny.net/css?family=space-grotesk:500,600,700%7Csource-sans-3:400,600%7Cibm-plex-mono:400,500,600&amp;display=swap" referrerpolicy="no-referrer"></head>
 <body>
 <main>
 <h1>Operations</h1>
