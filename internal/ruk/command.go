@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	commandStdinChunk = 32 << 10
-	commandStderrCap  = 1 << 20
-	defaultHookBudget = 10 * time.Second
-	cancelGrace       = 2 * time.Second
+	commandStdinChunk  = 32 << 10
+	commandStderrCap   = 1 << 20
+	defaultHookBudget  = 10 * time.Second
+	defaultCancelGrace = 2 * time.Second
 )
 
 var errHookTimeout = errors.New("hook handler timed out")
@@ -70,7 +70,11 @@ func RunCommand(ctx context.Context, c *Client, cmd Command) (wire.CommandExitRe
 	if hookBudget <= 0 {
 		hookBudget = defaultHookBudget
 	}
-	d := &commandDriver{pc: pc, id: s.id, stdout: cmd.Stdout, handle: cmd.Hook, service: open.Service, hookBudget: hookBudget}
+	grace := c.timeouts.CancelGrace
+	if grace <= 0 {
+		grace = defaultCancelGrace
+	}
+	d := &commandDriver{pc: pc, id: s.id, stdout: cmd.Stdout, handle: cmd.Hook, service: open.Service, hookBudget: hookBudget, grace: grace}
 	var finished atomic.Bool
 	go func() {
 		select {
@@ -85,7 +89,7 @@ func RunCommand(ctx context.Context, c *Client, cmd Command) (wire.CommandExitRe
 			}
 			select {
 			case <-closed:
-			case <-time.After(cancelGrace):
+			case <-time.After(d.grace):
 				_ = pc.nc.Close()
 			}
 		case <-closed:
@@ -123,6 +127,7 @@ type commandDriver struct {
 	refusal    wire.ErrorReply
 	stderr     []byte
 	hookBudget time.Duration
+	grace      time.Duration
 	hookErr    error
 	id         uint64
 	window     uint64
@@ -344,7 +349,7 @@ func (d *commandDriver) drain(ctx context.Context) (wire.CommandExitReport, []by
 				return wire.CommandExitReport{}, d.stderr, false, fmt.Errorf("RunCommand: %w: %w", ctx.Err(), ErrOutcomeUnknown)
 			}
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(context.Background(), cancelGrace)
+			ctx, cancel = context.WithTimeout(context.Background(), d.grace)
 			defer cancel()
 			grace = true
 		}
