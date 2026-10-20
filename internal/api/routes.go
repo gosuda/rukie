@@ -20,6 +20,7 @@ func Routes() []Route {
 		{Pattern: "GET /readyz"},
 		{Pattern: "POST /-/mcp"},
 		{Pattern: "GET /-/mcp"},
+		{Pattern: "DELETE /-/mcp"},
 	}
 }
 

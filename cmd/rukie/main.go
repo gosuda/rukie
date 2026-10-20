@@ -19,6 +19,7 @@ import (
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/logging"
+	"github.com/gosuda/rukie/internal/mcp"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
 )
@@ -207,8 +208,14 @@ func runServe(argv []string) int {
 	docs.Set(server.OpenAPI())
 	server.Handle("GET /healthz", api.Healthz())
 	server.Handle("GET /readyz", api.Readiness{Store: st, Daemon: api.NotReadyDaemon}.Handler())
-	server.Handle("POST /-/mcp", api.MCPStub())
-	server.Handle("GET /-/mcp", api.MCPStub())
+	mcpMount, err := mcp.NewMount(authSvc, server)
+	if err != nil {
+		logger.Error("mount mcp", slog.Any("err", err))
+		return 1
+	}
+	server.Handle("POST /-/mcp", mcpMount.Authenticated())
+	server.Handle("GET /-/mcp", mcpMount.MethodNotAllowed())
+	server.Handle("DELETE /-/mcp", mcpMount.MethodNotAllowed())
 	httpServer := &http.Server{
 		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeoutMs) * time.Millisecond,
 		ReadHeaderTimeout: time.Duration(cfg.HTTP.ReadHeaderTimeoutMs) * time.Millisecond,

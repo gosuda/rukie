@@ -9,7 +9,6 @@ import (
 	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
 
-	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
 )
 
@@ -70,17 +69,4 @@ func (rd Readiness) Handler() http.Handler {
 
 func NotReadyDaemon() (bool, string) {
 	return false, "internal/ruk is absent; the daemon probe lands with the Ruk client"
-}
-
-func MCPStub() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		p := op.Errorf(op.CodeMethodNotAllowed, "the MCP endpoint lands in K8; POST /-/mcp is not served yet")
-		w.Header().Set("Content-Type", "application/problem+json")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		raw, _ := jsonv2.Marshal(map[string]any{
-			"type": "/-/problems/method-not-allowed", "title": "Method not allowed",
-			"status": 405, "detail": p.Detail, "code": "method-not-allowed",
-		}, jsonv1.DefaultOptionsV1())
-		_, _ = w.Write(raw)
-	})
 }

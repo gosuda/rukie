@@ -72,7 +72,7 @@ func (a Args) ToRequest(s *Spec, d *Document, base *url.URL) (*http.Request, err
 	var body []byte
 	if s.Kind == KindMutation {
 		obj := map[string]any{}
-		for name := range bodyPropertyNames(os.Body) {
+		for name := range bodyPropertyNames(resolveRef(os.Body, d.Components)) {
 			if v, ok := a[name]; ok {
 				obj[name] = v
 			}
