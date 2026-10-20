@@ -11,11 +11,41 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/supervisor"
 )
+
+func gitBudget(name string) time.Duration {
+	if name == receiveServiceName {
+		return defaultReceiveCap
+	}
+	return defaultUploadCap
+}
+
+func (s *Server) withGitBudget(w http.ResponseWriter, budget time.Duration) bool {
+	rc := http.NewResponseController(w)
+	now := time.Now()
+	if err := rc.SetReadDeadline(now.Add(budget)); err != nil {
+		writeText(w, http.StatusInternalServerError, "git deadlines are not supported")
+		return false
+	}
+	if err := rc.SetWriteDeadline(now.Add(budget)); err != nil {
+		writeText(w, http.StatusInternalServerError, "git deadlines are not supported")
+		return false
+	}
+	return true
+}
+
+func (s *Server) gitCooldownActive(w http.ResponseWriter, r *http.Request) bool {
+	if blocked, after := s.limiter.GitCooldown(clientIP(r)); blocked {
+		writeRateLimited(w, after)
+		return true
+	}
+	return false
+}
 
 func advertisementType(service string) string {
 	return "application/x-git-" + service + "-advertisement"
@@ -44,9 +74,19 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 		writeText(w, http.StatusForbidden, "service not enabled")
 		return
 	}
-	id, ok := s.authenticate(r)
+	if !s.withGitBudget(w, gitBudget(name)) {
+		return
+	}
+	if s.gitCooldownActive(w, r) {
+		return
+	}
+	id, ok, hint := s.authenticate(r)
 	if !ok {
-		s.failAuth(w, r)
+		if hint {
+			s.failAuthPasswordHint(w, r)
+		} else {
+			s.failAuth(w, r)
+		}
 		return
 	}
 	if !s.checkEntryRate(w, r, id) {
@@ -64,7 +104,7 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 		if s.denyAnonymous(w, r, id) {
 			return
 		}
-		if decision := s.authorize(id, repoID, "repo.push", ""); decision.NotFound {
+		if decision := s.authorize(id, repoID, "repo.clone", ""); decision.NotFound {
 			writeText(w, http.StatusNotFound, "repository not found")
 			return
 		} else if !decision.Allow {
@@ -147,9 +187,19 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		writeText(w, http.StatusBadRequest, "unexpected content type")
 		return
 	}
-	id, ok := s.authenticate(r)
+	if !s.withGitBudget(w, gitBudget(name)) {
+		return
+	}
+	if s.gitCooldownActive(w, r) {
+		return
+	}
+	id, ok, hint := s.authenticate(r)
 	if !ok {
-		s.failAuth(w, r)
+		if hint {
+			s.failAuthPasswordHint(w, r)
+		} else {
+			s.failAuth(w, r)
+		}
 		return
 	}
 	if !s.checkEntryRate(w, r, id) {
@@ -202,7 +252,7 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		writeText(w, http.StatusNotFound, "repository not found")
 		return
 	}
-	maxStdin := s.limits.MaxStdinBytes
+	maxStdin := s.bodyCap()
 	if r.ContentLength >= 0 && uint64(r.ContentLength) > maxStdin {
 		writeText(w, http.StatusRequestEntityTooLarge, "request body is too large")
 		return
@@ -217,7 +267,7 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		defer func() { _ = gz.Close() }()
 		body = gz
 	}
-	counted := &countReader{reader: body, limit: maxStdin + 1}
+	counted := &countReader{reader: body, limit: s.bodyCap() + 1}
 	budget := defaultUploadCap
 	if name == receiveServiceName {
 		budget = defaultReceiveCap
@@ -376,8 +426,13 @@ func (c *countReader) Read(p []byte) (int, error) {
 	}
 	allowed := c.limit - 1 - c.total
 	if allowed == 0 {
-		c.overflow = true
-		return 0, errTooLarge
+		var scratch [1]byte
+		n, err := c.reader.Read(scratch[:])
+		if n > 0 {
+			c.overflow = true
+			return 0, errTooLarge
+		}
+		return 0, err
 	}
 	if uint64(len(p)) > allowed {
 		p = p[:allowed]

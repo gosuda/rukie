@@ -70,6 +70,20 @@ func takeToken(b *bucket, now time.Time, rate, capacity float64) (bool, time.Dur
 	return false, wait
 }
 
+func (l *Limiter) GitCooldown(id string) (bool, time.Duration) {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.gitFails[id]
+	if !ok {
+		return false, 0
+	}
+	if now.Before(st.blocked) {
+		return true, st.blocked.Sub(now)
+	}
+	return false, 0
+}
+
 func (l *Limiter) Admit(ctx context.Context, key op.RateKey) op.RateDecision {
 	_ = ctx
 	now := l.now()

@@ -45,6 +45,9 @@ type Config struct {
 	SocketPath  string
 	Limits      wire.GitLimits
 	HookTimeout time.Duration
+	// MaxHTTPBodyBytes caps the HTTP request body before the daemon
+	// limits apply. Zero means the daemon MaxStdinBytes cap.
+	MaxHTTPBodyBytes uint64
 }
 
 type Server struct {
@@ -60,8 +63,16 @@ type Server struct {
 	repoRoot    string
 	socketPath  string
 	limits      wire.GitLimits
+	httpBodyCap uint64
 	hookTimeout time.Duration
 	mu          sync.Mutex
+}
+
+func (s *Server) bodyCap() uint64 {
+	if s.httpBodyCap == 0 {
+		return s.limits.MaxStdinBytes
+	}
+	return s.httpBodyCap
 }
 
 func (s *Server) stashWant(invocation string, want map[string]string) {
@@ -145,10 +156,20 @@ func New(cfg Config) (*Server, error) {
 		repoRoot:    filepath.Clean(cfg.RepoRoot),
 		socketPath:  cfg.SocketPath,
 		limits:      cfg.Limits,
+		httpBodyCap: cfg.MaxHTTPBodyBytes,
 		hookTimeout: hookTimeout,
 		clock:       clock,
 		barrier:     cfg.Barrier,
 	}, nil
+}
+
+// SetHookTimeout overrides the per-hook verdict deadline. Tests use a
+// small budget to force the timeout path without touching production.
+func (s *Server) SetHookTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	s.hookTimeout = d
 }
 
 func (s *Server) clientFor(ctx context.Context) (*ruk.Client, error) {
@@ -330,8 +351,13 @@ func writeMethodNotAllowed(w http.ResponseWriter, allow []string) {
 }
 
 func writeUnauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="rukie"`)
+	w.Header().Set("WWW-Authenticate", `Basic realm="rukie git"`)
 	writeText(w, http.StatusUnauthorized, "authentication is required")
+}
+
+func writeUnauthorizedHint(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="rukie git"`)
+	writeText(w, http.StatusUnauthorized, "authentication is required: use a scoped token as password")
 }
 
 func writeRateLimited(w http.ResponseWriter, after time.Duration) {

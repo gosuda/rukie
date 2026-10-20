@@ -2,9 +2,11 @@ package ruk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
+	"sync/atomic"
 	"time"
 
 	jsonv1 "encoding/json"
@@ -17,7 +19,10 @@ const (
 	commandStdinChunk = 32 << 10
 	commandStderrCap  = 1 << 20
 	defaultHookBudget = 10 * time.Second
+	cancelGrace       = 2 * time.Second
 )
+
+var errHookTimeout = errors.New("hook handler timed out")
 
 type HookHandler func(ctx context.Context, call wire.HookCall) wire.HookReply
 
@@ -61,22 +66,34 @@ func RunCommand(ctx context.Context, c *Client, cmd Command) (wire.CommandExitRe
 	defer pc.release(s)
 	cmdCtx, stop := context.WithCancel(ctx)
 	defer stop()
+	hookBudget := cmd.HookBudget
+	if hookBudget <= 0 {
+		hookBudget = defaultHookBudget
+	}
+	d := &commandDriver{pc: pc, id: s.id, stdout: cmd.Stdout, handle: cmd.Hook, service: open.Service, hookBudget: hookBudget}
+	var finished atomic.Bool
 	go func() {
 		select {
 		case <-cmdCtx.Done():
+			if finished.Load() {
+				return
+			}
 			_ = pc.writeKind(KindCancel, s.id, nil)
-			_ = pc.nc.Close()
+			if !d.stdinEOF.Load() {
+				_ = pc.nc.Close()
+				return
+			}
+			select {
+			case <-closed:
+			case <-time.After(cancelGrace):
+				_ = pc.nc.Close()
+			}
 		case <-closed:
 		}
 	}()
 	if openErr := pc.writeKind(KindOpen, s.id, rawOpen); openErr != nil {
 		return zero, nil, fmt.Errorf("RunCommand: %w: %w", openErr, ErrOutcomeUnknown)
 	}
-	hookBudget := cmd.HookBudget
-	if hookBudget <= 0 {
-		hookBudget = defaultHookBudget
-	}
-	d := &commandDriver{pc: pc, id: s.id, stdout: cmd.Stdout, handle: cmd.Hook, service: open.Service, hookBudget: hookBudget}
 	var report wire.CommandExitReport
 	var stderr []byte
 	var completed bool
@@ -86,6 +103,7 @@ func RunCommand(ctx context.Context, c *Client, cmd Command) (wire.CommandExitRe
 	} else {
 		report, stderr, completed, runErr = d.runRound(cmdCtx, cmd.Stdin)
 	}
+	finished.Store(true)
 	if completed {
 		return report, stderr, runErr
 	}
@@ -105,9 +123,11 @@ type commandDriver struct {
 	refusal    wire.ErrorReply
 	stderr     []byte
 	hookBudget time.Duration
+	hookErr    error
 	id         uint64
 	window     uint64
 	hasRef     bool
+	stdinEOF   atomic.Bool
 }
 
 func (d *commandDriver) fail(format string, args ...any) (wire.CommandExitReport, []byte, bool, error) {
@@ -139,6 +159,7 @@ func (d *commandDriver) runRound(ctx context.Context, stdin io.Reader) (wire.Com
 		if err := d.pc.writeKind(KindStdinEOF, d.id, nil); err != nil {
 			return wire.CommandExitReport{}, d.stderr, false, fmt.Errorf("RunCommand: %w: %w", err, ErrOutcomeUnknown)
 		}
+		d.stdinEOF.Store(true)
 		return d.drain(ctx)
 	}
 	if d.window == 0 {
@@ -233,6 +254,7 @@ func (d *commandDriver) sendStdin(ctx context.Context, stdin io.Reader) error {
 				if err := d.pc.writeKind(KindStdinEOF, d.id, nil); err != nil {
 					return fmt.Errorf("RunCommand: %w: %w", err, ErrOutcomeUnknown)
 				}
+				d.stdinEOF.Store(true)
 				return nil
 			}
 			return fmt.Errorf("RunCommand: stdin: %w", readErr)
@@ -315,9 +337,16 @@ func (d *commandDriver) recordRefusal(payload []byte) {
 }
 
 func (d *commandDriver) drain(ctx context.Context) (wire.CommandExitReport, []byte, bool, error) {
+	grace := false
 	for {
 		if ctx.Err() != nil {
-			return wire.CommandExitReport{}, d.stderr, false, fmt.Errorf("RunCommand: %w: %w", ctx.Err(), ErrOutcomeUnknown)
+			if !d.stdinEOF.Load() || grace {
+				return wire.CommandExitReport{}, d.stderr, false, fmt.Errorf("RunCommand: %w: %w", ctx.Err(), ErrOutcomeUnknown)
+			}
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(context.Background(), cancelGrace)
+			defer cancel()
+			grace = true
 		}
 		frame, err := d.read()
 		if err != nil {
@@ -362,8 +391,12 @@ func (d *commandDriver) drain(ctx context.Context) (wire.CommandExitReport, []by
 			}
 			d.window += credit.Credit()
 		case KindHookCall:
-			if err := d.answerHook(ctx, frame.Payload); err != nil {
-				return wire.CommandExitReport{}, d.stderr, false, err
+			if herr := d.answerHook(ctx, frame.Payload); herr != nil {
+				if errors.Is(herr, errHookTimeout) {
+					d.hookErr = herr
+					continue
+				}
+				return wire.CommandExitReport{}, d.stderr, false, herr
 			}
 		case KindError:
 			d.recordRefusal(frame.Payload)
@@ -408,7 +441,7 @@ func (d *commandDriver) answerHook(ctx context.Context, payload []byte) error {
 		if ctx.Err() != nil {
 			return fmt.Errorf("RunCommand: %w: %w", ctx.Err(), ErrOutcomeUnknown)
 		}
-		return fmt.Errorf("RunCommand: %w: hook handler timed out", ErrOutcomeUnknown)
+		return fmt.Errorf("RunCommand: %w: %w", errHookTimeout, ErrOutcomeUnknown)
 	}
 }
 
@@ -476,6 +509,9 @@ func (d *commandDriver) finishExit(payload []byte) (wire.CommandExitReport, []by
 	}
 	if report.ExitCode != 0 || report.Cancelled {
 		return report, d.stderr, report.Cancelled, fmt.Errorf("RunCommand: %w: %s exit %d cancelled %v", ErrOutcomeUnknown, d.service, report.ExitCode, report.Cancelled)
+	}
+	if d.hookErr != nil {
+		return report, d.stderr, false, d.hookErr
 	}
 	return report, d.stderr, true, nil
 }

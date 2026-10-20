@@ -19,40 +19,42 @@ type identity struct {
 	authed bool
 }
 
-func (s *Server) authenticate(r *http.Request) (identity, bool) {
+func (s *Server) authenticate(r *http.Request) (identity, bool, bool) {
 	var zero identity
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		return identity{caller: access.Caller{Active: true}}, true
+		return identity{caller: access.Caller{Active: true}}, true, false
 	}
 	scheme, value, _ := strings.Cut(header, " ")
 	secret := value
 	username := ""
+	pwHint := false
 	if strings.EqualFold(scheme, "Basic") {
 		raw, err := base64.StdEncoding.DecodeString(value)
 		if err != nil {
 			raw, err = base64.RawStdEncoding.DecodeString(value)
 			if err != nil {
-				return zero, false
+				return zero, false, false
 			}
 		}
 		username, secret, _ = strings.Cut(string(raw), ":")
 		if username == "" || secret == "" {
-			return zero, false
+			return zero, false, false
 		}
+		pwHint = !auth.ValidTokenShape(secret)
 	} else if !strings.EqualFold(scheme, "Bearer") || secret == "" {
-		return zero, false
+		return zero, false, false
 	}
 	tok, user, err := s.auth.LookupToken(r.Context(), secret, clientIP(r))
 	if err != nil {
-		return zero, false
+		return zero, false, pwHint
 	}
-	if username != "" && username != user.Name {
-		return zero, false
+	if username != "" && !strings.EqualFold(username, user.Name) {
+		return zero, false, pwHint
 	}
 	repos, err := s.auth.TokenRepos(r.Context(), tok.Hash)
 	if err != nil {
-		return zero, false
+		return zero, false, pwHint
 	}
 	set := make(map[int64]bool, len(repos))
 	for _, id := range repos {
@@ -72,16 +74,30 @@ func (s *Server) authenticate(r *http.Request) (identity, bool) {
 		token:  tok,
 		repos:  set,
 		authed: true,
-	}, true
+	}, true, false
 }
 
-func (s *Server) failAuth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) countGitFailure(w http.ResponseWriter, r *http.Request) bool {
 	decision := s.limiter.Admit(r.Context(), op.RateKey{Kind: op.RateIPGit, ID: clientIP(r)})
 	if !decision.Allow {
 		writeRateLimited(w, decision.RetryAfter)
+		return false
+	}
+	return true
+}
+
+func (s *Server) failAuth(w http.ResponseWriter, r *http.Request) {
+	if !s.countGitFailure(w, r) {
 		return
 	}
 	writeUnauthorized(w)
+}
+
+func (s *Server) failAuthPasswordHint(w http.ResponseWriter, r *http.Request) {
+	if !s.countGitFailure(w, r) {
+		return
+	}
+	writeUnauthorizedHint(w)
 }
 
 func (s *Server) denyAnonymous(w http.ResponseWriter, r *http.Request, id identity) bool {
