@@ -168,7 +168,7 @@ func TestAuthOpRegistration(t *testing.T) {
 		"auth.token.list", "auth.token.create", "auth.token.revoke",
 		"auth.session.list", "auth.session.revoke",
 		"user.get", "user.self.update", "user.self.delete",
-		"admin.user.create", "admin.user.resetpassword", "admin.user.unlock",
+		"admin.user.create", "admin.user.reset-password", "admin.user.unlock",
 		"admin.user.update", "admin.user.list",
 	} {
 		if !names[want] {

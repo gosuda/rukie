@@ -171,7 +171,7 @@ func (t *Table) Specs() []Spec {
 	return out
 }
 
-var namePattern = regexp.MustCompile(`^[a-z]+(\.[a-z]+){1,2}$`)
+var namePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*(\.[a-z][a-z0-9]*(-[a-z0-9]+)*){1,2}$`)
 
 var reservedTopWords = map[string]bool{
 	"ops":          true,

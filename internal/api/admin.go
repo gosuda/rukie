@@ -162,7 +162,7 @@ func RegisterAdmin(t *op.Table, deps Deps) error {
 		return err
 	}
 	if err := op.Register(t, op.Op[AdminResetIn, AdminResetOut]{
-		Name: "admin.user.resetpassword", Kind: op.KindMutation, Method: http.MethodPost, Path: "/admin/users/{user}/reset-password",
+		Name: "admin.user.reset-password", Kind: op.KindMutation, Method: http.MethodPost, Path: "/admin/users/{user}/reset-password",
 		Scope: op.ScopeAdminWrite, Summary: "Reset a user password",
 		Description: "Site admins only. Revokes sessions and, unless kept, scoped tokens.",
 		Problems:    []op.Code{op.CodeForbidden, op.CodeValidation, op.CodeNotFound},

@@ -158,7 +158,7 @@ func BuildCommands(specs []Spec, d *Document) (*Command, error) {
 		for name, raw := range props {
 			prop, _ := raw.(map[string]any)
 			in, _ := prop["x-rukie-in"].(string)
-			if in == "path" || in == "header" || name == "cursor" {
+			if in == "header" || name == "cursor" {
 				continue
 			}
 			flagName := kebab(name)
@@ -288,6 +288,9 @@ func Parse(root *Command, argv []string) (*Invocation, error) {
 		return nil, ErrUsage("too many positional arguments")
 	}
 	for i, value := range positional {
+		if _, set := inv.Args[leaf.Positional[i]]; set {
+			continue
+		}
 		inv.Args[leaf.Positional[i]] = value
 	}
 	for _, f := range leaf.Flags {

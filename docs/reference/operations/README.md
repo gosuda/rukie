@@ -8,7 +8,7 @@ Every operation in the table. Regenerate with `go run ./tools/docgen`.
 | --- | --- | --- | --- |
 | `admin.user.create` | `POST` | `/admin/users` | [admin.user.create](./admin.user.create.md) |
 | `admin.user.list` | `GET` | `/admin/users` | [admin.user.list](./admin.user.list.md) |
-| `admin.user.resetpassword` | `POST` | `/admin/users/{user}/reset-password` | [admin.user.resetpassword](./admin.user.resetpassword.md) |
+| `admin.user.reset-password` | `POST` | `/admin/users/{user}/reset-password` | [admin.user.reset-password](./admin.user.reset-password.md) |
 | `admin.user.unlock` | `POST` | `/admin/users/{user}/unlock` | [admin.user.unlock](./admin.user.unlock.md) |
 | `admin.user.update` | `POST` | `/admin/users/{user}` | [admin.user.update](./admin.user.update.md) |
 | `api.index` | `GET` | `/-/api` | [api.index](./api.index.md) |
