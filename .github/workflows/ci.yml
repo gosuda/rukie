@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rukie:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+      - run: make check
+
+  ruk-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+      - run: git clone --depth 1 https://github.com/gosuda/ruk.git ../ruk
+      - run: git -C ../ruk fetch --depth 1 origin $(cat tools/ruk.pin) && git -C ../ruk checkout $(cat tools/ruk.pin)
+      - run: rustup toolchain install 1.99.1 --profile minimal
+      - run: cargo +1.99.1 build --manifest-path ../ruk/Cargo.toml --locked -p ruk
+      - run: tools/passgate.sh '--- PASS: ' -- env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off go test -race -count=1 -v -tags integration ./internal/ruk/...
+
+  ruk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: git clone --depth 1 https://github.com/gosuda/ruk.git ruk
+      - run: git -C ruk fetch --depth 1 origin $(cat tools/ruk.pin) && git -C ruk checkout $(cat tools/ruk.pin)
+      - run: rustup toolchain install 1.99.1 --profile minimal
+      - run: cargo +1.99.1 install cargo-nextest --version 0.9.148 --locked
+      - run: cargo +1.99.1 fmt --all -- --check
+        working-directory: ruk
+      - run: cargo +1.99.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
+        working-directory: ruk
+      - run: cargo +1.99.1 nextest run --workspace --locked
+        working-directory: ruk
+      - run: cargo +1.99.1 test --workspace --locked --doc
+        working-directory: ruk
