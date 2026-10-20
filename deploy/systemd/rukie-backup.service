@@ -1,0 +1,9 @@
+[Unit]
+Description=rukie daily backup
+
+[Service]
+Type=oneshot
+User=rukie
+Group=rukie
+ExecStart=/usr/bin/rukie backup --config /etc/rukie/config.toml
+NoNewPrivileges=true

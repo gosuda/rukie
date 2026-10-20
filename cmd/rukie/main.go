@@ -1,17 +1,20 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,12 +23,16 @@ import (
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/cli"
 	"github.com/gosuda/rukie/internal/config"
+	"github.com/gosuda/rukie/internal/events"
 	"github.com/gosuda/rukie/internal/githttp"
 	"github.com/gosuda/rukie/internal/logging"
 	"github.com/gosuda/rukie/internal/mcp"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/ruk/wire"
+	"github.com/gosuda/rukie/internal/rukproc"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/supervisor"
+	"github.com/gosuda/rukie/internal/sysops"
 )
 
 func main() {
@@ -48,6 +55,15 @@ func run(argv []string) int {
 		return runDev(argv[1:])
 	case "bootstrap":
 		return runBootstrap(argv[1:])
+	case "backup":
+		return runBackup(argv[1:])
+	case "restore":
+		return runRestore(argv[1:])
+	case "admin":
+		if code, ok := runAdmin(argv[1:]); ok {
+			return code
+		}
+		return cli.Run(context.Background(), stdIO(), argv)
 	case "mcp":
 		return cli.RunMCP(context.Background(), stdIO(), argv[1:])
 	default:
@@ -127,9 +143,9 @@ func runServe(argv []string) int {
 	if err := fs.Parse(argv); err != nil {
 		return 64
 	}
-	cfg, err := config.Load(configPath(*configFlag))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+	cfg, cfgErr := config.Load(configPath(*configFlag))
+	if cfgErr != nil {
+		fmt.Fprintln(os.Stderr, cfgErr.Error())
 		if *checkConfig {
 			return 2
 		}
@@ -147,15 +163,258 @@ func runServe(argv []string) int {
 		return 78
 	}
 	slog.SetDefault(logger)
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	app, cleanup, err := setupApp(ctx, cfg, logger)
-	defer cleanup()
-	if err != nil {
-		logger.Error("setup app", slog.Any("err", err))
+	if err := sysops.EnsureDataDir(cfg.DataDir); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
-	return serveHTTP(ctx, logger, app.handler, cfg.HTTP)
+	if derr := sysops.CheckDowngrade(cfg); derr != nil {
+		fmt.Fprintln(os.Stderr, derr.Error())
+		return sysops.ExitDowngradeRefused
+	}
+	if _, serr := sysops.LoadSecretKey(cfg.SecretKeyFile); serr != nil {
+		fmt.Fprintln(os.Stderr, serr.Error())
+		return 2
+	}
+	lock, lerr := sysops.AcquireDataDirLock(cfg.DataDir)
+	if lerr != nil {
+		fmt.Fprintln(os.Stderr, lerr.Error())
+		return 3
+	}
+	defer func() { _ = lock.Release() }()
+	sup, serr := startSupervisor(cfg)
+	if serr != nil {
+		fmt.Fprintln(os.Stderr, serr.Error())
+		return 1
+	}
+	supCtx, supStop := context.WithCancel(context.Background())
+	defer supStop()
+	supDone := make(chan error, 1)
+	go func() { supDone <- sup.Run(supCtx) }()
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	halveCh := make(chan struct{})
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	halveCtx, cancelHalve := context.WithCancel(context.Background())
+	defer cancelHalve()
+	go func() {
+		<-sigCh
+		stop()
+		select {
+		case <-sigCh:
+			close(halveCh)
+			cancelHalve()
+		case <-ctx.Done():
+		}
+	}()
+	// waitFinal consumes the supervisor result exactly once. A second
+	// signal halves the wait through halveCtx; a 30 s backstop covers
+	// a wedged child. Drain steps and the final wait share it so a
+	// consumed result never blocks the shutdown.
+	var supOnce sync.Once
+	var supFinal error
+	waitFinal := func() error {
+		supOnce.Do(func() {
+			timer := time.NewTimer(30 * time.Second)
+			defer timer.Stop()
+			select {
+			case supFinal = <-supDone:
+			case <-halveCtx.Done():
+				supFinal = fmt.Errorf("serve: supervisor wait halved: %w", halveCtx.Err())
+			case <-timer.C:
+				supFinal = fmt.Errorf("serve: supervisor did not exit within 30s")
+			}
+		})
+		return supFinal
+	}
+	watchHUP(cfg, logger, configPath(*configFlag))
+	if rerr := waitSupervisorReady(ctx, sup, waitFinal, cfg); rerr != nil {
+		fmt.Fprintln(os.Stderr, rerr.Error())
+		supStop()
+		if serr := waitFinal(); serr != nil {
+			fmt.Fprintln(os.Stderr, "serve:", serr.Error())
+		}
+		return 1
+	}
+	app, cleanup, err := setupApp(ctx, cfg, logger, sup.DaemonProbe)
+	if err != nil {
+		logger.Error("setup app", slog.Any("err", err))
+		supStop()
+		if serr := waitFinal(); serr != nil {
+			logger.Error("supervisor wait", slog.Any("err", serr))
+		}
+		return 1
+	}
+	// setupApp migrated the store; leave the marker behind so later
+	// downgrade checks work without opening the database.
+	if merr := sysops.RefreshMetaVersion(cfg); merr != nil {
+		logger.Error("schema marker", slog.Any("err", merr))
+		supStop()
+		if serr := waitFinal(); serr != nil {
+			logger.Error("supervisor wait", slog.Any("err", serr))
+		}
+		return 1
+	}
+	// Owned drain runners. Followers, queue workers, the CI scheduler,
+	// and the webhook dispatcher join this map as their steps land
+	// them in serve: starting them needs repo enumeration and job
+	// executors that do not exist yet, and no-op runners would only
+	// fake the drain.
+	spoolCtx, stopSpool := context.WithCancel(context.Background())
+	defer stopSpool()
+	spoolDone := make(chan error, 1)
+	go func() { spoolDone <- events.DrainLoop(spoolCtx, app.spool, app.store, events.EnqueuePush) }()
+	extra := map[string]func(context.Context) error{
+		"store": func(ctx context.Context) error {
+			done := make(chan struct{})
+			go func() { cleanup(); close(done) }()
+			select {
+			case <-done:
+			case <-ctx.Done():
+			}
+			return nil
+		},
+		"spool": func(ctx context.Context) error {
+			stopSpool()
+			select {
+			case err := <-spoolDone:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					return err
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			// Final pass: every record still on disk is either
+			// committed now or left for the next start. Replay is
+			// idempotent, so a record stranded between commit and
+			// remove applies exactly once.
+			return app.spool.Replay(ctx, app.store, events.EnqueuePush)
+		},
+		"child": func(ctx context.Context) error {
+			supStop()
+			done := make(chan error, 1)
+			go func() { done <- waitFinal() }()
+			select {
+			case err := <-done:
+				return err
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	// supFailed carries a mid-serve supervisor death to the HTTP loop
+	// so an exhausted restart budget stops serving and exits non-zero
+	// instead of idling with false readiness.
+	supFailed := make(chan error, 1)
+	go func() {
+		if err := waitFinal(); err != nil {
+			select {
+			case supFailed <- err:
+			default:
+			}
+		}
+	}()
+	code := serveHTTP(ctx, logger, app.handler, cfg.HTTP, halveCh, extra, supFailed)
+	supStop()
+	// A dead supervisor fails the process even when HTTP drained
+	// cleanly; a halved shutdown keeps the operator's exit code.
+	if serr := waitFinal(); serr != nil && halveCtx.Err() == nil {
+		logger.Error("supervisor exited", slog.Any("err", serr))
+		return 1
+	}
+	return code
+}
+
+// startSupervisor renders the daemon TOML and builds the supervisor.
+// A [ruk] socket selects an external daemon with no child.
+func startSupervisor(cfg config.Config) (*supervisor.Supervisor, error) {
+	if cfg.Ruk.Socket != "" {
+		return supervisor.New(supervisor.Config{
+			ExternalSocket: cfg.Ruk.Socket,
+		})
+	}
+	bin, err := rukproc.ResolveBinary(cfg.Ruk.BinaryPath)
+	if err != nil {
+		return nil, err
+	}
+	daemonPath, err := supervisor.WriteDaemonConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return supervisor.New(supervisor.Config{
+		Binary:       bin,
+		DaemonConfig: daemonPath,
+		SocketPath:   cfg.Ruk.SocketPath,
+		Env:          supervisor.HermeticEnv(os.Environ()),
+		Stdout:       os.Stderr,
+		Stderr:       os.Stderr,
+	})
+}
+
+// maxStartupTimeoutMs bounds the configured startup wait below int64
+// overflow when expressed in nanoseconds. Untyped, so it compares
+// against the uint config value without a conversion.
+const maxStartupTimeoutMs = (1<<63 - 1) / 1_000_000
+
+func startupTimeout(cfg config.Config) (time.Duration, error) {
+	ms := cfg.Ruk.StartupTimeoutMs
+	if ms == 0 {
+		return supervisor.StartupTimeout, nil
+	}
+	if ms > maxStartupTimeoutMs {
+		return 0, fmt.Errorf("serve: ruk.startup_timeout_ms %d overflows a duration", ms)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// waitSupervisorReady blocks until the daemon serves, the supervisor
+// fails, or the process is signalled. The supervisor result flows
+// through waitFinal, the single consumer of the supervisor channel.
+func waitSupervisorReady(ctx context.Context, sup *supervisor.Supervisor, waitFinal func() error, cfg config.Config) error {
+	timeout, err := startupTimeout(cfg)
+	if err != nil {
+		return err
+	}
+	readyCtx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("serve: daemon startup timed out"))
+	defer cancel()
+	readyErr := make(chan error, 1)
+	go func() { readyErr <- sup.WaitReady(readyCtx) }()
+	exited := make(chan error, 1)
+	go func() { exited <- waitFinal() }()
+	select {
+	case err := <-exited:
+		cancel()
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("serve: supervisor exited during startup")
+	case err := <-readyErr:
+		return err
+	case <-ctx.Done():
+		cancel()
+		return fmt.Errorf("serve: interrupted during startup: %w", ctx.Err())
+	}
+}
+
+// watchHUP reloads the log level on SIGHUP. Nothing else reloads:
+// every other key change requires a restart.
+func watchHUP(cfg config.Config, logger *slog.Logger, path string) {
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+	go func() {
+		defer signal.Stop(hupCh)
+		for range hupCh {
+			level, next, err := supervisor.ReloadLogLevel(cfg.Log.Format, cfg.Log.Source, path)
+			if err != nil {
+				logger.Error("sighup reload", slog.Any("err", err))
+				continue
+			}
+			slog.SetDefault(next)
+			logger = next
+			next.Info("reloaded log level", slog.String("level", level))
+		}
+	}()
 }
 
 type app struct {
@@ -164,15 +423,23 @@ type app struct {
 	store   *store.Store
 	auth    *auth.Service
 	docs    *api.DocStore
+	spool   *events.Spool
 }
 
 type gitFallback struct {
 	git      *githttp.Server
 	fallback http.Handler
+	daemon   func() (bool, string)
 }
 
 func (h gitFallback) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := githttp.RouteGitPath(r.URL.Path); ok {
+		if h.daemon != nil {
+			if ready, _ := h.daemon(); !ready {
+				supervisor.WriteUnavailable(w)
+				return
+			}
+		}
 		h.git.ServeHTTP(w, r)
 		return
 	}
@@ -189,7 +456,7 @@ func llmsBase(cfg config.Config) string {
 	return ""
 }
 
-func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, func(), error) {
+func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemonProbe func() (bool, string)) (*app, func(), error) {
 	cleanup := func() {}
 	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, Logger: logger})
 	if err != nil {
@@ -271,7 +538,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app
 	docs.Set(server.OpenAPI())
 	fillLLMS(server.Document())
 	server.Handle("GET /healthz", api.Healthz())
-	server.Handle("GET /readyz", api.Readiness{Store: st, Daemon: api.NotReadyDaemon}.Handler())
+	server.Handle("GET /readyz", api.Readiness{Store: st, Daemon: daemonProbe}.Handler())
 	mcpMount, err := mcp.NewMount(authSvc, server, cfg.HTTP.ExternalURL)
 	if err != nil {
 		cleanup()
@@ -280,21 +547,47 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app
 	server.Handle("POST /-/mcp", mcpMount.Authenticated())
 	server.Handle("GET /-/mcp", mcpMount.MethodNotAllowed())
 	server.Handle("DELETE /-/mcp", mcpMount.MethodNotAllowed())
+	spool, err := events.OpenSpool(cfg.DataDir)
+	if err != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
+	}
 	git, err := githttp.New(githttp.Config{
 		Auth:       authSvc,
 		Limiter:    limiter,
-		SocketPath: cfg.Ruk.SocketPath,
+		SocketPath: cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath),
 		RepoRoot:   cfg.Ruk.RepoRoot,
 		Limits:     wire.DefaultGitLimits(),
+		Feed:       events.OpenHookSink(st, spool, time.Now),
 	})
 	if err != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
-	return &app{server: server, handler: gitFallback{git: git, fallback: server}, store: st, auth: authSvc, docs: docs}, cleanup, nil
+	daemon := daemonProbe
+	if daemon == nil {
+		daemon = api.NotReadyDaemon
+	}
+	return &app{server: server, handler: gitFallback{git: git, fallback: server, daemon: daemon}, store: st, auth: authSvc, docs: docs, spool: spool}, cleanup, nil
 }
 
-func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, httpCfg config.HTTPConfig) int {
+// drainOffline runs the ordered drain without a serving socket, for
+// startup paths (like a bind failure) where the app opened but never
+// served. It closes the store and stops the child exactly once.
+func drainOffline(logger *slog.Logger, steps []supervisor.Step) {
+	drainCtx, cancel := context.WithTimeoutCause(context.Background(), supervisor.DefaultDrainTimeout, fmt.Errorf("offline drain timed out"))
+	defer cancel()
+	if err := supervisor.Drain(drainCtx, steps); err != nil {
+		logger.Error("offline drain", slog.Any("err", err))
+	}
+}
+
+// serveHTTP binds the listeners, then drains through the ordered
+// shutdown sequence on signal: every owned runner joins one Drain in
+// DrainOrder, with HTTP as one step inside the 40 s budget. A second
+// signal on halveCh aborts the remaining drain so systemd's stop
+// timeout is never stranded.
+func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, httpCfg config.HTTPConfig, halveCh <-chan struct{}, extra map[string]func(context.Context) error, supFailed <-chan error) int {
 	httpServer := &http.Server{
 		ReadTimeout:       time.Duration(httpCfg.ReadTimeoutMs) * time.Millisecond,
 		ReadHeaderTimeout: time.Duration(httpCfg.ReadHeaderTimeoutMs) * time.Millisecond,
@@ -302,11 +595,35 @@ func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, h
 		IdleTimeout:       time.Duration(httpCfg.IdleTimeoutMs) * time.Millisecond,
 		Handler:           handler,
 	}
+	runners := map[string]func(context.Context) error{}
+	maps.Copy(runners, extra)
+	runners["http"] = func(ctx context.Context) error {
+		budget := time.Duration(httpCfg.ShutdownDrainMs) * time.Millisecond
+		if budget <= 0 {
+			budget = 30 * time.Second
+		}
+		shutCtx, cancel := context.WithTimeoutCause(ctx, budget, fmt.Errorf("http drain timed out"))
+		defer cancel()
+		go func() {
+			select {
+			case <-halveCh:
+				cancel()
+			case <-shutCtx.Done():
+			}
+		}()
+		return httpServer.Shutdown(shutCtx)
+	}
+	steps, derr := supervisor.OrderedDrain(runners)
+	if derr != nil {
+		logger.Error("drain order", slog.Any("err", derr))
+		return 1
+	}
 	errCh := make(chan error, len(httpCfg.Listen))
 	for _, addr := range httpCfg.Listen {
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			logger.Error("listen", slog.String("addr", addr), slog.Any("err", err))
+			drainOffline(logger, steps)
 			return 78
 		}
 		logger.Info("listening", slog.String("addr", ln.Addr().String()))
@@ -314,17 +631,35 @@ func serveHTTP(ctx context.Context, logger *slog.Logger, handler http.Handler, h
 			errCh <- httpServer.Serve(ln)
 		}()
 	}
+	drain := func() {
+		drainCtx, cancel := context.WithTimeoutCause(context.Background(), supervisor.DefaultDrainTimeout, fmt.Errorf("drain timed out"))
+		defer cancel()
+		go func() {
+			select {
+			case <-halveCh:
+				cancel()
+			case <-drainCtx.Done():
+			}
+		}()
+		if err := supervisor.Drain(drainCtx, steps); err != nil {
+			logger.Error("drain", slog.Any("err", err))
+		}
+	}
 	select {
 	case <-ctx.Done():
-		shutCtx, cancel := context.WithTimeoutCause(context.Background(), 5*time.Second, fmt.Errorf("shutdown timed out"))
-		defer cancel()
-		_ = httpServer.Shutdown(shutCtx)
+		drain()
 		return 0
+	case supErr := <-supFailed:
+		logger.Error("supervisor exited mid-serve", slog.Any("err", supErr))
+		drain()
+		return 1
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("serve", slog.Any("err", err))
+			drain()
 			return 1
 		}
+		drain()
 		return 0
 	}
 }

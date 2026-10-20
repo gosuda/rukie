@@ -1,0 +1,15 @@
+# rukie example config for the container image.
+# The image default listens on 0.0.0.0:3000 so the published port has a
+# listener; host installs keep the loopback default instead.
+data_dir = "/var/lib/rukie"
+secret_key_file = "/etc/rukie/secret.key"
+
+[http]
+listen = ["0.0.0.0:3000"]
+
+[store]
+backend = "sqlite"
+
+[ruk]
+binary_path = "/usr/lib/rukie/ruk"
+repo_root = "/var/lib/rukie/repos"

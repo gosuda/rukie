@@ -379,7 +379,7 @@ func (d *devRun) serve(ctx context.Context) int {
 		return 78
 	}
 	slog.SetDefault(logger)
-	app, cleanup, err := setupApp(ctx, cfg, logger)
+	app, cleanup, err := setupApp(ctx, cfg, logger, nil)
 	defer cleanup()
 	if err != nil {
 		emitDevErr(d.std, err.Error())
