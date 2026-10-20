@@ -103,7 +103,15 @@ func (m *MemResolver) Rules(repoID int64) []BookmarkRule {
 }
 
 func (m *MemResolver) IsOrgMember(orgID, userID int64) bool {
-	return m.OrgMembers[orgID][userID] || m.OrgOwners[orgID][userID]
+	if m.OrgMembers[orgID][userID] || m.OrgOwners[orgID][userID] {
+		return true
+	}
+	for _, team := range m.TeamList {
+		if team.Org == orgID && team.Members[userID] {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *MemResolver) IsOrgOwner(orgID, userID int64) bool {
