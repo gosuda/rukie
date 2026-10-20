@@ -171,6 +171,100 @@ func TestHandlePostReceiveDerivesID(t *testing.T) {
 	}
 }
 
+func TestHandlePostReceiveResolvesPreRecorded(t *testing.T) {
+	st := openFeedStore(t)
+	sp := openFeedSpool(t)
+	pre := PushRecord{InvocationID: "push-pre-1", RepoID: 11, ActorID: 7, AttemptedAt: feedTime().UnixMilli()}
+	err := st.Write(feedCtx(t), func(tx *store.WriteTx) error {
+		_, rerr := RecordPush(tx, pre)
+		return rerr
+	})
+	if err != nil {
+		t.Fatalf("pre-record: %v", err)
+	}
+	meta := PushMeta{InvocationID: "push-pre-1", RepoID: 11, ActorID: 7}
+	reply := HandlePostReceive(feedCtx(t), st, sp, meta, postReceiveCall(), feedTime())
+	if reply.RejectAll {
+		t.Fatalf("resolved post-receive rejected: %v", reply.Reason)
+	}
+	var landed string
+	var enqueued int64
+	err = st.Write(feedCtx(t), func(tx *store.WriteTx) error {
+		got, gerr := tx.GetPendingPush("push-pre-1")
+		if gerr != nil {
+			return gerr
+		}
+		landed = got.Landed
+		enqueued = got.Enqueued
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("pending lookup: %v", err)
+	}
+	if enqueued != 1 {
+		t.Fatal("post-receive left the push pending")
+	}
+	if !strings.Contains(landed, "refs/heads/main") {
+		t.Fatalf("landed = %s, want the post-receive refs", landed)
+	}
+	if n := countOutboxKind(t, st, kindRefUpdated); n != 2 {
+		t.Fatalf("ref.updated rows = %d, want 2", n)
+	}
+}
+
+func TestHandlePostReceiveRejectsMismatchedInvocation(t *testing.T) {
+	st := openFeedStore(t)
+	sp := openFeedSpool(t)
+	pre := PushRecord{InvocationID: "push-clash", RepoID: 11, ActorID: 7, AttemptedAt: feedTime().UnixMilli()}
+	err := st.Write(feedCtx(t), func(tx *store.WriteTx) error {
+		_, rerr := RecordPush(tx, pre)
+		return rerr
+	})
+	if err != nil {
+		t.Fatalf("pre-record: %v", err)
+	}
+	meta := PushMeta{InvocationID: "push-clash", RepoID: 12, ActorID: 7}
+	reply := HandlePostReceive(feedCtx(t), st, sp, meta, postReceiveCall(), feedTime())
+	if !reply.RejectAll {
+		t.Fatal("cross-repo invocation reuse accepted")
+	}
+	pending, err := sp.Pending()
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("spool kept %+v, want the rejected record for drain inspection", pending)
+	}
+	if n := countOutboxKind(t, st, kindRefUpdated); n != 0 {
+		t.Fatalf("mismatched invocation enqueued %d rows", n)
+	}
+}
+
+func TestHookSinkRecordAndHandle(t *testing.T) {
+	st := openFeedStore(t)
+	sp := openFeedSpool(t)
+	sink := OpenHookSink(st, sp, feedTime)
+	rec := PushRecord{InvocationID: "push-sink-1", RepoID: 11, ActorID: 7, AttemptedAt: feedTime().UnixMilli()}
+	inserted, err := sink.Record(feedCtx(t), rec)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if !inserted {
+		t.Fatal("first record reported duplicate")
+	}
+	inserted, err = sink.Record(feedCtx(t), rec)
+	if err != nil {
+		t.Fatalf("re-record: %v", err)
+	}
+	if inserted {
+		t.Fatal("re-record reported inserted")
+	}
+	reply := sink.Handle(feedCtx(t), PushMeta{InvocationID: "push-sink-1", RepoID: 11, ActorID: 7}, postReceiveCall())
+	if reply.RejectAll {
+		t.Fatalf("sink handle rejected: %v", reply.Reason)
+	}
+}
+
 func TestHandlePostReceiveWrongPhase(t *testing.T) {
 	st := openFeedStore(t)
 	sp := openFeedSpool(t)

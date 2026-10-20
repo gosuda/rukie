@@ -24,6 +24,7 @@ import (
 
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/events"
 	"github.com/gosuda/rukie/internal/githttp"
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
@@ -137,10 +138,15 @@ func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string
 	if limits != nil {
 		useLimits = *limits
 	}
+	spool, err := events.OpenSpool(dir)
+	if err != nil {
+		t.Fatalf("spool: %v", err)
+	}
 	git, err := githttp.New(githttp.Config{
 		Auth:     svc,
 		Limiter:  access.NewLimiter(),
 		Client:   client,
+		Feed:     events.OpenHookSink(st, spool, time.Now),
 		RepoRoot: roots,
 		Limits:   useLimits,
 	})

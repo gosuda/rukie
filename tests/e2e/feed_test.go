@@ -3,9 +3,12 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -122,18 +125,15 @@ func TestFollowerReplayDedupe(t *testing.T) {
 
 func TestSpoolSurvivesRukieCrash(t *testing.T) {
 	s := newStack(t, nil)
-	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
-	repoID := s.addRepo(t, "ada", "hello", "private")
-	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})
 	sp, err := events.OpenSpool(filepath.Join(s.dir, "crash"))
 	if err != nil {
 		t.Fatalf("spool: %v", err)
 	}
 	rec := events.PushRecord{
-		Landed:       []events.LandedRef{{Name: "refs/heads/main", Old: strings.Repeat("0", 40), New: oid}},
+		Landed:       []events.LandedRef{{Name: "refs/heads/main", Old: strings.Repeat("0", 40), New: strings.Repeat("b", 40)}},
 		InvocationID: "push-e2e-crash-1",
-		RepoID:       repoID,
-		ActorID:      ada.user.ID,
+		RepoID:       777,
+		ActorID:      1,
 		AttemptedAt:  time.Now().UnixMilli(),
 	}
 	if err = sp.Store(rec); err != nil {
@@ -147,7 +147,7 @@ func TestSpoolSurvivesRukieCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fresh handle load: %v", err)
 	}
-	if len(loaded.Landed) != 1 || loaded.Landed[0].New != oid || loaded.RepoID != repoID {
+	if len(loaded.Landed) != 1 || loaded.Landed[0].New != strings.Repeat("b", 40) || loaded.RepoID != 777 {
 		t.Fatalf("reloaded = %+v", loaded)
 	}
 	ctx := e2eCtx(t)
@@ -180,8 +180,8 @@ func TestSpoolSurvivesRukieCrash(t *testing.T) {
 	if n := refUpdatedCount(t, s); n != 1 {
 		t.Fatalf("ref.updated rows = %d, want 1", n)
 	}
-	if tips := feedTips(t, s, repoID); tips["refs/heads/main"] != oid {
-		t.Fatalf("tips = %+v, want main at %s", tips, oid)
+	if tips := feedTips(t, s, 777); tips["refs/heads/main"] != strings.Repeat("b", 40) {
+		t.Fatalf("tips = %+v", tips)
 	}
 	pending, err := sp.Pending()
 	if err != nil {
@@ -190,6 +190,186 @@ func TestSpoolSurvivesRukieCrash(t *testing.T) {
 	if len(pending) != 0 {
 		t.Fatalf("spool kept %+v", pending)
 	}
+}
+
+func TestPushProducesSpoolThenOutboxThenRemoves(t *testing.T) {
+	s := newStack(t, nil)
+	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+	repoID := s.addRepo(t, "ada", "hello", "private")
+	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})
+	ctx := e2eCtx(t)
+	var invocation string
+	var enqueued int64
+	rerr := s.db.QueryRowContext(ctx, `SELECT invocation_id, enqueued FROM pending_pushes WHERE repo_id = ?`, repoID).Scan(&invocation, &enqueued)
+	if rerr != nil {
+		t.Fatalf("pending row: %v", rerr)
+	}
+	if !strings.HasPrefix(invocation, "push-") {
+		t.Fatalf("invocation = %q, want the push request id", invocation)
+	}
+	if enqueued != 1 {
+		t.Fatal("post-receive left the push pending")
+	}
+	for _, id := range []string{"hook-delivery:" + invocation, "mirror-run:" + invocation, "ci-plan:" + invocation} {
+		var job store.Job
+		jerr := s.st.Read(ctx, func(tx *store.ReadTx) error {
+			got, gerr := tx.GetJob(id)
+			if gerr != nil {
+				return gerr
+			}
+			job = got
+			return nil
+		})
+		if jerr != nil {
+			t.Fatalf("job %s: %v", id, jerr)
+		}
+		if job.State != "queued" || job.RepoID != repoID {
+			t.Fatalf("job %s = %+v", id, job)
+		}
+	}
+	var received int
+	rerr = s.db.QueryRowContext(ctx, `SELECT count(*) FROM outbox WHERE kind = 'push.received'`).Scan(&received)
+	if rerr != nil {
+		t.Fatalf("push.received count: %v", rerr)
+	}
+	if received != 1 {
+		t.Fatalf("push.received rows = %d, want 1", received)
+	}
+	if n := refUpdatedCount(t, s); n != 1 {
+		t.Fatalf("ref.updated rows = %d, want 1", n)
+	}
+	if tips := feedTips(t, s, repoID); tips["refs/heads/main"] != oid {
+		t.Fatalf("tips = %+v, want main at %s", tips, oid)
+	}
+	entries, err := os.ReadDir(filepath.Join(s.dir, "spool"))
+	if err != nil {
+		t.Fatalf("spool dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("spool kept %d records after success", len(entries))
+	}
+	if ada.user.ID == 0 {
+		t.Fatal("admin id missing")
+	}
+}
+
+func TestSpoolKillBetweenFsyncAndCommit(t *testing.T) {
+	if os.Getenv("RUKIE_SPOOL_CRASH_CHILD") == "1" {
+		runSpoolCrashChild()
+		return
+	}
+	dir := t.TempDir()
+	child := exec.Command(os.Args[0], "-test.run", "^TestSpoolKillBetweenFsyncAndCommit$", "-test.count=1")
+	child.Env = append(os.Environ(), "RUKIE_SPOOL_CRASH_CHILD=1", "RUKIE_SPOOL_CRASH_DIR="+dir)
+	var stderr bytes.Buffer
+	child.Stderr = &stderr
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if err = child.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	scanned := make(chan error, 1)
+	go func() {
+		line, rerr := bufio.NewReader(stdout).ReadString('\n')
+		if rerr != nil {
+			scanned <- rerr
+			return
+		}
+		if strings.TrimSpace(line) != "stored" {
+			scanned <- fmt.Errorf("unexpected child line %q", line)
+			return
+		}
+		scanned <- nil
+	}()
+	select {
+	case serr := <-scanned:
+		if serr != nil {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+			t.Fatalf("child signal: %v\n%s", serr, stderr.String())
+		}
+	case <-time.After(30 * time.Second):
+		_ = child.Process.Kill()
+		_ = child.Wait()
+		t.Fatalf("child never stored\n%s", stderr.String())
+	}
+	if err = child.Process.Kill(); err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	if err = child.Wait(); err == nil {
+		t.Fatalf("killed child exited cleanly\n%s", stderr.String())
+	}
+	ctx := e2eCtx(t)
+	st, err := store.Open(ctx, store.Options{Path: filepath.Join(dir, "feed.sqlite")})
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	sp, err := events.OpenSpool(dir)
+	if err != nil {
+		t.Fatalf("spool: %v", err)
+	}
+	if err = sp.Replay(ctx, st, events.EnqueuePush); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	before := refUpdatedCountOn(t, st)
+	if before != 1 {
+		t.Fatalf("ref.updated rows = %d, want 1", before)
+	}
+	if err = sp.Replay(ctx, st, events.EnqueuePush); err != nil {
+		t.Fatalf("second replay: %v", err)
+	}
+	if after := refUpdatedCountOn(t, st); after != before {
+		t.Fatalf("second replay changed rows from %d to %d", before, after)
+	}
+}
+
+func runSpoolCrashChild() {
+	dir := os.Getenv("RUKIE_SPOOL_CRASH_DIR")
+	fail := func() {
+		os.Exit(2)
+	}
+	sp, err := events.OpenSpool(dir)
+	if err != nil {
+		fail()
+	}
+	rec := events.PushRecord{
+		Landed:       []events.LandedRef{{Name: "refs/heads/main", Old: strings.Repeat("0", 40), New: strings.Repeat("e", 40)}},
+		InvocationID: "push-crash-kill-1",
+		RepoID:       888,
+		ActorID:      2,
+		AttemptedAt:  time.Now().UnixMilli(),
+	}
+	if err = sp.Store(rec); err != nil {
+		fail()
+	}
+	fmt.Println("stored")
+	time.Sleep(60 * time.Second)
+}
+
+func refUpdatedCountOn(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var rows []store.OutboxRow
+	err := st.Read(e2eCtx(t), func(tx *store.ReadTx) error {
+		got, rerr := tx.Outbox().After("feedprobe", 1000)
+		if rerr != nil {
+			return rerr
+		}
+		rows = got
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("outbox: %v", err)
+	}
+	n := 0
+	for _, row := range rows {
+		if row.Kind == "ref.updated" {
+			n++
+		}
+	}
+	return n
 }
 
 func TestReconcilerRepairsMissedPush(t *testing.T) {

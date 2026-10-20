@@ -17,6 +17,7 @@ import (
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/api"
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/events"
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/store"
@@ -36,6 +37,7 @@ type Config struct {
 	Auth        *auth.Service
 	Limiter     *access.Limiter
 	Client      *ruk.Client
+	Feed        *events.HookSink
 	Clock       func() time.Time
 	RepoRoot    string
 	SocketPath  string
@@ -47,6 +49,7 @@ type Server struct {
 	auth        *auth.Service
 	limiter     *access.Limiter
 	client      *ruk.Client
+	feed        *events.HookSink
 	resolver    *access.SQLResolver
 	db          *sql.DB
 	clock       func() time.Time
@@ -85,6 +88,7 @@ func New(cfg Config) (*Server, error) {
 		auth:        cfg.Auth,
 		limiter:     cfg.Limiter,
 		client:      cfg.Client,
+		feed:        cfg.Feed,
 		resolver:    access.NewSQLResolver(cfg.Auth.DB(), nil),
 		db:          cfg.Auth.DB(),
 		repoRoot:    filepath.Clean(cfg.RepoRoot),

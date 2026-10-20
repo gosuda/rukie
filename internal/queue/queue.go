@@ -194,10 +194,12 @@ func (q *Queue) Run(ctx context.Context, cfg WorkerConfig, handle Handler) error
 				return cerr
 			}
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(cfg.Poll):
+		if len(jobs) == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(cfg.Poll):
+			}
 		}
 	}
 }

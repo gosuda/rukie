@@ -113,13 +113,18 @@ func (r *Reconciler) emit(tx *store.WriteTx, name, old, current string, now time
 	return err
 }
 
+func ReconcileOffset(repoID int64) time.Duration {
+	phase := ((repoID*37)%300 + 300) % 300
+	return time.Duration(phase) * time.Second
+}
+
 func (r *Reconciler) Run(ctx context.Context) error {
 	if _, err := r.ReconcileRepo(ctx); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 	}
-	timer := time.NewTimer(ReconcileInterval)
+	timer := time.NewTimer(ReconcileOffset(r.repoID))
 	defer timer.Stop()
 	for {
 		select {

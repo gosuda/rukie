@@ -3,7 +3,9 @@ package events
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -137,23 +139,56 @@ func HandlePostReceive(ctx context.Context, st *store.Store, sp *Spool, meta Pus
 	return acceptAll(call)
 }
 
-func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
-	landedRaw, jerr := jsonv2.Marshal(rec.Landed)
+var ErrInvocationMismatch = errors.New("events: invocation is bound to another repo or actor")
+
+func RecordPush(tx *store.WriteTx, rec PushRecord) (bool, error) {
+	landedRaw, jerr := marshalLanded(rec.Landed)
 	if jerr != nil {
-		return jerr
+		return false, jerr
 	}
-	inserted, perr := tx.PutPendingPush(store.PendingPush{
+	return tx.PutPendingPush(store.PendingPush{
 		Landed:       string(landedRaw),
 		InvocationID: rec.InvocationID,
 		RepoID:       rec.RepoID,
 		ActorID:      rec.ActorID,
 		AttemptedAt:  rec.AttemptedAt,
 	})
-	if perr != nil {
-		return perr
+}
+
+func marshalLanded(landed []LandedRef) ([]byte, error) {
+	if len(landed) == 0 {
+		return []byte("[]"), nil
 	}
-	if !inserted {
-		return nil
+	return jsonv2.Marshal(landed)
+}
+
+func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
+	landedRaw, jerr := marshalLanded(rec.Landed)
+	if jerr != nil {
+		return jerr
+	}
+	existing, gerr := tx.GetPendingPush(rec.InvocationID)
+	if gerr != nil && !errors.Is(gerr, sql.ErrNoRows) {
+		return gerr
+	}
+	if gerr == nil {
+		if existing.Enqueued == 1 {
+			return nil
+		}
+		if existing.RepoID != rec.RepoID || existing.ActorID != rec.ActorID {
+			return ErrInvocationMismatch
+		}
+		if serr := tx.SetPushLanded(rec.InvocationID, string(landedRaw), rec.AttemptedAt); serr != nil {
+			return serr
+		}
+	} else if _, perr := tx.PutPendingPush(store.PendingPush{
+		Landed:       string(landedRaw),
+		InvocationID: rec.InvocationID,
+		RepoID:       rec.RepoID,
+		ActorID:      rec.ActorID,
+		AttemptedAt:  rec.AttemptedAt,
+	}); perr != nil {
+		return perr
 	}
 	payload, jerr := jsonv2.Marshal(pushPayload{
 		Landed:     rec.Landed,
@@ -165,6 +200,9 @@ func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
 		return jerr
 	}
 	at := time.UnixMilli(rec.AttemptedAt)
+	if at.UnixMilli() <= 0 {
+		return fmt.Errorf("EnqueuePush: occurred_at must be after the Unix epoch")
+	}
 	jobs := []store.JobSpec{
 		{Payload: string(payload), ID: "hook-delivery:" + rec.InvocationID, Kind: "hook_delivery", RepoID: rec.RepoID, At: at},
 		{Payload: string(mustScanPayload(rec.InvocationID, rec.RepoID)), ID: "mirror-run:" + rec.InvocationID, Kind: "mirror_run", RepoID: rec.RepoID, At: at},
@@ -221,7 +259,7 @@ func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
 			return terr
 		}
 	}
-	return nil
+	return tx.MarkPushEnqueued(rec.InvocationID)
 }
 
 func mustScanPayload(invocation string, repoID int64) []byte {

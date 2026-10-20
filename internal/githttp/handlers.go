@@ -234,7 +234,7 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		}
 		open.SessionID = &session
 		open.RequestID = &request
-		handle = s.hookHandler(id.caller, repoID)
+		handle = s.hookHandler(id.caller, repoID, request)
 	}
 	w.Header().Set("Content-Type", resultType(name))
 	w.Header().Set("Cache-Control", "no-cache")
