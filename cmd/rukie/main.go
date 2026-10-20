@@ -17,6 +17,7 @@ import (
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/api"
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/cli"
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/logging"
 	"github.com/gosuda/rukie/internal/mcp"
@@ -28,9 +29,13 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+func stdIO() cli.IO {
+	return cli.IO{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv}
+}
+
 func run(argv []string) int {
 	if len(argv) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rukie <command> [flags]\ncommands: serve, bootstrap")
+		fmt.Fprintln(os.Stderr, "usage: rukie <command> [flags]\ncommands: serve, bootstrap, mcp, auth, user, admin, api")
 		return 64
 	}
 	switch argv[0] {
@@ -38,9 +43,14 @@ func run(argv []string) int {
 		return runServe(argv[1:])
 	case "bootstrap":
 		return runBootstrap(argv[1:])
+	case "mcp":
+		return cli.RunMCP(context.Background(), stdIO(), argv[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n", argv[0])
-		return 64
+		if msg, ok := cli.StubFor(argv); ok {
+			_, _ = fmt.Fprintln(os.Stdout, msg)
+			return 1
+		}
+		return cli.Run(context.Background(), stdIO(), argv)
 	}
 }
 
@@ -208,7 +218,7 @@ func runServe(argv []string) int {
 	docs.Set(server.OpenAPI())
 	server.Handle("GET /healthz", api.Healthz())
 	server.Handle("GET /readyz", api.Readiness{Store: st, Daemon: api.NotReadyDaemon}.Handler())
-	mcpMount, err := mcp.NewMount(authSvc, server)
+	mcpMount, err := mcp.NewMount(authSvc, server, cfg.HTTP.ExternalURL)
 	if err != nil {
 		logger.Error("mount mcp", slog.Any("err", err))
 		return 1

@@ -15,10 +15,11 @@ import (
 type Mount struct {
 	server  *op.Server
 	handler http.Handler
+	base    string
 }
 
-func NewMount(svc *auth.Service, server *op.Server) (*Mount, error) {
-	m := &Mount{server: server}
+func NewMount(svc *auth.Service, server *op.Server, base string) (*Mount, error) {
+	m := &Mount{server: server, base: base}
 	if err := CheckPlannedList(); err != nil {
 		return nil, err
 	}
@@ -67,7 +68,7 @@ func (m *Mount) getServer(r *http.Request) *msdk.Server {
 		}
 	}
 	inv := &op.LocalInvoker{Server: m.server, Principal: p}
-	srv, err := NewServer(m.server.Specs(), m.server.Document(), inv, op.ToolFilter{Principal: p, Toolsets: toolsets}, "")
+	srv, err := NewServer(m.server.Specs(), m.server.Document(), inv, op.ToolFilter{Principal: p, Toolsets: toolsets}, m.base)
 	if err != nil {
 		slog.Error("mcp build server", "err", err)
 		return msdk.NewServer(&msdk.Implementation{Name: "rukie", Title: "rukie", Version: "0.0.0"}, nil)

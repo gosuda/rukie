@@ -3,6 +3,7 @@ package mcp_test
 import (
 	"context"
 	"crypto/rand"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +57,7 @@ type confEnv struct {
 	svc    *auth.Service
 	mux    *http.ServeMux
 	token  string
+	url    string
 	userID int64
 }
 
@@ -131,14 +133,16 @@ func buildConfEnv(t *testing.T) *confEnv {
 	if err != nil {
 		t.Fatalf("mount: %v", err)
 	}
-	mount, err := mcp.NewMount(svc, server)
+	live := httptest.NewServer(server)
+	t.Cleanup(live.Close)
+	mount, err := mcp.NewMount(svc, server, live.URL)
 	if err != nil {
 		t.Fatalf("mcp mount: %v", err)
 	}
 	server.Handle("POST /-/mcp", mount.Authenticated())
 	server.Handle("GET /-/mcp", mount.MethodNotAllowed())
 	server.Handle("DELETE /-/mcp", mount.MethodNotAllowed())
-	return &confEnv{server: server, mount: mount, svc: svc, mux: mux, token: minted.Secret, userID: user.ID}
+	return &confEnv{server: server, mount: mount, svc: svc, mux: mux, token: minted.Secret, url: live.URL, userID: user.ID}
 }
 
 func mustReg[In, Out any](t *testing.T, table *op.Table, o op.Op[In, Out]) {
@@ -161,12 +165,10 @@ func (b *bearerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) 
 
 func dialMCP(t *testing.T, e *confEnv, query string) (*msdk.ClientSession, func()) {
 	t.Helper()
-	live := httptest.NewServer(e.server)
-	t.Cleanup(live.Close)
 	httpClient := &http.Client{Transport: &bearerRoundTripper{token: e.token, base: http.DefaultTransport}}
 	client := msdk.NewClient(&msdk.Implementation{Name: "k8test", Title: "k8test", Version: "0"}, nil)
 	session, err := client.Connect(t.Context(), &msdk.StreamableClientTransport{
-		Endpoint:             live.URL + "/-/mcp" + query,
+		Endpoint:             e.url + "/-/mcp" + query,
 		HTTPClient:           httpClient,
 		DisableStandaloneSSE: true,
 	}, nil)
@@ -184,19 +186,29 @@ func httpJSON(t *testing.T, e *confEnv, method, target, body string) (int, map[s
 	} else {
 		reader = strings.NewReader("")
 	}
-	req := httptest.NewRequest(method, target, reader)
+	req, err := http.NewRequestWithContext(t.Context(), method, e.url+target, reader)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+e.token)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	rec := httptest.NewRecorder()
-	e.server.ServeHTTP(rec, req)
-	var decoded map[string]any
-	if err := jsonv2.Unmarshal(rec.Body.Bytes(), &decoded, jsonv1.DefaultOptionsV1()); err != nil {
-		t.Fatalf("%s %s: decode %d: %v\n%s", method, target, rec.Code, err, rec.Body.String())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
 	}
-	return rec.Code, decoded
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var decoded map[string]any
+	if err := jsonv2.Unmarshal(raw, &decoded, jsonv1.DefaultOptionsV1()); err != nil {
+		t.Fatalf("%s %s: decode %d: %v\n%s", method, target, resp.StatusCode, err, string(raw))
+	}
+	return resp.StatusCode, decoded
 }
 
 func TestMCPConformance(t *testing.T) {
@@ -242,10 +254,6 @@ func TestMCPConformance(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("read IsError: %v", res.Content)
 	}
-	// Huma renders host-dependent $schema URLs from the request host, which
-	// legitimately differs between the HTTP and MCP transports.
-	delete(res.StructuredContent.(map[string]any), "$schema")
-	delete(httpBody, "$schema")
 	if !reflect.DeepEqual(res.StructuredContent, httpBody) {
 		t.Fatalf("mcp != http:\n%v\n%v", res.StructuredContent, httpBody)
 	}
@@ -264,8 +272,6 @@ func TestMCPConformance(t *testing.T) {
 	if created.IsError {
 		t.Fatalf("create IsError: %+v struct=%v", created.Content, created.StructuredContent)
 	}
-	delete(created.StructuredContent.(map[string]any), "$schema")
-	delete(httpCreated, "$schema")
 	if !reflect.DeepEqual(created.StructuredContent, httpCreated) {
 		t.Fatalf("mcp != http:\n%v\n%v", created.StructuredContent, httpCreated)
 	}
