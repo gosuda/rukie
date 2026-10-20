@@ -132,7 +132,7 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 			return
 		}
 	}
-	report, _, err := ruk.RunCommand(ctx, client, open, nil, out, nil)
+	report, _, err := ruk.RunCommand(ctx, client, ruk.Command{Open: open, Stdout: out, HookBudget: s.hookTimeout})
 	if err != nil {
 		out.fail(mapCommandError(err))
 		return
@@ -245,7 +245,7 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 	w.Header().Set("Content-Type", resultType(name))
 	w.Header().Set("Cache-Control", "no-cache")
 	out := &flushWriter{w: w}
-	report, stderr, err := ruk.RunCommand(ctx, client, open, counted, out, handle)
+	report, stderr, err := ruk.RunCommand(ctx, client, ruk.Command{Open: open, Stdin: counted, Stdout: out, Hook: handle, HookBudget: s.hookTimeout})
 	if counted.overflow {
 		out.fail(http.StatusRequestEntityTooLarge, "request body is too large")
 		return

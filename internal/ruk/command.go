@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"time"
 
 	jsonv1 "encoding/json"
@@ -20,15 +21,24 @@ const (
 
 type HookHandler func(ctx context.Context, call wire.HookCall) wire.HookReply
 
-func RunCommand(ctx context.Context, c *Client, open wire.ServiceOpen, stdin io.Reader, stdout io.Writer, handle HookHandler) (wire.CommandExitReport, []byte, error) {
+type Command struct {
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Hook       HookHandler
+	Open       wire.ServiceOpen
+	HookBudget time.Duration
+}
+
+func RunCommand(ctx context.Context, c *Client, cmd Command) (wire.CommandExitReport, []byte, error) {
 	var zero wire.CommandExitReport
+	open := cmd.Open
 	if open.Service == "" {
 		return zero, nil, fmt.Errorf("RunCommand: %w: empty service", ErrProtocol)
 	}
 	if open.Repository == "" {
 		return zero, nil, fmt.Errorf("RunCommand: %w: empty repository", ErrProtocol)
 	}
-	if stdout == nil {
+	if cmd.Stdout == nil {
 		return zero, nil, fmt.Errorf("RunCommand: %w: nil stdout", ErrProtocol)
 	}
 	rawOpen, err := jsonv2.Marshal(open)
@@ -62,7 +72,11 @@ func RunCommand(ctx context.Context, c *Client, open wire.ServiceOpen, stdin io.
 	if openErr := pc.writeKind(KindOpen, s.id, rawOpen); openErr != nil {
 		return zero, nil, fmt.Errorf("RunCommand: %w: %w", openErr, ErrOutcomeUnknown)
 	}
-	d := &commandDriver{pc: pc, id: s.id, stdout: stdout, handle: handle, service: open.Service}
+	hookBudget := cmd.HookBudget
+	if hookBudget <= 0 {
+		hookBudget = defaultHookBudget
+	}
+	d := &commandDriver{pc: pc, id: s.id, stdout: cmd.Stdout, handle: cmd.Hook, service: open.Service, hookBudget: hookBudget}
 	var report wire.CommandExitReport
 	var stderr []byte
 	var completed bool
@@ -70,7 +84,7 @@ func RunCommand(ctx context.Context, c *Client, open wire.ServiceOpen, stdin io.
 	if open.Advertise {
 		report, stderr, completed, runErr = d.runAdvertise(cmdCtx)
 	} else {
-		report, stderr, completed, runErr = d.runRound(cmdCtx, stdin)
+		report, stderr, completed, runErr = d.runRound(cmdCtx, cmd.Stdin)
 	}
 	if completed {
 		return report, stderr, runErr
@@ -83,16 +97,17 @@ func RunCommand(ctx context.Context, c *Client, open wire.ServiceOpen, stdin io.
 }
 
 type commandDriver struct {
-	stdout   io.Writer
-	pc       *conn
-	handle   HookHandler
-	service  string
-	invoking string
-	refusal  wire.ErrorReply
-	stderr   []byte
-	id       uint64
-	window   uint64
-	hasRef   bool
+	stdout     io.Writer
+	pc         *conn
+	handle     HookHandler
+	service    string
+	invoking   string
+	refusal    wire.ErrorReply
+	stderr     []byte
+	hookBudget time.Duration
+	id         uint64
+	window     uint64
+	hasRef     bool
 }
 
 func (d *commandDriver) fail(format string, args ...any) (wire.CommandExitReport, []byte, bool, error) {
@@ -362,11 +377,7 @@ func (d *commandDriver) answerHook(ctx context.Context, payload []byte) error {
 	if err := jsonv2.Unmarshal(payload, &call, jsonv1.DefaultOptionsV1()); err != nil {
 		return d.sendReply(wire.RejectAllHookReply("hook call malformed"))
 	}
-	budget := defaultHookBudget
-	hookBudgetMs := uint64(defaultHookBudget / time.Millisecond)
-	if call.DeadlineMs > 0 && call.DeadlineMs < hookBudgetMs {
-		budget = time.Duration(call.DeadlineMs) * time.Millisecond
-	}
+	budget := hookDeadline(d.hookBudget, call.DeadlineMs)
 	if d.handle == nil {
 		return d.sendReply(wire.RejectAllHookReply("hook handler missing"))
 	}
@@ -388,6 +399,17 @@ func (d *commandDriver) answerHook(ctx context.Context, payload []byte) error {
 		_ = d.sendReply(wire.RejectAllHookReply("hook handler timed out"))
 		return fmt.Errorf("RunCommand: %w: hook handler timed out", ErrOutcomeUnknown)
 	}
+}
+
+func hookDeadline(ceiling time.Duration, deadlineMs uint64) time.Duration {
+	const maxMs = uint64(math.MaxInt64 / int64(time.Millisecond))
+	if deadlineMs == 0 || deadlineMs > maxMs {
+		return ceiling
+	}
+	if narrowed := time.Duration(deadlineMs) * time.Millisecond; narrowed < ceiling {
+		return narrowed
+	}
+	return ceiling
 }
 
 func (d *commandDriver) sendReply(reply wire.HookReply) error {

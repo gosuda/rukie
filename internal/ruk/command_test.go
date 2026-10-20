@@ -26,12 +26,12 @@ func TestCommandAdvertiseRoundTrip(t *testing.T) {
 	ctx, cancel := testCtx(t)
 	defer cancel()
 	var stdout bytes.Buffer
-	report, _, err := RunCommand(ctx, client, wire.ServiceOpen{
+	report, _, err := RunCommand(ctx, client, Command{Open: wire.ServiceOpen{
 		Service:    "upload-pack",
 		Repository: storeDir,
 		Advertise:  true,
 		Limits:     wire.DefaultGitLimits(),
-	}, nil, &stdout, nil)
+	}, Stdout: &stdout})
 	if err != nil {
 		t.Fatalf("advertise: %v", err)
 	}
@@ -49,12 +49,12 @@ func TestGitServiceUnknownServiceRefused(t *testing.T) {
 	ctx, cancel := testCtx(t)
 	defer cancel()
 	var stdout bytes.Buffer
-	_, _, err := RunCommand(ctx, client, wire.ServiceOpen{
+	_, _, err := RunCommand(ctx, client, Command{Open: wire.ServiceOpen{
 		Service:    "bogus-service",
 		Repository: storeDir,
 		Advertise:  true,
 		Limits:     wire.DefaultGitLimits(),
-	}, nil, &stdout, nil)
+	}, Stdout: &stdout})
 	if err == nil {
 		t.Fatal("unknown service succeeded")
 	}
@@ -76,13 +76,13 @@ func TestCommandReceivePackOversizeStdinRefused(t *testing.T) {
 	limits.MaxStdinBytes = 64
 	body := bytes.Repeat([]byte("a"), 65)
 	var stdout bytes.Buffer
-	_, _, err = RunCommand(ctx, client, wire.ServiceOpen{
+	_, _, err = RunCommand(ctx, client, Command{Open: wire.ServiceOpen{
 		Service:    "receive-pack",
 		Repository: storeDir,
 		SessionID:  &opened.Session,
 		RequestID:  new("push-test-oversize"),
 		Limits:     limits,
-	}, bytes.NewReader(body), &stdout, nil)
+	}, Stdin: bytes.NewReader(body), Stdout: &stdout})
 	if err == nil {
 		t.Fatal("oversize stdin succeeded")
 	}
