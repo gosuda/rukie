@@ -8,11 +8,19 @@ import (
 	"github.com/gosuda/rukie/internal/auth"
 )
 
+var siteSegments = func() map[string]bool {
+	out := map[string]bool{}
+	for _, seg := range Reserved() {
+		out[seg] = true
+	}
+	return out
+}()
+
 func SiteSegment(seg string) bool {
 	if auth.ReservedName(seg) {
 		return true
 	}
-	return slices.Contains(Reserved(), seg)
+	return siteSegments[seg]
 }
 
 type Route struct {

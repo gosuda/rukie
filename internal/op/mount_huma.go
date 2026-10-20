@@ -712,7 +712,7 @@ func Mount(mux *http.ServeMux, t *Table, c Config) (*Server, error) {
 		}
 	}
 	split := newSplitMux(c.IsSiteSegment)
-	_ = mux
+	split.site = mux
 	if c.MaxBody <= 0 {
 		c.MaxBody = 1 << 20
 	}

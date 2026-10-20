@@ -26,6 +26,7 @@ func buildSplitEnv(t *testing.T) *op.Server {
 		t.Fatalf("auth open: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	for _, step := range []func() error{
@@ -82,7 +83,14 @@ func getSplitJSON(t *testing.T, srv *op.Server, target string) *httptest.Respons
 }
 
 func TestSplitMountsFullTable(t *testing.T) {
-	_ = buildSplitEnv(t)
+	srv := buildSplitEnv(t)
+	doc := srv.OpenAPI()
+	if !strings.Contains(string(doc), "/login/oidc/{provider}") {
+		t.Error("openapi omits the site partition")
+	}
+	if !strings.Contains(string(doc), "/{owner}/{repo}/settings") {
+		t.Error("openapi omits the owner partition")
+	}
 }
 
 func TestSplitOIDCBeatsOwnerSettings(t *testing.T) {
@@ -111,6 +119,7 @@ func TestSplitReservedSegmentsCoverMountedLiterals(t *testing.T) {
 		t.Fatalf("auth open: %v", err)
 	}
 	defer func() { _ = svc.Close() }()
+	defer func() { _ = st.Close(context.Background()) }()
 	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	for _, step := range []func() error{
