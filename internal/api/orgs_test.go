@@ -52,7 +52,7 @@ func buildOrgsEnv(t *testing.T) *orgEnv {
 		func() error { return api.RegisterOrgs(table, deps) },
 	} {
 		if serr := step(); serr != nil {
-			t.Fatalf("register: %v", err)
+			t.Fatalf("register: %v", serr)
 		}
 	}
 	if verr := table.Validate(); verr != nil {
@@ -394,4 +394,89 @@ func TestAuthzWorkedResolutions(t *testing.T) {
 	if rec := odo(t, e, "POST", "/priv/-/teams/owners/members", bobToken, `{"user":"bob"}`); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("token adds team member = %d, want 401: %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestOrgReservedRegistryRefusals(t *testing.T) {
+	e := buildOrgsEnv(t)
+	obootstrap(t, e, "ada", "long-test-password-01")
+	adaCookie := ologin(t, e, "ada", "long-test-password-01")
+	for _, name := range api.Reserved() {
+		if name == "" || strings.HasPrefix(name, "{") || strings.Contains(name, "/") {
+			continue
+		}
+		if len(name) > 39 {
+			continue
+		}
+		rec := odo(t, e, "POST", "/new/org", adaCookie, `{"name":"`+name+`"}`)
+		if rec.Code == http.StatusCreated {
+			t.Fatalf("reserved %q accepted as org", name)
+		}
+	}
+}
+
+func TestOrgUserNameCollisions(t *testing.T) {
+	e := buildOrgsEnv(t)
+	obootstrap(t, e, "ada", "long-test-password-01")
+	adaCookie := ologin(t, e, "ada", "long-test-password-01")
+	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	ouser(t, e, ada.ID, "bob")
+	if rec := odo(t, e, "POST", "/new/org", adaCookie, `{"name":"bob"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("org over username = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	ocreateOrg(t, e, adaCookie, "acme", "public")
+	if rec := odo(t, e, "POST", "/admin/users", adaCookie,
+		`{"name":"acme","password":"long-test-password-01"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("user over org name = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	etag := oetag(t, e, "/orgs/acme", adaCookie)
+	rename := ocall{method: "POST", target: "/acme/-/settings/rename", auth: adaCookie, etag: etag}
+	rename.body = `{"name":"bob"}`
+	if rec := odoMatch(t, e, rename); rec.Code != http.StatusConflict {
+		t.Fatalf("rename over username = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	rename.body = `{"name":"admin"}`
+	if rec := odoMatch(t, e, rename); rec.Code == http.StatusOK {
+		t.Fatalf("rename to reserved name accepted: %s", rec.Body.String())
+	}
+}
+
+func oetag(t *testing.T, e *orgEnv, target, authHeader string) string {
+	t.Helper()
+	rec := odo(t, e, "GET", target, authHeader, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get %s = %d: %s", target, rec.Code, rec.Body.String())
+	}
+	tag := rec.Header().Get("ETag")
+	if tag == "" {
+		t.Fatalf("get %s returned no ETag", target)
+	}
+	return tag
+}
+
+type ocall struct {
+	method string
+	target string
+	auth   string
+	etag   string
+	body   string
+}
+
+func odoMatch(t *testing.T, e *orgEnv, c ocall) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(c.method, c.target, strings.NewReader(c.body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if c.etag != "" {
+		req.Header.Set("If-Match", c.etag)
+	}
+	if c.auth != "" {
+		if strings.HasPrefix(c.auth, "Bearer ") {
+			req.Header.Set("Authorization", c.auth)
+		} else {
+			req.Header.Set("Cookie", c.auth)
+		}
+	}
+	out := httptest.NewRecorder()
+	e.server.ServeHTTP(out, req)
+	return out
 }

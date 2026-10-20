@@ -144,6 +144,9 @@ func RegisterAdmin(t *op.Table, deps Deps) error {
 			if in.Body.Password == "" && !in.Body.Random {
 				return AdminCreateOut{}, op.Errorf(op.CodeValidation, "password or random is required")
 			}
+			if derr := rejectTakenOrgName(ctx, deps, in.Body.Name); derr != nil {
+				return AdminCreateOut{}, derr
+			}
 			if in.Body.Random {
 				_, temp, cerr := deps.Service.CreateUserRandom(ctx, admin.ID, in.Body.Name, in.Body.Email, in.Body.FullName, "")
 				if cerr != nil {

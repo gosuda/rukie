@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -434,15 +435,6 @@ type TeamRepoRemoveOut struct{}
 func checkOrgName(name string) error {
 	if err := auth.CheckUsername(name); err != nil {
 		return op.Errorf(op.CodeInvalid, "organization name is not valid")
-	}
-	for _, route := range Routes() {
-		trimmed := strings.TrimPrefix(route.Pattern, "GET ")
-		trimmed = strings.TrimPrefix(trimmed, "POST ")
-		trimmed = strings.TrimPrefix(strings.TrimSpace(trimmed), "/")
-		first, _, _ := strings.Cut(trimmed, "/")
-		if first != "" && !strings.HasPrefix(first, "{") && first == name {
-			return op.Errorf(op.CodeInvalid, "organization name is reserved")
-		}
 	}
 	return nil
 }
@@ -2241,4 +2233,19 @@ func tokenRepoSelector(ctx context.Context, d Deps, p op.Principal, ids []int64)
 		return nil, op.Wrap(op.CodeInternal, serr, "token repository check failed")
 	}
 	return out, nil
+}
+
+func rejectTakenOrgName(ctx context.Context, d Deps, name string) error {
+	var taken bool
+	rerr := d.Service.DB().QueryRowContext(ctx,
+		`SELECT 1 FROM orgs WHERE lower_name = ?`, strings.ToLower(strings.TrimSpace(name))).Scan(new(int))
+	if rerr == nil {
+		taken = true
+	} else if !errors.Is(rerr, sql.ErrNoRows) {
+		return op.Wrap(op.CodeInternal, rerr, "organization lookup failed")
+	}
+	if taken {
+		return op.Errorf(op.CodeConflict, "organization name is taken")
+	}
+	return nil
 }
