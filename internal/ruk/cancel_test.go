@@ -21,9 +21,9 @@ import (
 
 type scriptedServer struct {
 	t      *testing.T
+	errs   chan error
 	ln     net.Listener
 	socket string
-	errs   chan error
 	wg     sync.WaitGroup
 }
 
@@ -151,7 +151,8 @@ func drainStdin(conn net.Conn, stream uint64) error {
 			return nil
 		case KindCancel:
 			return errors.New("cancel arrived before stdin EOF")
-		default:
+		case KindOpen, KindAccepted, KindStdout, KindStderr, KindWindowUpdate,
+			KindExit, KindError, KindHookCall, KindHookReply:
 			return fmt.Errorf("stdin frame kind %d", uint8(frame.Kind))
 		}
 	}
@@ -185,7 +186,7 @@ func TestCommandHookTimeoutDrainsToExit(t *testing.T) {
 			srv.fail(err)
 			return
 		}
-		if err := drainStdin(conn, stream); err != nil {
+		if err = drainStdin(conn, stream); err != nil {
 			srv.fail(err)
 			return
 		}
@@ -199,16 +200,16 @@ func TestCommandHookTimeoutDrainsToExit(t *testing.T) {
 			srv.fail(err)
 			return
 		}
-		if err := writeFrame(conn, KindHookCall, stream, raw); err != nil {
+		if err = writeFrame(conn, KindHookCall, stream, raw); err != nil {
 			srv.fail(err)
 			return
 		}
 		reply, err := readFrame(conn)
 		if err != nil || reply.Kind != KindHookReply {
-			srv.fail(fmt.Errorf("hook reply: %v", err))
+			srv.fail(fmt.Errorf("hook reply: %w", err))
 			return
 		}
-		if err := writeFrame(conn, KindStdout, stream, []byte("ng refs/heads/main hook handler timed out\n")); err != nil {
+		if err = writeFrame(conn, KindStdout, stream, []byte("ng refs/heads/main hook handler timed out\n")); err != nil {
 			srv.fail(err)
 			return
 		}
@@ -217,7 +218,7 @@ func TestCommandHookTimeoutDrainsToExit(t *testing.T) {
 			srv.fail(err)
 			return
 		}
-		if err := writeFrame(conn, KindExit, stream, report); err != nil {
+		if err = writeFrame(conn, KindExit, stream, report); err != nil {
 			srv.fail(err)
 			return
 		}
@@ -225,7 +226,7 @@ func TestCommandHookTimeoutDrainsToExit(t *testing.T) {
 		_, _ = readFrame(conn)
 	})
 	client := srv.client()
-	hook := func(ctx context.Context, call wire.HookCall) wire.HookReply {
+	hook := func(_ context.Context, _ wire.HookCall) wire.HookReply {
 		time.Sleep(300 * time.Millisecond)
 		return wire.HookReply{Verdicts: []wire.HookRefVerdict{{Name: "refs/heads/main", Verdict: wire.AcceptVerdict()}}}
 	}
@@ -263,15 +264,15 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 			srv.fail(err)
 			return
 		}
-		if err := drainStdin(conn, stream); err != nil {
+		if err = drainStdin(conn, stream); err != nil {
 			srv.fail(err)
 			return
 		}
 		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 		for {
-			frame, err := readFrame(conn)
-			if err != nil {
-				srv.fail(fmt.Errorf("cancel wait: %w", err))
+			frame, rerr := readFrame(conn)
+			if rerr != nil {
+				srv.fail(fmt.Errorf("cancel wait: %w", rerr))
 				return
 			}
 			if frame.Kind == KindCancel {
@@ -279,7 +280,7 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 			}
 		}
 		time.Sleep(300 * time.Millisecond)
-		if err := writeFrame(conn, KindStdout, stream, []byte("late-bytes")); err != nil {
+		if err = writeFrame(conn, KindStdout, stream, []byte("late-bytes")); err != nil {
 			srv.fail(err)
 			return
 		}
@@ -288,7 +289,7 @@ func TestCommandCancelAfterStdinEOFDrains(t *testing.T) {
 			srv.fail(err)
 			return
 		}
-		if err := writeFrame(conn, KindExit, stream, report); err != nil {
+		if err = writeFrame(conn, KindExit, stream, report); err != nil {
 			srv.fail(err)
 			return
 		}

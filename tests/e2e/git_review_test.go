@@ -85,8 +85,7 @@ func spliceRef(t *testing.T, body []byte, oldRef, newRef string) []byte {
 		t.Fatalf("first command line has no ref: %q", line)
 	}
 	rest := fields[2]
-	ref := rest
-	caps := ""
+	var ref, caps string
 	if cut, after, found := strings.Cut(rest, "\x00"); found {
 		ref = cut
 		caps = "\x00" + after
@@ -255,40 +254,38 @@ func TestConcurrentPushesSameRefSerializes(t *testing.T) {
 	dirA, oidA := mkSide(t, "f-a.txt", "side-a\n")
 	dirB, oidB := mkSide(t, "f-b.txt", "side-b\n")
 	var wg sync.WaitGroup
-	type result struct {
-		out string
-		err error
-	}
-	results := make([]result, 2)
+	outs := make([]string, 2)
+	errs := make([]error, 2)
 	dirs := []string{dirA, dirB}
 	for i := range 2 {
 		wg.Go(func() {
 			pctx, pcancel := context.WithTimeout(t.Context(), 90*time.Second)
 			defer pcancel()
 			out, err := gitRun(pctx, t, dirs[i], "push", pushURL, "HEAD:refs/heads/x")
-			results[i] = result{out: out, err: err}
+			outs[i] = out
+			errs[i] = err
 		})
 	}
 	wg.Wait()
 	wins := 0
-	for _, r := range results {
-		if r.err == nil {
+	for _, err := range errs {
+		if err == nil {
 			wins++
 		}
 	}
 	if wins != 1 {
-		t.Fatalf("same-ref race: %d pushes succeeded, want exactly 1:\n%+v", wins, results)
+		t.Fatalf("same-ref race: %d pushes succeeded, want exactly one: %q / %q", wins, outs[0], outs[1])
 	}
 	loser := 0
-	if results[0].err == nil {
+	if errs[0] == nil {
 		loser = 1
 	}
-	if out := results[loser].out; !strings.Contains(out, "non-fast-forward") && !strings.Contains(out, "rejected") && !strings.Contains(out, "stale") {
+	if out := outs[loser]; !strings.Contains(out, "non-fast-forward") && !strings.Contains(out, "rejected") && !strings.Contains(out, "stale") {
 		t.Fatalf("loser lacks a contention refusal:\n%s", out)
 	}
 	refs := s.lsRemote(t, pushURL)
 	want := oidA
-	if results[1].err == nil {
+	if errs[1] == nil {
 		want = oidB
 	}
 	if refs["refs/heads/x"] != want {

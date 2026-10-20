@@ -238,9 +238,10 @@ func newDenyHarness(t *testing.T, hook *wire.HookCall, delay time.Duration, visi
 	ada := userRec{user: admin, token: secret.Secret}
 	now := time.Now().UnixMilli()
 	var repoID int64
-	if err := svc.DB().QueryRowContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, created_at, updated_at) VALUES (?, 0, ?, ?, ?, ?) RETURNING id`,
-		admin.ID, "hello", visibility, now, now).Scan(&repoID); err != nil {
-		t.Fatalf("insert repo: %v", err)
+	row := svc.DB().QueryRowContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, created_at, updated_at) VALUES (?, 0, ?, ?, ?, ?) RETURNING id`,
+		admin.ID, "hello", visibility, now, now)
+	if serr := row.Scan(&repoID); serr != nil {
+		t.Fatalf("insert repo: %v", serr)
 	}
 	socket := filepath.Join(dir, "count.sock")
 	ln, err := net.Listen("unix", socket)
@@ -259,8 +260,8 @@ func newDenyHarness(t *testing.T, hook *wire.HookCall, delay time.Duration, visi
 	}
 	go func() {
 		for {
-			conn, err := ln.Accept()
-			if err != nil {
+			conn, aerr := ln.Accept()
+			if aerr != nil {
 				return
 			}
 			go fake.serve(t, conn)
@@ -427,7 +428,10 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 	cancel()
 	_ = pw.Close()
 	select {
-	case <-done:
+	case derr := <-done:
+		if derr != nil {
+			t.Logf("disconnected POST ended: %v", derr)
+		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("disconnected POST never returned")
 	}

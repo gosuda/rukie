@@ -122,17 +122,17 @@ type commandDriver struct {
 	stdout     io.Writer
 	pc         *conn
 	handle     HookHandler
+	hookErr    error
 	service    string
 	invoking   string
 	refusal    wire.ErrorReply
 	stderr     []byte
 	hookBudget time.Duration
 	grace      time.Duration
-	hookErr    error
 	id         uint64
 	window     uint64
-	hasRef     bool
 	stdinEOF   atomic.Bool
+	hasRef     bool
 }
 
 func (d *commandDriver) fail(format string, args ...any) (wire.CommandExitReport, []byte, bool, error) {
