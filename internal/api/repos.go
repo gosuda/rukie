@@ -935,7 +935,7 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 			if rq.isToken && !rq.caller.Scopes.Has(op.ScopeRepoCreate) {
 				return RepoRenameOut{}, op.Errorf(op.CodeForbidden, "token needs the repo:create scope for the destination")
 			}
-			if derr := d.checkRepoAccess(rq, rc.row, "repo.transfer", ""); derr != nil {
+			if derr := d.checkRepoAccessWithDest(rq, rc.row, "repo.transfer", "", newUser.ID, 0); derr != nil {
 				return RepoRenameOut{}, derr
 			}
 		} else if derr := d.checkRepoAccess(rq, rc.row, "repo.settings", ""); derr != nil {

@@ -409,8 +409,12 @@ func (d Deps) openDaemonRepo(ctx context.Context, row store.RepoRow) (ruk.Repo, 
 }
 
 func (d Deps) checkRepoAccess(r requester, row store.RepoRow, action string, ref string) error {
+	return d.checkRepoAccessWithDest(r, row, action, ref, 0, 0)
+}
+
+func (d Deps) checkRepoAccessWithDest(r requester, row store.RepoRow, action string, ref string, destOwner, destOrg int64) error {
 	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
-	resource := access.Resource{Kind: access.KindRepo, RepoID: row.ID, Ref: ref}
+	resource := access.Resource{Kind: access.KindRepo, RepoID: row.ID, Ref: ref, DestOwnerID: destOwner, DestOrgID: destOrg}
 	decision := access.Check(resolver, r.caller, action, resource)
 	if !decision.Allow {
 		if decision.NotFound {
