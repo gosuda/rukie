@@ -4,7 +4,7 @@
 
 Rukie lives at `/home/alpha/rewrite/git-renewed/rukie`. It is a fork of Gitea at `ba4f8fa246` on branch `main`. The tree is clean. Git tracks 6371 files. Rukie stops being Gitea. It becomes a Go forge whose only repository backend is Ruk. Ruk lives at `/home/alpha/rewrite/git-renewed/ruk`. Ruk is Rust on branch `main` with a clean tree. Neither project has a release. Both repos may break any surface.
 
-The new rukie serves many AI agents and the humans who supervise them. Every page renders without JavaScript. One operation table serves humans as HTML and agents as JSON, Markdown, and MCP tools. A shell CLI comes from the same table. Every repository mirrors automatically to GitHub, GitLab, and Forgejo. Review, tasks, and context sharing use four nouns: Intent, Proof, View, Lease. They replace issues, pull requests, and kanban boards. Built-in CI must be more durable and more efficient than GitHub or GitLab CI.
+The new rukie serves many AI agents and the humans who supervise them. Every page renders baseline HTML from Go, so it reads and mutates without JavaScript; a ReScript + Preact application embedded in the binary enhances it in the browser (O41). One operation table serves humans as HTML and agents as JSON, Markdown, and MCP tools. A shell CLI comes from the same table. Every repository mirrors automatically to GitHub, GitLab, and Forgejo. Review, tasks, and context sharing use four nouns: Intent, Proof, View, Lease. They replace issues, pull requests, and kanban boards. Built-in CI must be more durable and more efficient than GitHub or GitLab CI.
 
 This file is the execution spec. The planning corpus holds the field-level designs. Step 0 copies the corpus into the rukie repo. Where this file and a corpus file disagree, this file wins. Where two corpus files disagree, the `Canonical sources` table decides, and the `Overrides` table fixes every contradiction the 2026-10-20 review found.
 
@@ -26,10 +26,10 @@ The user confirmed these decisions. Do not reopen them during execution.
 | Mirrors | Each mirror has a host kind (`github`, `gitlab`, `forgejo`, `generic`), a mode, and a ref selection. Mode `exact` forces updates and prunes deletions. Mode `fast-forward-only` never forces and never prunes. Refs select `all`, the default branch plus tags, or a glob list. Sync runs after each ref update, debounced, and on a periodic reconcile. |
 | CI | Built in. The queue uses leases, heartbeats, and fencing tokens. A content-addressed cache skips repeated work. Results land as signed Ruk attestations. Rootless podman sandboxes the jobs. Logs and artifacts are kept. A `matrix` table in `ci.toml` expands jobs. |
 | Code search | A Ruk `search` method runs a bounded parallel scan and keeps no index. Rukie fans out per repository with a composite cursor. |
-| Design | The Instrument direction: a Fluent-style workbench with layered shadows and a status palette mapped to Ruk states. High density. Webfonts load from Bunny Fonts. Zero JavaScript, enforced by test. |
+| Design | The Instrument direction: a Fluent-style workbench with layered shadows and a status palette mapped to Ruk states. High density. Webfonts load from Bunny Fonts. The UI language is ReScript on Preact; no-JS support is a functional fallback, enforced by test (O41). |
 | Review unit | Ruk changes and stacks. Stock git pushes to `refs/for/<branch>` create changes. A branch view groups the changes of one branch. Landing N changes runs N serial land plans, never one batch. |
-| Build order | Walking skeleton, review and land, mirrors, then dogfood on the rukie repo itself, then the remaining features. |
-| Render validity | html-validate checks every rendered page through `npm exec`. Node is a gate-host tool only. |
+| Build order | Walking skeleton, review and land, mirrors, every feature, then dogfood on the rukie repo itself (O40). |
+| Render validity | html-validate checks every fallback-rendered page through `npm exec`. Node builds the web app and is a build prerequisite. |
 
 ### Grounded set
 
@@ -39,7 +39,8 @@ A release channel verified each pin on 2026-10-20 (`docs/plan/review-pins.md`).
 |---|---|
 | Go | `go 1.27.0`, `toolchain go1.27.2` |
 | Rust for ruk | 1.99.1 (`rust-toolchain.toml`) |
-| Views | `github.com/a-h/templ` v0.3.1070, a `tool` directive in `go.mod` |
+| Fallback views | `github.com/a-h/templ` v0.3.1070, a `tool` directive in `go.mod`; renders baseline HTML only (O41) |
+| Web app | `rescript` 12.3.1, `preact` 11.0.1, `esbuild` 0.28.2; no TypeScript, no `@rescript/react`, no React (O41). Node 24 LTS is a build prerequisite |
 | SQLite | `modernc.org/sqlite` v1.60.1 (bundles SQLite 3.53.4, FTS5 with trigram). Keep `modernc.org/libc` at v1.77.1, the version sqlite v1.60.1 requires. Never `go get -u modernc.org/libc`. |
 | HTTP and OpenAPI | `github.com/danielgtaylor/huma/v2` v2.39.1 |
 | MCP | `github.com/modelcontextprotocol/go-sdk` v1.8.0 |
@@ -56,7 +57,7 @@ A release channel verified each pin on 2026-10-20 (`docs/plan/review-pins.md`).
 | CI sandbox | podman 6.1.4 or later, rootless, cgroups v2 |
 | Webfonts | Bunny Fonts: Space Grotesk 500, 600, 700; Source Sans 3 400, 600; IBM Plex Mono 400, 500, 600 |
 
-Dropped: bluemonday, go-gitdiff, xorm, chi, kin-openapi, Vue, Vite, Tailwind, ESLint, Playwright, pnpm, the uv toolchain, Crowdin, and the npm Renovate config.
+Dropped: bluemonday, go-gitdiff, xorm, chi, kin-openapi, Vue, Vite, Tailwind, ESLint, Playwright, pnpm, the uv toolchain, Crowdin, the npm Renovate config, React, Next.js, and `@rescript/react` (O41). npm is in scope for `web/` only.
 
 ## Canonical sources
 
@@ -72,7 +73,8 @@ Each concern has one source. Corpus paths are relative to `rukie/docs/plan/` aft
 | Operation table, errors, exit codes, ETags, idempotency, negotiation | `op-table-design.md` |
 | Operation names and per-op fields | `usage-surface-draft.md` §3, plus the F2 name list in this file |
 | Routes | `url-information-architecture.md` |
-| Rendering, CSP, zero-JS check, render budgets | `rendering-design.md` |
+| Rendering, CSP, render budgets | `rendering-design.md`, stack corrected by O41 and `ui-rescript-design.md` |
+| Web app architecture | `ui-rescript-design.md` (O41) |
 | Tokens and visual language | `design-direction-instrument.md` |
 | UI inventory and accessibility pass set | `autoplan-design.md` DES-03, DES-09, DES-11 to DES-21 |
 | Auth, sessions, tokens, scopes | `auth-design.md` |
@@ -122,7 +124,7 @@ Each row fixes one contradiction that the 2026-10-20 review found. The row value
 | O23 | Tokens and motion | `design-direction-instrument.md` governs tokens. Spacing `{4,8,12,16,24,32,48}`. Radius `{4,8,12,16}`. Transitions only on `background-color`, `color`, `box-shadow`, `opacity`, `outline-color`, `transform`; at most 150 ms; easing `cubic-bezier(0.22,1,0.36,1)`; only under `prefers-reduced-motion: no-preference`. No keyframes on first paint. One CSS-only CI spinner. The instrument doc's 200 ms tier becomes 150 ms. | Plan K5 spacing 64; instrument 200 ms. |
 | O24 | Fonts | Webfonts from Bunny Fonts (user answer 2026-10-20). The page layout emits one `<link rel="stylesheet" href="https://fonts.bunny.net/css?family=space-grotesk:500,600,700%7Csource-sans-3:400,600%7Cibm-plex-mono:400,500,600&display=swap" referrerpolicy="no-referrer">`. The CSP adds `https://fonts.bunny.net` to `style-src` and sets `font-src https://fonts.bunny.net`. Every `font-family` keeps the instrument fallback stack, so a blocked CDN degrades to local fonts. There is no config switch. Overrides rendering-design §4 and DES-08. | instrument (self-host) vs rendering-design §4 and DES-08 (system stacks). |
 | O25 | Design precedence | `design-direction-instrument.md` and `url-information-architecture.md` override `autoplan-design.md` DES-01, DES-02, DES-06, DES-08. DES-03, DES-09, DES-11 to DES-21 apply. `design-direction-instrument.html` is illustrative only. | Design review 6, 7. |
-| O26 | Zero-JS check | `htmlcheck.Check` (rendering-design §11) tokenizes tag names and attribute keys. It rejects `script` tags, `on*` attribute keys, `style` attributes, `javascript:` and `vbscript:` URL attributes, and `data:` URLs outside the `img` allowlist. `zerojs.Assert` wraps it. `TestAllHTMLRoutesZeroJS` covers every HTML route and the CSP header. `trusted.Markdown` runs it fail-closed at runtime. | Plan K5 wording. |
+| O26 | No-JS fallback contract | Superseded by O41. The fallback gates are `TestAllHTMLRoutesRenderWithoutJS` and `TestNoJSFallbackMutationsPost`: every HTML route carries rendered content and a working form POST without JavaScript. `zerojs.Assert` (the route-level no-script wrapper) is deleted. `trusted` and `htmlcheck` stay as the untrusted-content boundary: Markdown, highlights, and user content keep rejecting `script`, `on*`, `javascript:`, `vbscript:`, and non-allowlisted `data:` URLs; the CodeQL URL-scheme gap at `htmlcheck` is fixed in the same change. | Plan K5 wording. |
 | O27 | Accessibility | WCAG 2.2 AA. Where a requirement is AAA-only (2.4.13), verify 2.4.7 and 1.4.11. DES-21 is the pass set. | Register sentence. |
 | O28 | Meta refresh | Allowed only on declared live surfaces, at least 15 s, user-toggleable, suppressed on pages with an editable form (DES-03, DES-16). | Open question. |
 | O29 | Line highlight | `?lines=` (url-IA, rendering-design). | autoplan-design `?hl=`. |
@@ -130,12 +132,14 @@ Each row fixes one contradiction that the 2026-10-20 review found. The row value
 | O31 | Org membership | Membership in at least one team. The `owners` team has `admin` on all org repos. `team.member.add` implies org membership. `team.repo.add` and `team.repo.remove` grant roles. There is no `org.member.add`. | Plan F1. |
 | O32 | Ledger | One tracked copy at `rukie/tasks/autoplan-ledger.jsonl`. Append-only. Keys `id`, `description`, `phase`. No status field: the plan register records resolved rows. | Step 0.2. |
 | O33 | Go tools | `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...` and `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`. No `tool` directive for either. templ is a `tool` directive, added in the first templ commit. `github.com/BurntSushi/toml` v1.6.0. Keep `modernc.org/libc` at the version `modernc.org/sqlite` v1.60.1 requires (v1.77.1); never `go get -u` it. | Pins review. |
-| O34 | Dogfood policy | Dogfood starts after F3 mirrors and V5. Its bookmark policy requires one trusted human approval. CI joins the policy when F5 lands. | Plan dogfood text. |
+| O34 | Dogfood policy | Dogfood placement superseded by O40 (it runs after F14). Its bookmark policy requires one trusted human approval and passing `ci/*` proofs (F5 landed before dogfood). | Plan dogfood text. |
 | O35 | Supervisor | Restart the `ruk serve` child at most 3 times with backoff 1 s, 2 s, 4 s, then exit non-zero. `/readyz` is false while the child is down. Daemon-backed requests fail fast with 503. Git-service streams never re-run; an unknown outcome reconciles through `Lookup`, then `events.tail` tip comparison (ops-design §2, ruk-client-design §11). | Plan K1. |
 | O36 | Secret key | `rukie admin secret-gen` writes the key file (`/etc/rukie/secret.key`, outside `data_dir`). `rukie backup` never copies it and records its key id in the manifest. `rukie restore` refuses when the configured key id differs from the manifest. The operator guide tells operators to back up the key offline. | Eng review 5. |
-| O37 | Build order | Dogfood early (user answer 2026-10-20): K steps, F1 repos and browsing, F2 review and land, F3 mirrors, the Dogfood gate, then F4 to F14 in `phase-sequencing.md` order. | Plan F order. |
-| O38 | Render validity gate | Keep html-validate (user answer 2026-10-20): `npm exec --yes --package=html-validate@11.16.4 -- html-validate --config .htmlvalidate.json --max-warnings 0 .rendered/*.html`. Node 24 LTS is a gate-host prerequisite only. The repo holds no `package.json` and no lockfile. | Old stacks removal. |
+| O37 | Build order | Superseded by O40 (user answer 2026-10-21). | Plan F order. |
+| O40 | Build order | Dogfood last (user answer 2026-10-21): K1 to K10, F1 to F14 in `phase-sequencing.md` order, then the Dogfood gate, then the D block. Supersedes O37 and the F3-era entry condition; CI is already in the policy when dogfood starts. | O37 dogfood-early order. |
+| O38 | Render validity gate | Keep html-validate (user answer 2026-10-20) against the fallback-rendered pages: `npm exec --yes --package=html-validate@11.16.4 -- html-validate --config .htmlvalidate.json --max-warnings 0 .rendered/*.html`. Node 24 LTS is a build prerequisite. `web/package.json` and its lockfile are committed (O41); the repo root holds no `package.json`. | Old stacks removal. |
 | O39 | Op lexicon additions | Domains: the `usage-surface-draft.md` §1.1 list plus `change`, `intent`, `ask`, `view`, `land`, `proof`, and `ci`. No `task.*` op registers. Verbs stay in the §1.1 closed set, so the CI ops of `ci-control-plane-design.md` §11 rename: `ci.run.cancel` becomes `ci.run.update` with `state: cancelled`, `ci.log.read` becomes `ci.log.get`, `ci.artifact.read` becomes `ci.artifact.get`, `ci.runner.register` becomes `ci.runner.create`, `ci.spec.validate` becomes `ci.spec.verify`. | ci-control-plane §11 verbs. |
+| O41 | UI stack | All UI application code is ReScript: no TypeScript, no hand-written JavaScript, no React, no Next.js. The component model is Preact 11.0.1 through the ReScript generic JSX transform (`rescript.json` `jsx.module = "Preact"`) with a local `Preact.res` interface externalling `preact/jsx-runtime`; hooks bind `preact/hooks` directly. `esbuild` 0.28.2 bundles `.res.js` output to ES modules, embedded in the `rukie` binary with `go:embed`. Go keeps rendering baseline HTML through templ: that layer is the no-JS fallback, pruned to it, and the ReScript app hydrates it. Every mutation keeps a working `<form action>` POST. The CSP gains `script-src 'self'` for the embedded bundle only. Zero-JS script rejection is deleted (O26). `web/` holds `rescript.json` and `package.json` with a committed lockfile; Node 24 LTS is a build prerequisite. Pins grounded at npm dist-tags 2026-10-21: `rescript` 12.3.1, `preact` 11.0.1, `esbuild` 0.28.2. | Settled "Every page renders without JavaScript", O26, O38 package.json ban, templ-as-whole-UI. |
 
 ## Step 0: land the corpus, then cut the pad
 
@@ -210,8 +214,8 @@ PRE: `git -C rukie status --porcelain` prints nothing. `git -C rukie rev-parse -
    - Write `.agent-tasks/task-0e2cc1171807/GOALS.md` in the strict-validation-setup layout. The Goal section holds this text verbatim: "Make rukie @rukie/ diverge completely from gitea, uses only ruk as backend and highly optimized for Heavy Agentic Engineering. Also better designs and remove all the old stacks, and no-js UI, and highly optimize Go codebase, and most importantly best interfaces for agents and humans for Agentic-first Programming.". The criteria are:
      - SC-01: In rukie, `git grep -niI gitea -- ':!LICENSE' ':!docs/plan' ':!tasks' ':!.agent-tasks'` prints no line.
      - SC-02: `go list -deps ./...` lists no package path that contains `gitea`, `go-git`, or `git2go`, and `git grep -n 'exec.Command("git"' -- '*.go' ':!*_test.go'` prints no line.
-     - SC-03: `git ls-files` lists no `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `pyproject.toml`, `uv.lock`, or `flake.nix`, and no path that ends in `.ts`, `.tsx`, `.js`, `.mjs`, `.vue`, or `.py`.
-     - SC-04: `TestAllHTMLRoutesZeroJS` passes, and html-validate reports zero errors and zero warnings on every page that `TestDumpRenderedPages` writes.
+     - SC-03: outside `web/`, `git ls-files` lists no `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `pyproject.toml`, `uv.lock`, or `flake.nix`, and no path that ends in `.ts`, `.tsx`, `.js`, `.mjs`, `.vue`, or `.py`. Inside `web/`, every application source path ends in `.res` or `.resi` (O41): no `.ts`, no hand-written `.js`/`.mjs`; `.res.js` output is a build artifact, not tracked.
+     - SC-04: `TestAllHTMLRoutesRenderWithoutJS` and `TestNoJSFallbackMutationsPost` pass (O41), `rescript build` compiles `web/` clean, `esbuild` produces the embedded bundle, and html-validate reports zero errors and zero warnings on every fallback page that `TestDumpRenderedPages` writes.
      - SC-05: `TestNegotiationMatrix` passes (one URL returns HTML, JSON, and Markdown by `Accept`), and `TestMCPDefaultToolBudget` passes (`/-/mcp` lists at most 36 default tools, all derived from the operation table).
      - SC-06: every `TestAgentFlow` subtest passes against the real daemon.
      - SC-07: `TestPerfBudget` passes on the release binaries against the O30 budgets.
@@ -225,7 +229,7 @@ PRE: `git -C rukie status --porcelain` prints nothing. `git -C rukie rev-parse -
 
 ## Approach
 
-Ruk work uses the row ids CS-R01 to CS-R48 of `docs/plan/ruk-changeset.md` §2, and rukie work uses K1 to K10, F1 to F14, U, V, and D from `docs/plan/phase-sequencing.md`; the old plan ids R1 to R13 and the phase-sequencing ids R1 to R20 are not used (O1). Every commit in either repo keeps both repos green (`phase-sequencing.md` §12): the Ruk gates of O10 pass, and the rukie gates G1a to G5 and the tagged suites pass against the pinned Ruk commit in `tools/ruk.pin`. A CS row with schema impact `minor bump` or `wire frame change` touches the method table or the IPC schema, so it pairs with a rukie commit that bumps `tools/ruk.pin`, regenerates `internal/ruk/testdata/ruk-model.json`, and reruns `TestModelGolden` and `TestRukgenDrift` (§11). Ruk rows land just before the first rukie step that needs them, in the landing order that follows the cluster blocks. The build order is K1 to K10, F1 to F3, the Dogfood gate, then F4 to F14 (O37). Each F step ships its views and its gate, U and V items sit in the step that ships them, and the D items that need a finished product sit in the final D block. Op names come from `usage-surface-draft.md` §3 (O11), routes from `url-information-architecture.md` §4, errors from `op-table-design.md` §4 (O14), and scopes from `auth-design.md` §8.2 as changed by O19.
+Ruk work uses the row ids CS-R01 to CS-R48 of `docs/plan/ruk-changeset.md` §2, and rukie work uses K1 to K10, F1 to F14, U, V, and D from `docs/plan/phase-sequencing.md`; the old plan ids R1 to R13 and the phase-sequencing ids R1 to R20 are not used (O1). Every commit in either repo keeps both repos green (`phase-sequencing.md` §12): the Ruk gates of O10 pass, and the rukie gates G1a to G5 and the tagged suites pass against the pinned Ruk commit in `tools/ruk.pin`. A CS row with schema impact `minor bump` or `wire frame change` touches the method table or the IPC schema, so it pairs with a rukie commit that bumps `tools/ruk.pin`, regenerates `internal/ruk/testdata/ruk-model.json`, and reruns `TestModelGolden` and `TestRukgenDrift` (§11). Ruk rows land just before the first rukie step that needs them, in the landing order that follows the cluster blocks. The build order is K1 to K10, F1 to F14, the Dogfood gate, then the D block (O40). Each F step ships its views and its gate, U and V items sit in the step that ships them, and the D items that need a finished product sit in the final D block. Op names come from `usage-surface-draft.md` §3 (O11), routes from `url-information-architecture.md` §4, errors from `op-table-design.md` §4 (O14), and scopes from `auth-design.md` §8.2 as changed by O19.
 
 ### Ruk schedule
 
@@ -382,7 +386,7 @@ Rejected and deferred items (changeset §4):
 
 ### rukie steps
 
-Each Gate lists test names. The `passgate` needle for a test is `--- PASS: <Name> (`. A subtest uses `<Parent>/<sub>`. Skips and zero-match runs fail. Test packages sit under `/home/alpha/rewrite/git-renewed/rukie` unless a Ruk test name is shown in snake_case. The steps run in this order: K1 to K10, F1 to F3, the Dogfood gate block, then F4 to F14 and the D block.
+Each Gate lists test names. The `passgate` needle for a test is `--- PASS: <Name> (`. A subtest uses `<Parent>/<sub>`. Skips and zero-match runs fail. Test packages sit under `/home/alpha/rewrite/git-renewed/rukie` unless a Ruk test name is shown in snake_case. The steps run in this order: K1 to K10, F1 to F14, the Dogfood gate block, then the D block.
 
 K1 demolition pad: see Step 0.
    Anchor: Christopher Alexander
@@ -455,25 +459,27 @@ K4 Operation table, app skeleton, and render foundations.
    - Per-token bucket 300 requests per minute, burst 600 (`auth-design.md` §8.3). Per-IP buckets: 5 login failures per 10 minutes, 60 `401`s per minute on git routes with a 10-minute cooldown (§10.2). Over-limit returns 429 with `Retry-After`. The hand-written bucket lives in `internal/access/ratelimit.go`; no new module (ENG-39). The per-account bucket is listed under `Needs user yes`.
    - The `Views` registry accepts one hand-authored page per op name beside the derived form (CEO-12, DES-05).
    - Add the DX parity gate (DX-18): the op table, url-IA routes, OpenAPI, CLI tree, and MCP tool list stay in lockstep.
-   Lands (render, U0 to U3): packages under `internal/web/` per `rendering-design.md` §3.1 (`assets`, `asset`, `secheaders`, `trusted`, `htmlcheck`, `shell`, `ui`, `view`, `vm`, `highlight`, `markdown`, `diff`, `negotiate`, `zerojs`).
-   - templ v0.3.1070 as a `tool` directive, added in the first templ commit (O33).
-   - goldmark v1.8.6 with no unsafe mode and no attribute syntax (O22).
-   - chroma v2.27.0 with CSS classes.
-   - go-diff v0.9.0 `ParseHunks` under budgets.
-   - Embedded `app.css` (at most 32 KiB) and generated `chroma.css` (at most 24 KiB), content-hashed and immutable. No build tool.
+   Lands (render, U0 to U3): packages under `internal/web/` per `rendering-design.md` §3.1 for the fallback layer only (`assets`, `asset`, `secheaders`, `trusted`, `htmlcheck`, `shell`, `ui`, `view`, `vm`, `highlight`, `markdown`, `diff`, `negotiate`); `zerojs` is deleted (O41) while `trusted`/`htmlcheck` keep guarding untrusted content.
+   - templ v0.3.1070 as a `tool` directive, added in the first templ commit (O33). templ renders baseline HTML only; it is the no-JS fallback surface (O41).
+   - goldmark v1.8.6 with no unsafe mode and no attribute syntax (O22), for fallback and API Markdown.
+   - chroma v2.27.0 with CSS classes, for fallback and `*.patch`/raw surfaces.
+   - go-diff v0.9.0 `ParseHunks` under budgets, for fallback diff pages.
+   - The web application lives in `web/` (O41): ReScript sources only, `rescript.json` with `jsx.module = "Preact"`, a local `Preact.res` generic-JSX interface externalling `preact/jsx-runtime`, `esbuild` bundling to ES modules embedded via `go:embed`. App code is `.res` only; no `.ts`, no hand-written `.js`, no React, no `@rescript/react`. The app hydrates the fallback HTML it is served with.
+   - Embedded `app.css` (at most 32 KiB) and generated `chroma.css` (at most 24 KiB), content-hashed and immutable. No Go build tool; the web app bundles through esbuild.
    - Tokens from `design-direction-instrument.md` with O23: OKLCH custom properties, both schemes via `prefers-color-scheme`, spacing `{4,8,12,16,24,32,48}`, radius `{4,8,12,16}`, tabular numerics. Transitions only on `background-color`, `color`, `box-shadow`, `opacity`, `outline-color`, `transform`, at most 150 ms, easing `cubic-bezier(0.22,1,0.36,1)`, only under `prefers-reduced-motion: no-preference`. No first-paint keyframes. One CSS-only CI spinner.
    - The status palette maps the Ruk attestation, gap, claim, and mirror states across the five roles.
-   - Fonts per O24: the layout emits the one Bunny Fonts `<link rel="stylesheet" ... referrerpolicy="no-referrer">` of O24. The CSP is `default-src 'none'; style-src 'self' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`. Every `font-family` keeps its fallback stack. There is no config switch.
+   - Fonts per O24: the layout emits the one Bunny Fonts `<link rel="stylesheet" ... referrerpolicy="no-referrer">` of O24. The CSP is `default-src 'none'; style-src 'self' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' data:; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`. `script-src 'self'` admits the embedded same-origin bundle (O41); content routes serve `X-Content-Type-Options: nosniff` so a same-origin upload cannot become a script source. Every `font-family` keeps its fallback stack. There is no config switch.
    - Precedence: `design-direction-instrument.md` and `url-information-architecture.md` beat `autoplan-design.md` DES-01, DES-02, DES-06, DES-08. DES-03, DES-09, DES-11 to DES-21 apply. `design-direction-instrument.html` is illustrative only (O25).
-   - `htmlcheck.Check` and `zerojs.Assert` follow O26.
+   - The fallback contract of O41 replaces route-level `zerojs.Assert`: `TestAllHTMLRoutesRenderWithoutJS` and `TestNoJSFallbackMutationsPost`. `htmlcheck.Check` still runs on untrusted content inside the fallback and gains the URL-scheme fix (O26).
    - Meta refresh only on declared live surfaces, at least 15 s, user-toggleable, suppressed on pages with an editable form (O28).
    - Line highlight is `?lines=` (O29).
    - Record Ruk fixtures from the real daemon for `TestRenderRouteBudgets` (U0).
+   - Every mutation ships a working `<form action>` POST; `TestNoJSFallbackMutationsPost` drives each form without JS.
    - U3 conventions: `?cursor=` plus `Link: rel=next`; `Vary: Accept` on every negotiated response.
    Needs: K2, K3. No Ruk row.
    Fixes: O11, O14 to O17, O19, O20, O22 to O29, O33; Design 1 to 4, 6; DX 6 to 8, 11, 15; CEO 10.
    UI: the generic HTML error page, the op index page `/-/api`, the problem pages `/-/problems/{slug}`.
-   Gate: in `./internal/op/`: `TestTableRejectsDuplicateName`, `TestNegotiationMatrix`, `TestIdempotencyAuthFailureThenRetryExecutes`, `TestETagStrongQuoted`, `TestPaginationLink`, `TestProblemCatalogue`, `TestProblemRecoveryFields`, `TestTokenBucketRetryAfter`, `TestSunsetHeader`, `TestParityGate`, `TestOpenAPIGolden`. In `./internal/web/...`: `TestRenderedPagesNoScript`, `TestRenderedPagesSecurityHeaders`, `TestStaticHeaders`, `TestCSSLayered`, `TestTokenContrast`, `TestAssetHash`, `TestTemplSourcesZeroJS`, `TestRawConfined`, `TestCheckRejects`, `TestCheckAccepts`, `TestAllHTMLRoutesZeroJS`. Also `TestDumpRenderedPages` (tag `render`, `RUKIE_RENDER_DIR`) followed by `npm exec --yes --package=html-validate@11.16.4 -- html-validate --config .htmlvalidate.json --max-warnings 0 .rendered/*.html` (O38).
+   Gate: in `./internal/op/`: `TestTableRejectsDuplicateName`, `TestNegotiationMatrix`, `TestIdempotencyAuthFailureThenRetryExecutes`, `TestETagStrongQuoted`, `TestPaginationLink`, `TestProblemCatalogue`, `TestProblemRecoveryFields`, `TestTokenBucketRetryAfter`, `TestSunsetHeader`, `TestParityGate`, `TestOpenAPIGolden`. In `./internal/web/...`: `TestAllHTMLRoutesRenderWithoutJS`, `TestNoJSFallbackMutationsPost`, `TestRenderedPagesSecurityHeaders`, `TestStaticHeaders`, `TestCSSLayered`, `TestTokenContrast`, `TestAssetHash`, `TestEmbeddedAppBundle`, `TestNoJSAppSource`. In `web/`: `rescript build` clean and the `esbuild` bundle builds. Also `TestDumpRenderedPages` (tag `render`, `RUKIE_RENDER_DIR`) followed by `npm exec --yes --package=html-validate@11.16.4 -- html-validate --config .htmlvalidate.json --max-warnings 0 .rendered/*.html` (O38).
 
 K5 Auth and access.
    Anchor: Tony Hoare
@@ -561,7 +567,7 @@ K9 Dev loop and agent docs.
    Lands:
    - `rukie dev`: ephemeral `ruk serve` on a temp socket and temp roots. It seeds user `dev` plus a token with `repo:create`, `repo:read`, `repo:write`, `intents:read`, `intents:write`. It prints URLs and credentials. `rukie dev reset` and `rukie dev seed` are subcommands. CI records the startup time (DX-11). F1 extends the seed with repo `dev/hello`.
    - `GET /llms.txt` and `GET /llms-full.txt`, generated from the op table. `/llms.txt` holds the agent start-here path (instance URL, token, `/-/mcp`, CLI, negotiation). `/llms-full.txt` holds per-op Markdown. Add both names to the reserved-name registry (DX-08).
-   - `/-/api` becomes the zero-JS server-rendered API reference (DX-10).
+   - `/-/api` becomes the server-rendered API reference (DX-10).
    - `tools/docgen` writes `docs/reference/operations/*.md` from the op table (D4).
    - The parity gate grows to include the reference pages and `llms.txt` entries.
    Needs: K8; CS-R01.
@@ -600,7 +606,7 @@ F1 Repos and browsing (S0 skeleton).
    Needs: K5, K6, K7, K8, K10; CS-R13, CS-R14, CS-R15, CS-R23 (pair commit).
    Fixes: O8, O19, O29, O30; CEO 6, 8; Eng rukie 8, 9, 11; V2 to V4.
    UI: repo home with the README, tree, blob with `?lines=`, raw, blame, log, commit with `/diff` and `/patch`, branches, tags, `/new/repo`, `/{o}/{r}/settings`, `/{o}/{r}/settings/collaborators`. Each page is hand-authored on top of the derived op data (DES-05).
-   Gate: `TestAgentFlow/create`, `TestAgentFlow/push`, `TestAdminMethodsRefusedForNonAdminPeer` (the daemon runs with the test uid in `allowed_uids` and absent from `admin_uids`; `repo.init` returns forbidden), `TestRepoCreateTokenNamespaceOnly`, `TestRepoCreateRukFirst`, `TestRenderedPagesNoScript`, `TestDumpRenderedPages` plus the html-validate command of O38, `TestPerfBudget` (release binary, no `-race`, at least 1000 samples after 100 warmups; HTML at most 200 ms, JSON at most 100 ms, `info/refs` at most 150 ms, p95 nearest-rank; per-route render budgets of `rendering-design.md` §12.1 on the reference runner).
+   Gate: `TestAgentFlow/create`, `TestAgentFlow/push`, `TestAdminMethodsRefusedForNonAdminPeer` (the daemon runs with the test uid in `allowed_uids` and absent from `admin_uids`; `repo.init` returns forbidden), `TestRepoCreateTokenNamespaceOnly`, `TestRepoCreateRukFirst`, `TestAllHTMLRoutesRenderWithoutJS`, `TestNoJSFallbackMutationsPost`, `TestDumpRenderedPages` plus the html-validate command of O38, `TestPerfBudget` (release binary, no `-race`, at least 1000 samples after 100 warmups; HTML at most 200 ms, JSON at most 100 ms, `info/refs` at most 150 ms, p95 nearest-rank; per-route render budgets of `rendering-design.md` §12.1 on the reference runner).
 
 F2 Review and land (S1).
    Anchor: Christopher Alexander
@@ -625,7 +631,7 @@ F2 Review and land (S1).
    - The gap work-list is `view.result.list` with predicate `gap:*`. Gap reasons are computed from live `attest.list` and `claim.list`, never cached.
    Needs: F1; CS-R17, CS-R21, CS-R38, CS-R40, CS-R44, CS-R43 (pair commit).
    Fixes: O6, O11, O14, O34; CEO 9; DX 5; Design 5; Eng rukie 11.
-   UI: `/{o}/{r}/changes`, `/changes/{cid}`, `/changes/{cid}/v/{n}`, `/changes/{cid}/diff/{range}`, `/changes/{cid}/stack`, `/{o}/{r}/branches/{name...}` (tip, recent log, open stacked changes, land-queue position, protection), `/{o}/{r}/compare/{range}`, `/{o}/{r}/settings/protected` (policy editor), `/changes` (cross-repo queue), `/{o}/{r}/views` and `/{o}/{r}/views/{id}` (zero-JS compose form). `GET /` signed in is the ops console (`site.home`). It shows the inbox count, the review queue, my changes, claimable intents, recent CI failures, the gap work-list, and the batch landing parade form. One submission runs N serial land plans. Comment forms are per-line `<details>` forms with the pending-review banner. The routes `/rebase` and `/watch` of url-IA §4.7 have no settled op and are not shipped.
+   UI: `/{o}/{r}/changes`, `/changes/{cid}`, `/changes/{cid}/v/{n}`, `/changes/{cid}/diff/{range}`, `/changes/{cid}/stack`, `/{o}/{r}/branches/{name...}` (tip, recent log, open stacked changes, land-queue position, protection), `/{o}/{r}/compare/{range}`, `/{o}/{r}/settings/protected` (policy editor), `/changes` (cross-repo queue), `/{o}/{r}/views` and `/{o}/{r}/views/{id}` (compose form works without JS; the ReScript app adds the interactive composer). `GET /` signed in is the ops console (`site.home`). It shows the inbox count, the review queue, my changes, claimable intents, recent CI failures, the gap work-list, and the batch landing parade form. One submission runs N serial land plans. Comment forms are per-line `<details>` forms with the pending-review banner. The routes `/rebase` and `/watch` of url-IA §4.7 have no settled op and are not shipped.
    Gate: `TestAgentFlow/change` (asserts the comment remap after a rewrite), `TestAgentFlow/land` (asserts a second execution after drift fails `stale`), `TestCompareThreeDotAlias`, `TestLandStackRunsNSerialPlans`, `TestLandRequirementsUnmetProblem`, `TestNoSelfApproval`, `TestRefsForRequiresOnlyRead`, `TestDefaultPolicyIsData`, `TestRefsForDivertAnswersNgUnlessCommitted`. Ruk side: the `host_*` list and land prepare and execute hosted tests with an `E_STALE` retry test. `TestRefsForRejectedUntilReview` is deleted.
 
 F3 Push mirrors (S2).
@@ -641,35 +647,6 @@ F3 Push mirrors (S2).
    Fixes: O3; Eng rukie 1, 3, 5; CEO 4, 7.
    UI: `/{o}/{r}/settings/mirrors`, `/settings/mirrors/{id}`, `/settings/mirrors/{id}/runs/{run}`, `POST .../sync`. The console gains the mirror backlog panel.
    Gate: `TestAgentFlow/mirror` with subtests `exact_prune`, `ff_only_refusal`, `globs`, `reconcile_restore`, and `stops_on_401`; `TestMirrorHonorsRetryAfter`, `TestMirrorCredentialCanary`, `TestMirrorCodebergNeedsPolicyAck`, `TestFaultKillNine/mirror`. Ruk side: the cluster G gate.
-
-Dogfood gate.
-   Anchor: John Carmack
-   Lands: the V5 capacity gate. `tests/perf/daemonpath_test.go` holds `TestDaemonPathBudget` and a load harness. With the release `ruk` binary on the same host, it compares daemon-path incremental fetch, single-ref lookup, clone, and `info/refs` against stock `git`. It appends the table to `internal/bench/RESULTS.md`.
-   Entry condition: the F3 gate passes, V5 passes, and the O30 daemon-path budgets pass. `TestDaemonPathBudget` (tag `perf`, release binary) measures incremental fetch at most 7.5 times and single-ref lookup at most 4 times stock git on the same host (CEO-08). The changeset has no Ruk perf row. If a budget fails, stop and report; the fix needs a new Ruk row.
-   Host and config:
-   - The host is the developer workstation. The instance URL is `http://127.0.0.1:3000`. The config path is `/home/alpha/rewrite/git-renewed/dogfood/rukie.toml`.
-   - The config sets `[http] listen = ["127.0.0.1:3000"]`, `data_dir = "/home/alpha/rewrite/git-renewed/dogfood/data"`, and `secret_key_file = "/home/alpha/rewrite/git-renewed/dogfood/secret.key"`.
-   - Order of setup: `rukie admin secret-gen --out /home/alpha/rewrite/git-renewed/dogfood/secret.key`; `rukie serve --config /home/alpha/rewrite/git-renewed/dogfood/rukie.toml --check-config`; `rukie bootstrap --config /home/alpha/rewrite/git-renewed/dogfood/rukie.toml --username ada --password-stdin`.
-   Accounts and repos:
-   - The bootstrap admin is `ada`. `ada` is the approver.
-   - Create account `ada-agent` with `rukie admin user create --config <path> --name ada-agent --password-stdin`. Agents push changes with `ada-agent` tokens. G5 forbids the author from approving, so `ada` approves.
-   - Create repos `ada/rukie` and `ada/ruk`. Push both trees with stock git over Smart HTTP.
-   - The `main` policy requires one trusted human approval. CI joins the policy when F5 lands (O34).
-   Landing:
-   - Every later commit arrives as a change through `refs/for/main`. It lands through `land.plan.create` plus `land.run.create`, which wrap Ruk `land.prepare` plus `land.execute`.
-   GitHub mirror:
-   - The mirror to `gosuda/rukie` waits for explicit user consent. Ask the user before the first outward sync. Sync only after an explicit yes.
-   - The credential is a fine-grained GitHub token for `gosuda/rukie` with contents write. The user enters it through `mirror.create` on stdin or the form. Rukie seals it. No tool reads it from `gh` or the environment.
-   - Mirror defaults: `fast-forward-only` and `default_branch_tags`.
-   - Every other outward target needs its own explicit yes. No external user gets access before V7 passes (CEO-25).
-   After this gate:
-   - The Ruk store format changes only behind an explicit store-version bump.
-   - The op table stays `/v0`.
-   - Webhook schemas freeze per type at F8.
-   Needs: F3, V5; CS-R22, CS-R28 for the mirror.
-   Fixes: O30, O34; CEO 2, 3; Eng rukie 14.
-   UI: none new.
-   Gate: `TestDaemonPathBudget`, then the F3 gate on the live instance.
 
 F4 Orgs, teams, and token selectors (S3).
    Anchor: Tony Hoare
@@ -740,7 +717,7 @@ F8 Webhooks and inbox (S6).
    - Site-wide hooks (`/admin/hooks`) are not shipped. `webhook.endpoint.create` takes scope `repo` or `owner` only.
    Needs: K7, F1, F4; domain events from F2, F3, F5, F7.
    Fixes: O15, O17; DX-16; CEO-21.
-   UI: `/inbox`, `/inbox/thread?id=`, `/inbox/settings` with zero-JS bulk forms; `/{o}/{r}/settings/hooks` with `/{id}` and `/{id}/messages/{mid}`; `/{owner}/-/settings/hooks`.
+   UI: `/inbox`, `/inbox/thread?id=`, `/inbox/settings` with bulk forms that work without JS; `/{o}/{r}/settings/hooks` with `/{id}` and `/{id}/messages/{mid}`; `/{owner}/-/settings/hooks`.
    Gate: `TestAgentFlow/webhooks` (signature, one 500 then a retry with the same id and a 200, the watcher's inbox row), `TestWebhookSignatureStandardRecipe`, `TestWebhookSSRFDenyList`, `TestWebhookNoRedirects`, `TestWebhookSchemasFrozen`, `TestInboxFanOutSameTx`, `TestInboxStatesAndSnooze`, `TestFaultKillNine/webhook`.
 
 F9 Search (S7).
@@ -806,13 +783,42 @@ F14 Admin surface and closure.
    - Command spelling: derived admin ops use `rukie admin <sub> <verb>` (for example `rukie admin user create --name ada-agent --password-stdin`). The hand-written `rukie admin ...` commands are `secret-gen`, `ssh-keygen`, `migrate`, `status`, `reconcile`, `gc`, and `repo import`. The reserved-name check of K8 stops any overlap. The `rukie admin user create --login` form of `ops-design.md` is replaced by the derived form. `admin repo fork-local` is not shipped because `repo.fork.create` covers it.
    - `rukie admin repo import --from-git <url|path> --owner <o> --name <n> [--default-branch <b>]` pushes with stock `git push --mirror` to the local endpoint using a one-shot admin token. It verifies HEAD and tag count. It deletes the repo on failure (ENG-50).
    - `rukie admin gc [--dry-run] [--repo <o/r>]`.
-   - U5: `TestAllHTMLRoutesZeroJS` on every route, and a registry test that every op has a page test. U6: the DES-21 sweep: contrast 4.5:1 and 3:1, `focus-visible`, a keyboard walk, targets of at least 24 px, 400 percent reflow, reduced motion, forced colors. WCAG 2.2 AA applies; where 2.4.13 is AAA-only, verify 2.4.7 and 1.4.11 (O27).
+   - U5: `TestAllHTMLRoutesRenderWithoutJS` on every route, and a registry test that every op has a page test. U6: the DES-21 sweep: contrast 4.5:1 and 3:1, `focus-visible`, a keyboard walk, targets of at least 24 px, 400 percent reflow, reduced motion, forced colors. WCAG 2.2 AA applies; where 2.4.13 is AAA-only, verify 2.4.7 and 1.4.11 (O27).
    - V8: release-binary perf re-run, `gremlins` weekly on `land`, `mirror`, `auth`, `webhook` (efficacy at least 80 percent), `govulncheck` blocking.
    - url-IA routes `impersonate` and `/admin/config` have no settled op and are not shipped.
    Needs: F1 to F13; CS-R21 for the oplog page.
    Fixes: DX-13, ENG-50, CEO-15; Design 5.
    UI: `/admin`, `/admin/users`, `/admin/users/{id}` with reset-password and disable, `/admin/orgs`, `/admin/repos`, `/admin/audit`, `/admin/monitor`, `/{o}/{r}/-/ops`, `/{o}/{r}/-/claims`, `/{o}/{r}/-/attestations`, `/{o}/{r}/-/refs`.
-   Gate: `TestAllHTMLRoutesZeroJS` (every route), `TestEveryOpHasPageTest`, `TestAdminOpScopes`, `TestAdminRepoImportRollback`, `TestAAChecklist`, `TestPerfBudget` (release binary), gremlins and `govulncheck` clean.
+   Gate: `TestAllHTMLRoutesRenderWithoutJS` (every route), `TestEveryOpHasPageTest`, `TestAdminOpScopes`, `TestAdminRepoImportRollback`, `TestAAChecklist`, `TestPerfBudget` (release binary), gremlins and `govulncheck` clean.
+
+Dogfood gate.
+   Anchor: John Carmack
+   Lands: the V5 capacity gate. `tests/perf/daemonpath_test.go` holds `TestDaemonPathBudget` and a load harness. With the release `ruk` binary on the same host, it compares daemon-path incremental fetch, single-ref lookup, clone, and `info/refs` against stock `git`. It appends the table to `internal/bench/RESULTS.md`.
+   Entry condition: all implementation is landed (O40): the gates of F1 to F14 pass, V5 passes, and the O30 daemon-path budgets pass. `TestDaemonPathBudget` (tag `perf`, release binary) measures incremental fetch at most 7.5 times and single-ref lookup at most 4 times stock git on the same host (CEO-08). The changeset has no Ruk perf row. If a budget fails, stop and report; the fix needs a new Ruk row.
+   Host and config:
+   - The host is the developer workstation. The instance URL is `http://127.0.0.1:3000`. The config path is `/home/alpha/rewrite/git-renewed/dogfood/rukie.toml`.
+   - The config sets `[http] listen = ["127.0.0.1:3000"]`, `data_dir = "/home/alpha/rewrite/git-renewed/dogfood/data"`, and `secret_key_file = "/home/alpha/rewrite/git-renewed/dogfood/secret.key"`.
+   - Order of setup: `rukie admin secret-gen --out /home/alpha/rewrite/git-renewed/dogfood/secret.key`; `rukie serve --config /home/alpha/rewrite/git-renewed/dogfood/rukie.toml --check-config`; `rukie bootstrap --config /home/alpha/rewrite/git-renewed/dogfood/rukie.toml --username ada --password-stdin`.
+   Accounts and repos:
+   - The bootstrap admin is `ada`. `ada` is the approver.
+   - Create account `ada-agent` with `rukie admin user create --config <path> --name ada-agent --password-stdin`. Agents push changes with `ada-agent` tokens. G5 forbids the author from approving, so `ada` approves.
+   - Create repos `ada/rukie` and `ada/ruk`. Push both trees with stock git over Smart HTTP.
+   - The `main` policy requires one trusted human approval and passing `ci/*` proofs (F5 landed before dogfood under O40).
+   Landing:
+   - Every later commit arrives as a change through `refs/for/main`. It lands through `land.plan.create` plus `land.run.create`, which wrap Ruk `land.prepare` plus `land.execute`.
+   GitHub mirror:
+   - The mirror to `gosuda/rukie` waits for explicit user consent. Ask the user before the first outward sync. Sync only after an explicit yes.
+   - The credential is a fine-grained GitHub token for `gosuda/rukie` with contents write. The user enters it through `mirror.create` on stdin or the form. Rukie seals it. No tool reads it from `gh` or the environment.
+   - Mirror defaults: `fast-forward-only` and `default_branch_tags`.
+   - Every other outward target needs its own explicit yes. No external user gets access before V7 passes (CEO-25).
+   After this gate:
+   - The Ruk store format changes only behind an explicit store-version bump.
+   - The op table stays `/v0`.
+   - Webhook schemas freeze per type at F8.
+   Needs: F1 to F14, V5; CS-R22, CS-R28 for the mirror.
+   Fixes: O30, O34; CEO 2, 3; Eng rukie 14.
+   UI: none new.
+   Gate: `TestDaemonPathBudget`, then the F1 to F14 gates re-run against the live instance.
 
 D Docs and readiness (items that need the finished product).
    Anchor: Milton Erickson
@@ -851,7 +857,10 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --locked
 cargo test --workspace --locked --doc
 
-# rukie: vet (untagged and all tags), lint, tests, govulncheck, gofmt, go mod tidy -diff, go mod verify
+# rukie: web app build (npm ci + rescript build + esbuild into internal/web/assets), then vet
+# (untagged and all tags), lint, tests, govulncheck, gofmt, go mod tidy -diff, go mod verify
+# make check depends on build-web, so `go build` always sees the generated bundle (O41).
+make build-web
 make check
 
 # rukie integration (real daemon), from K2 on
@@ -885,7 +894,7 @@ Each check runs after the named step. `$RUK` is `/home/alpha/rewrite/git-renewed
    Command: `tools/passgate.sh '--- PASS: TestAgentFlow/create (' '--- PASS: TestAgentFlow/push (' -- go test -race -count=1 -tags e2e -v -run '^TestAgentFlow$/^(create|push)$' ./tests/e2e/`
    Pass: both PASS lines print and the command exits 0. The `push` subtest pushes `main` to `http://ada:<token>@127.0.0.1:<port>/ada/hello.git` with stock git and asserts a `ref.updated` outbox row for `refs/heads/main` within 2 s (one poll window with `wait_ms` 1000).
 3. After K4. cwd `/home/alpha/rewrite/git-renewed/rukie`, env `RUK_COORDINATOR=off`.
-   Command: `tools/passgate.sh '--- PASS: TestNegotiationMatrix (' '--- PASS: TestAllHTMLRoutesZeroJS (' '--- PASS: TestTableRejectsDuplicateName (' -- go test -race -count=1 -v -run '^(TestNegotiationMatrix|TestAllHTMLRoutesZeroJS|TestTableRejectsDuplicateName)$' ./internal/op/ ./internal/web/...`
+   Command: `tools/passgate.sh '--- PASS: TestNegotiationMatrix (' '--- PASS: TestAllHTMLRoutesRenderWithoutJS (' '--- PASS: TestTableRejectsDuplicateName (' -- go test -race -count=1 -v -run '^(TestNegotiationMatrix|TestAllHTMLRoutesRenderWithoutJS|TestTableRejectsDuplicateName)$' ./internal/op/ ./internal/web/...`
    Pass: three PASS lines. The matrix shows one URL returns HTML for `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`, JSON for `application/json`, `*/*`, and an absent `Accept`, and Markdown for `text/markdown`. A table with a duplicate op name fails startup.
 4. After F2. cwd `/home/alpha/rewrite/git-renewed/rukie`, env `RUK_BIN=$RUK GIT_EXEC=$(command -v git) RUK_COORDINATOR=off`.
    Command: `tools/passgate.sh '--- PASS: TestAgentFlow/change (' '--- PASS: TestAgentFlow/land (' -- go test -race -count=1 -tags e2e -v -run '^TestAgentFlow$/^(change|land)$' ./tests/e2e/`
@@ -906,7 +915,7 @@ Each check runs after the named step. `$RUK` is `/home/alpha/rewrite/git-renewed
    - `git push` of `main` and of `HEAD:refs/for/main` over Smart HTTP with Basic auth. Git push travels the git wire, not the op table.
    - An MCP `tools/call` of `change_list` and then `change_review_create` (`model=true`) as POST `/-/mcp` with `Authorization: Bearer <token>`.
    - CI attests through the runner.
-   - A human approval in the zero-JS UI.
+   - A human approval in the fallback-rendered UI.
    - `rukie land plan create --owner ada --repo hello --change <cid> --json` then `rukie land run create --owner ada --repo hello --plan <id> --json`, with the change pushed by `ada-agent` and approved by `ada`.
    - The mirror updates on the fake host.
    - A webhook delivery verifies with the Standard Webhooks recipe, and the watcher's inbox row appears.
@@ -934,9 +943,16 @@ Round 1 registers live in `docs/plan/autoplan-ceo.md`, `autoplan-design.md`, `au
 | Phase | Round 2 outcome (2026-10-20) |
 |---|---|
 | CEO | Build order is dogfood early (user). Step 0 keeps its corpus and gate. Approval lists each outward act. SSH moves to F10, TOTP and OIDC to F12, orgs and teams to F4. The Dogfood gate names its host, accounts, policy, and consent. |
-| Design | Tokens match the Instrument doc: spacing ends at 48, motion is 150 ms on six named properties. Webfonts come from Bunny Fonts (user). The zero-JS check, the WCAG rule, meta refresh, and the UI surfaces of each step are explicit. html-validate stays (user). |
+| Design | Tokens match the Instrument doc: spacing ends at 48, motion is 150 ms on six named properties. Webfonts come from Bunny Fonts (user). The WCAG rule, meta refresh, and the UI surfaces of each step are explicit. html-validate stays (user). Round 3 (2026-10-21): the UI language is ReScript on Preact via the generic JSX transform; the Go fallback renders baseline HTML; `trusted`/`htmlcheck` stay as the untrusted-content boundary. |
 | DX | One op lexicon: usage-surface names, closed verbs, seven added domains. One error catalogue, strong ETags, 24 h idempotency keys, JSON as the default for `*/*`, a CLI session file, and `/-/mcp` with a 36-tool default budget. Scopes gain `repo:create` (user) and rename `tasks:*` to `intents:*`. |
-| Engineering | Ruk work follows changeset rows CS-R01 to CS-R48 with code-grounded corrections: no `heads-since`, direct publish for receive-pack, `TransportAuth`, the restricted `land.prepare`, 47 to 61 methods. rukie gains the K7 spool and reconciler, supervisor caps, the secret-key backup rule, git-wire authorization, and the store cancellation rule. Pins are verified; lint and govulncheck run through `go run`. Strict validation covers rukie. |
+| Engineering | Ruk work follows changeset rows CS-R01 to CS-R48 with code-grounded corrections: no `heads-since`, direct publish for receive-pack, `TransportAuth`, the restricted `land.prepare`, 47 to 61 methods. rukie gains the K7 spool and reconciler, supervisor caps, the secret-key backup rule, git-wire authorization, and the store cancellation rule. Pins are verified; lint and govulncheck run through `go run`. Strict validation covers rukie. Round 3 (2026-10-21): `web/` scaffolds with the generic-JSX Preact interface and esbuild-to-`go:embed`; `zerojs` is deleted, `trusted`/`htmlcheck` retained with the CodeQL `data:` fix; dogfood moves after F14 (O40). |
+
+| Phase | Round 3 outcome (2026-10-21) |
+|---|---|
+| CEO | UI stack is ReScript-only, embedded bundle, no second runtime in production; dogfood deferred until all implementation lands (O40). |
+| Design | Instrument tokens unchanged; interactive layer is Preact hydrating marked subtrees; `trusted`/`htmlcheck` remain the untrusted-content boundary. |
+| DX | App consumes the op table JSON only; no fragment API, no client router; `/-/api` and llms.txt unchanged. |
+| Engineering | `web/` + `make build-web` before `go build`; new gates `TestAllHTMLRoutesRenderWithoutJS`, `TestNoJSFallbackMutationsPost`, `TestEmbeddedAppBundle`, `TestNoJSAppSource`. |
 
 The ledger lives at `rukie/tasks/autoplan-ledger.jsonl` after Step 0. Round 1 wrote 117 rows. Round 2 appends CEO-26, CEO-27, DES-22 to DES-24, DX-19 to DX-22, and ENG-54 to ENG-62. Rows ENG-53 and CEO-19 are resolved by the Metadata store and Architecture decisions. The ledger has no status field; this register records resolutions.
 

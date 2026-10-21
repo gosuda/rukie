@@ -133,3 +133,10 @@
 {"id": "ENG-60", "description": "Fix every pre-existing clippy failure in the first Ruk commit under -D warnings.", "phase": "engineering"}
 {"id": "ENG-61", "description": "Set up strict validation for rukie with seven failing SC tests and record the ruk refusal.", "phase": "engineering"}
 {"id": "ENG-62", "description": "Pass EventSource::ReceivePack from apply_refs and update every Store::publish caller in CS-R09.", "phase": "engineering"}
+{"id": "DES-25", "description": "Adopt ReScript + Preact as the web app stack via the generic JSX transform; Go+templ becomes the no-JS fallback (O41).", "phase": "design"}
+{"id": "DX-23", "description": "Ship the web app as an embedded ES-module bundle; no second API contract beside the op table (O41).", "phase": "dx"}
+{"id": "ENG-63", "description": "Scaffold web/: rescript.json with jsx.module=Preact, Preact.res generic-JSX interface, PreactHooks.res; pins rescript 12.3.1, preact 11.0.1, esbuild 0.28.2.", "phase": "engineering"}
+{"id": "ENG-64", "description": "Wire esbuild bundle to internal/web/assets with go:embed and content-hash serving (O41).", "phase": "engineering"}
+{"id": "ENG-65", "description": "Demote the Go render layer to fallback; delete internal/web/zerojs; keep trusted/htmlcheck and fix the CodeQL data: URL-scheme gap.", "phase": "engineering"}
+{"id": "ENG-66", "description": "Replace zero-JS gates with TestAllHTMLRoutesRenderWithoutJS, TestNoJSFallbackMutationsPost, TestEmbeddedAppBundle, TestNoJSAppSource.", "phase": "engineering"}
+{"id": "ENG-67", "description": "Defer dogfood until F1 to F14 all land (O40).", "phase": "engineering"}
