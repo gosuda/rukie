@@ -43,12 +43,14 @@ func (d Deps) requester(ctx context.Context, p op.Principal) (requester, error) 
 			return requester{}, mapAuthError(uerr)
 		}
 		r.user = user
+		restricted := !p.Grants.Has(op.ScopeRepoRead)
 		r.caller = access.Caller{
-			UserID:  p.UserID,
-			Scopes:  p.Grants,
-			Active:  user.IsActive,
-			Authed:  true,
-			IsAdmin: user.IsAdmin,
+			UserID:     p.UserID,
+			Scopes:     p.Grants,
+			Active:     user.IsActive,
+			Authed:     true,
+			IsAdmin:    user.IsAdmin,
+			PublicOnly: restricted,
 		}
 		return r, nil
 	}
