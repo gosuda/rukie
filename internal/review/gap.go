@@ -3,7 +3,6 @@ package review
 import (
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Requirement is one land requirement pattern over live attestations.
@@ -35,7 +34,7 @@ type Gap struct {
 
 // GapsForChange computes gap reasons from live facts, never from cached
 // verdicts. The first gap is the primary display reason.
-func GapsForChange(head string, authorID int64, reqs []Requirement, facts []AttestationFact, now int64) []Gap {
+func GapsForChange(head string, authorID int64, reqs []Requirement, facts []AttestationFact) []Gap {
 	var out []Gap
 	if head == "" {
 		return append(out, Gap{Reason: "conflict", Detail: "change head is conflicted", NextOp: "change.get"})
@@ -96,9 +95,4 @@ func matchKind(pattern, kind string) bool {
 
 func itoa(n int) string {
 	return strconv.Itoa(n)
-}
-
-// FreshNow returns evaluation time in Unix seconds.
-func FreshNow() int64 {
-	return time.Now().Unix()
 }

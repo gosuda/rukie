@@ -261,8 +261,8 @@ LEFT JOIN users u ON u.id = r.owner_user_id WHERE r.id = ?`, repoID).Scan(&owner
 }
 
 type diffFileItem struct {
-	Path string         `json:"path"`
 	Body map[string]any `json:"body"`
+	Path string         `json:"path"`
 }
 
 type diffFilesPage struct {

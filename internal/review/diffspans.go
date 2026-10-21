@@ -29,11 +29,12 @@ func spansFromUnified(patch string) []Span {
 	open := false
 	closeSpan := func() {
 		if open && oldCursor > spanOld {
-			spans = append(spans, Span{
-				OldStart: uint32(spanOld),
-				NewStart: uint32(spanNew),
-				Lines:    uint32(oldCursor - spanOld),
-			})
+			oldStart, okOld := toUint32(spanOld)
+			newStart, okNew := toUint32(spanNew)
+			length, okLen := toUint32(oldCursor - spanOld)
+			if okOld && okNew && okLen {
+				spans = append(spans, Span{OldStart: oldStart, NewStart: newStart, Lines: length})
+			}
 		}
 		open = false
 	}
@@ -54,12 +55,11 @@ func spansFromUnified(patch string) []Span {
 				if newStart-newCursor < length {
 					length = newStart - newCursor
 				}
-				if length > 0 {
-					spans = append(spans, Span{
-						OldStart: uint32(oldCursor),
-						NewStart: uint32(newCursor),
-						Lines:    uint32(length),
-					})
+				gapOld, okOld := toUint32(oldCursor)
+				gapNew, okNew := toUint32(newCursor)
+				gapLen, okLen := toUint32(length)
+				if gapLen > 0 && okOld && okNew && okLen {
+					spans = append(spans, Span{OldStart: gapOld, NewStart: gapNew, Lines: gapLen})
 				}
 			}
 			oldCursor = oldStart
@@ -90,6 +90,14 @@ func spansFromUnified(patch string) []Span {
 	}
 	closeSpan()
 	return spans
+}
+
+// toUint32 converts a line number with an overflow guard.
+func toUint32(v int64) (uint32, bool) {
+	if v < 0 || v > int64(^uint32(0)) {
+		return 0, false
+	}
+	return uint32(v), true
 }
 
 func parseHunkRange(raw string) (int64, int64) {

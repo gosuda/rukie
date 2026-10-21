@@ -170,8 +170,8 @@ type ChangeGetIn struct {
 
 // ChangeGetOut carries one change with its patchset heads.
 type ChangeGetOut struct {
-	Change ChangeJSON `json:"change"`
 	Heads  []string   `json:"heads"`
+	Change ChangeJSON `json:"change"`
 }
 
 func changeGetHandler(d Deps) func(context.Context, op.Principal, ChangeGetIn) (ChangeGetOut, error) {
@@ -316,9 +316,9 @@ type ChangeBlameIn struct {
 	Repo      string `path:"repo"`
 	Change    string `path:"change"`
 	Path      string `query:"path"`
+	Cursor    string `query:"cursor"`
 	StartLine int    `query:"start_line"`
 	EndLine   int    `query:"end_line"`
-	Cursor    string `query:"cursor"`
 	Limit     int    `query:"limit"`
 }
 
@@ -540,13 +540,13 @@ func branchChangeListHandler(d Deps) func(context.Context, op.Principal, BranchC
 
 // CommentJSON is one review comment.
 type CommentJSON struct {
-	Key          string  `json:"id"`
 	Path         *string `json:"path,omitempty"`
 	Line         *int64  `json:"line,omitempty"`
+	Key          string  `json:"id"`
 	Body         string  `json:"body"`
-	Unmatched    bool    `json:"unmatched"`
-	CreatedAt    int64   `json:"created_at"`
 	RemappedFrom string  `json:"remapped_from,omitempty"`
+	CreatedAt    int64   `json:"created_at,omitzero"`
+	Unmatched    bool    `json:"unmatched,omitzero"`
 }
 
 func commentJSON(row store.CommentRow) CommentJSON {
@@ -627,8 +627,8 @@ func commentListHandler(d Deps) func(context.Context, op.Principal, CommentListI
 // CommentCreateBody carries one new comment.
 type CommentCreateBody struct {
 	Path string `json:"path,omitempty" maxLength:"4096"`
-	Line int64  `json:"line,omitempty"`
 	Body string `json:"body" minLength:"1" maxLength:"8192"`
+	Line int64  `json:"line,omitzero"`
 }
 
 // CommentCreateIn carries one comment create request.

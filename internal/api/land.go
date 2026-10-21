@@ -177,7 +177,7 @@ func (d Deps) liveGaps(ctx context.Context, daemon ruk.Repo, repoID int64, row s
 			Live: record.Status == "live",
 		})
 	}
-	return review.GapsForChange(row.HeadOid, row.AuthorUserID, reqs, facts, review.FreshNow()), nil
+	return review.GapsForChange(row.HeadOid, row.AuthorUserID, reqs, facts), nil
 }
 
 // liveGapsInTx evaluates live requirements and folds in store-recorded
@@ -711,9 +711,9 @@ type ViewGetIn struct {
 
 // ViewGetOut carries one view with its head version.
 type ViewGetOut struct {
-	View       ViewJSON `json:"view"`
 	Revset     string   `json:"revset,omitempty"`
 	Predicates string   `json:"predicates,omitempty"`
+	View       ViewJSON `json:"view"`
 }
 
 // ViewListIn carries one view list request.
@@ -729,18 +729,18 @@ type ViewListOut struct {
 
 // ViewUpdateBody carries one view update.
 type ViewUpdateBody struct {
+	Shared     *bool  `json:"shared,omitempty"`
 	Revset     string `json:"revset,omitempty" maxLength:"4096"`
 	Predicates string `json:"predicates,omitempty" maxLength:"4096"`
-	Shared     *bool  `json:"shared,omitempty"`
 }
 
 // ViewUpdateIn carries one view update request.
 type ViewUpdateIn struct {
+	Body           ViewUpdateBody
 	IdempotencyKey string `header:"Idempotency-Key"`
 	Owner          string `path:"owner"`
 	Repo           string `path:"repo"`
 	View           string `path:"view"`
-	Body           ViewUpdateBody
 }
 
 // ViewUpdateOut carries the updated view.

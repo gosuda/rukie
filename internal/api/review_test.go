@@ -36,11 +36,7 @@ func TestDefaultPolicyIsData(t *testing.T) {
 	e := buildRepoEnv(t)
 	rbootstrap(t, e, "ada", "long-test-password-01")
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
-	cookie := rlogin(t, e, "ada", "long-test-password-01")
-	rec := rdo(t, e, "POST", "/new/repo", cookie, `{"owner":"ada","name":"hello","visibility":"private"}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("repo.create = %d: %s", rec.Code, rec.Body.String())
-	}
+	rseedRepo(t, e, admin.ID, "hello", "private")
 	token := rtoken(t, e, admin, "repo:read", "repo:write")
 	got := rdo(t, e, "GET", "/ada/hello/settings/protected", token, "")
 	if got.Code != http.StatusOK {

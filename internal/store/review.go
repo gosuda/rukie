@@ -33,16 +33,16 @@ type PatchsetRow struct {
 
 // CommentRow is one review comment anchored to a change head.
 type CommentRow struct {
-	ChangeID     int64
-	IntentID     sql.NullInt64
-	Path         sql.NullString
-	Line         sql.NullInt64
-	AuthorUserID int64
-	ID           int64
 	HeadOid      string
 	PublicID     string
 	Body         string
 	RemappedFrom string
+	Path         sql.NullString
+	IntentID     sql.NullInt64
+	Line         sql.NullInt64
+	ChangeID     int64
+	AuthorUserID int64
+	ID           int64
 	CreatedAt    int64
 	Unmatched    bool
 }
@@ -1094,6 +1094,7 @@ FROM change_comments WHERE change_id = ? AND head_oid = ? ORDER BY id ASC`, chan
 // SetLandRunState moves one land run along the awaiting, executing, landed,
 // failed machine.
 func (tx *WriteTx) SetLandRunState(now time.Time, id int64, state string) error {
+	_ = now
 	inner, err := tx.live()
 	if err != nil {
 		return err
