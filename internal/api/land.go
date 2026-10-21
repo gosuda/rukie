@@ -170,6 +170,9 @@ func (d Deps) liveGaps(ctx context.Context, daemon ruk.Repo, repoID int64, row s
 	}
 	facts := make([]review.AttestationFact, 0, len(reply.Records.Items))
 	for _, record := range reply.Records.Items {
+		if record.Kind == "review/approve" {
+			continue
+		}
 		facts = append(facts, review.AttestationFact{
 			Kind: record.Kind, Result: record.Result, OID: row.HeadOid,
 			Signer: record.Signer, Live: record.Status == "live",
