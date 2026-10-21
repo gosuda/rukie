@@ -105,9 +105,7 @@ func (f *scriptFake) command(nc net.Conn) {
 		case KindStdinEOF:
 			return
 		case KindWindowUpdate, KindCancel:
-			// Flow control only; keep reading.
 		case KindAccepted, KindStdout, KindStderr, KindExit, KindError, KindHookCall, KindHookReply:
-			// The fake never receives daemon-to-client frames; anything else ends the session.
 			return
 		default:
 			return

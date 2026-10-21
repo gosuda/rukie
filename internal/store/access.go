@@ -109,8 +109,6 @@ func (r *Resolver) resolveRepoRow(id int64, query string) (access.RepoRecord, bo
 	return out, ok
 }
 
-// refused_by: modify_delete_guard · collision: none (no common ancestor text)
-
 type accessAllowJSON struct {
 	Users []int64  `json:"users"`
 	Teams []int64  `json:"teams"`

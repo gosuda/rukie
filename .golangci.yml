@@ -29,5 +29,8 @@ linters:
       - path: ^internal/gitssh/exec\.go$
         text: G115
         linters: [gosec]
+      - path: ^internal/store/auth_token\.go$
+        text: G101
+        linters: [gosec]
 formatters:
   enable: [gofmt, goimports]

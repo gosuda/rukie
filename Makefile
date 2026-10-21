@@ -21,6 +21,10 @@ vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 check: web-assets vet lint test vuln
+	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)"
+	go run ./tools/commentcheck
+	go mod tidy -diff
+	go mod verify
 
 web-assets:
 	@if [ -d web/node_modules ]; then \
@@ -28,10 +32,6 @@ web-assets:
 	else \
 		test -s internal/web/assets/app.js || { echo "web bundle missing and web/node_modules absent: run make build-web"; exit 1; }; \
 	fi
-	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)"
-	go run ./tools/commentcheck
-	go mod tidy -diff
-	go mod verify
 
 goals:
 	go test -count=1 -v ./.agent-tasks/task-0e2cc1171807/tests

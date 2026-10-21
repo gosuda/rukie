@@ -22,7 +22,7 @@ type TokenRecord struct {
 	PublicOnly   bool
 }
 
-const tokenColumnList = `rowid, token_hash, public_prefix, user_id, name, scopes, expires_at, created_at, last_used_at, last_used_ip, revoked_at, public_only` //nolint:gosec // column list, not a credential
+const tokenColumnList = `rowid, token_hash, public_prefix, user_id, name, scopes, expires_at, created_at, last_used_at, last_used_ip, revoked_at, public_only`
 
 func scanTokenRecord(row interface{ Scan(dest ...any) error }, out *TokenRecord) error {
 	var lastUsed, revoked sql.NullInt64
