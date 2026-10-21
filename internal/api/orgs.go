@@ -1758,7 +1758,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict},
 		Location:    func(TeamCreateOut) string { return "" },
 		ETag: func(out TeamCreateOut) string {
-			return fmt.Sprintf("team-%s-%d", out.Team.Name, out.Team.UpdatedAt)
+			return fmt.Sprintf("team-%d-%d", out.Team.ID, out.Team.UpdatedAt)
 		},
 		Handler: createTeamHandler(deps),
 	}); err != nil {
@@ -1770,7 +1770,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only, organization members. Renders members and repository grants.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound},
 		ETag: func(out TeamGetOut) string {
-			return fmt.Sprintf("team-%s-%d-%d", out.Team.Name, len(out.Members), len(out.Repos))
+			return fmt.Sprintf("team-%d-%d", out.Team.ID, out.Team.UpdatedAt)
 		},
 		Handler: getTeamHandler(deps),
 	}); err != nil {
@@ -1783,7 +1783,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		ETag: func(out TeamUpdateOut) string {
-			return fmt.Sprintf("team-%s-%d", out.Team.Name, out.Team.UpdatedAt)
+			return fmt.Sprintf("team-%d-%d", out.Team.ID, out.Team.UpdatedAt)
 		},
 		Location: func(TeamUpdateOut) string { return "" },
 		Handler:  updateTeamHandler(deps),
