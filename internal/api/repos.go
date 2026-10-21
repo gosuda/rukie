@@ -948,13 +948,6 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 		}
 		oldPath := rc.row.RukPath
 		newPath := newOwnerName + "/" + in.Body.Name + ".git"
-		if oldPath != "" && oldPath != newPath {
-			rerr := d.callRuk(ctx, ruk.Repo{}, wire.MethodRepoRename,
-				map[string]any{"repo": oldPath, "new_path": newPath}, &map[string]any{})
-			if rerr != nil {
-				return RepoRenameOut{}, rerr
-			}
-		}
 		now := d.now()
 		var updated store.RepoRow
 		werr := st.Write(ctx, func(tx *store.WriteTx) error {
@@ -967,6 +960,12 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 			}
 			if merr := matchRepoETag(in.IfMatch, rc.owner, current); merr != nil {
 				return merr
+			}
+			if oldPath != "" && oldPath != newPath {
+				if rerr := d.callRuk(ctx, ruk.Repo{}, wire.MethodRepoRename,
+					map[string]any{"repo": oldPath, "new_path": newPath}, &map[string]any{}); rerr != nil {
+					return rerr
+				}
 			}
 			if rerr := tx.RenameRepo(rc.row.ID, newUser.ID, in.Body.Name, newPath, now); rerr != nil {
 				if isUniqueViolation(rerr) {
