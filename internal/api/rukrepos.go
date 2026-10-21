@@ -37,11 +37,18 @@ func (d Deps) requester(ctx context.Context, p op.Principal) (requester, error) 
 	}
 	r.authed = true
 	r.userID = p.UserID
+	if d.Store == nil {
+		return requester{}, op.Wrap(op.CodeInternal, errors.New("store is not configured"), "metadata store is unavailable")
+	}
 	if p.TokenID < 0 {
-		user, uerr := d.Service.GetUserByID(ctx, p.UserID)
+		meta, uerr := d.Store.LookupUserByID(ctx, p.UserID)
 		if uerr != nil {
-			return requester{}, mapAuthError(uerr)
+			if errors.Is(uerr, store.ErrNotFound) {
+				return requester{}, op.Errorf(op.CodeNotFound, "unknown user")
+			}
+			return requester{}, op.Wrap(op.CodeInternal, uerr, "user lookup failed")
 		}
+		user := auth.User{ID: meta.ID, Name: meta.Name, Email: meta.Email, FullName: meta.FullName, IsActive: meta.IsActive, IsAdmin: meta.IsAdmin}
 		r.user = user
 		restricted := !p.Grants.Has(op.ScopeRepoRead)
 		r.caller = access.Caller{
@@ -54,20 +61,22 @@ func (d Deps) requester(ctx context.Context, p op.Principal) (requester, error) 
 		}
 		return r, nil
 	}
-	var hash string
-	var publicOnly int64
-	var tokenUser int64
-	derr := d.Service.DB().QueryRowContext(ctx,
-		`SELECT token_hash, public_only, user_id FROM scoped_tokens WHERE rowid = ?`, p.TokenID).Scan(
-		&hash, &publicOnly, &tokenUser)
-	if derr != nil {
+	tmeta, terr := d.Store.LookupScopedToken(ctx, p.TokenID)
+	if terr != nil {
 		return requester{}, op.Errorf(op.CodeUnauthorized, "token is not valid")
 	}
-	user, uerr := d.Service.GetUserByID(ctx, p.UserID)
-	if uerr != nil {
-		return requester{}, mapAuthError(uerr)
+	if tmeta.UserID != p.UserID {
+		return requester{}, op.Errorf(op.CodeUnauthorized, "token is not valid")
 	}
-	repos, rerr := d.Service.TokenRepos(ctx, hash)
+	umeta, uerr := d.Store.LookupUserByID(ctx, p.UserID)
+	if uerr != nil {
+		if errors.Is(uerr, store.ErrNotFound) {
+			return requester{}, op.Errorf(op.CodeNotFound, "unknown user")
+		}
+		return requester{}, op.Wrap(op.CodeInternal, uerr, "user lookup failed")
+	}
+	user := auth.User{ID: umeta.ID, Name: umeta.Name, Email: umeta.Email, FullName: umeta.FullName, IsActive: umeta.IsActive, IsAdmin: umeta.IsAdmin}
+	repos, rerr := d.Store.ListTokenRepos(ctx, tmeta.Hash)
 	if rerr != nil {
 		return requester{}, op.Wrap(op.CodeInternal, rerr, "token repository selector is unavailable")
 	}
@@ -77,14 +86,14 @@ func (d Deps) requester(ctx context.Context, p op.Principal) (requester, error) 
 	}
 	r.isToken = true
 	r.user = user
-	r.tokenHash = hash
+	r.tokenHash = tmeta.Hash
 	r.tokenRepos = set
 	r.caller = access.Caller{
 		UserID:     p.UserID,
 		Scopes:     p.Grants,
 		Active:     user.IsActive,
 		Authed:     true,
-		PublicOnly: publicOnly == 1,
+		PublicOnly: tmeta.PublicOnly,
 		IsToken:    true,
 		IsAdmin:    user.IsAdmin,
 	}
@@ -341,7 +350,7 @@ func byteSourceBytes(src map[string]any) ([]byte, error) {
 }
 
 type repoContext struct {
-	resolver *access.SQLResolver
+	resolver access.Resolver
 	daemon   ruk.Repo
 	owner    string
 	name     string
@@ -357,10 +366,15 @@ func (d Deps) resolveRepo(ctx context.Context, r requester, owner, name string, 
 	if err := checkRepoName(name); err != nil {
 		return out, err
 	}
-	user, uerr := d.Service.GetUser(ctx, owner)
+	var user store.UserMeta
+	if d.Store == nil {
+		return out, op.Wrap(op.CodeInternal, errors.New("store is not configured"), "repository lookup failed")
+	}
+	umeta, uerr := d.Store.LookupUserByName(ctx, strings.ToLower(owner))
 	if uerr != nil {
 		return out, op.Errorf(op.CodeNotFound, "repository was not found")
 	}
+	user = umeta
 	var row store.RepoRow
 	serr := d.Store.Read(ctx, func(tx *store.ReadTx) error {
 		var ferr error
@@ -386,7 +400,7 @@ func (d Deps) resolveRepo(ctx context.Context, r requester, owner, name string, 
 	out.owner = user.Name
 	out.name = row.Name
 	out.request = r
-	out.resolver = access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
+	out.resolver = d.Store.Resolver()
 	return out, nil
 }
 
@@ -413,7 +427,10 @@ func (d Deps) checkRepoAccess(r requester, row store.RepoRow, action string, ref
 }
 
 func (d Deps) checkRepoAccessWithDest(r requester, row store.RepoRow, action string, ref string, destOwner, destOrg int64) error {
-	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
+	if d.Store == nil {
+		return op.Wrap(op.CodeInternal, errors.New("store is not configured"), "repository access failed")
+	}
+	resolver := d.Store.Resolver()
 	resource := access.Resource{Kind: access.KindRepo, RepoID: row.ID, Ref: ref, DestOwnerID: destOwner, DestOrgID: destOrg}
 	decision := access.Check(resolver, r.caller, action, resource)
 	if !decision.Allow {
@@ -866,7 +883,7 @@ func etagMatchesRepoCommit(header, owner string, row store.RepoRow) bool {
 			return true
 		}
 		unquoted := strings.Trim(trimmed, `"`)
-		if strings.HasPrefix(unquoted, prefix) && len(unquoted) > len(prefix) {
+		if rest, ok := strings.CutPrefix(unquoted, prefix); ok && isFullOid(rest) {
 			return true
 		}
 	}

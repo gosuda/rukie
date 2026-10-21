@@ -30,6 +30,9 @@ const authDSNParams = "file:%s?_txlock=immediate&_journal_mode=WAL&_synchronous=
 	"&_busy_timeout=5000&_dqs=0&_pragma=temp_store(MEMORY)&_pragma=mmap_size(0)" +
 	"&_pragma=trusted_schema(OFF)"
 
+// Service owns auth session, token, and user rows in the shared SQLite file.
+// New metadata access MUST go through internal/store; direct SQL in other
+// packages is legacy and being removed lane by lane.
 type Service struct {
 	db            *sql.DB
 	now           func() time.Time

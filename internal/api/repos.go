@@ -64,9 +64,9 @@ func repoJSON(owner string, row store.RepoRow) RepoJSON {
 	return out
 }
 
-func repoOwnerName(ctx context.Context, svc *auth.Service, row store.RepoRow) string {
-	if row.OwnerUserID.Valid {
-		if user, uerr := svc.GetUserByID(ctx, row.OwnerUserID.Int64); uerr == nil {
+func repoOwnerName(ctx context.Context, st *store.Store, row store.RepoRow) string {
+	if row.OwnerUserID.Valid && st != nil {
+		if user, uerr := st.LookupUserByID(ctx, row.OwnerUserID.Int64); uerr == nil {
 			return user.Name
 		}
 	}
@@ -313,10 +313,11 @@ func createRepoHandler(d Deps) func(context.Context, op.Principal, RepoCreateIn)
 		} else if owner != strings.ToLower(rq.user.Name) {
 			return RepoCreateOut{}, op.Errorf(op.CodeForbidden, "organization repositories are not served yet")
 		}
-		destUser, uerr := d.Service.GetUser(ctx, owner)
+		destMeta, uerr := d.Store.LookupUserByName(ctx, owner)
 		if uerr != nil {
 			return RepoCreateOut{}, op.Errorf(op.CodeValidation, "destination owner does not exist")
 		}
+		destUser := auth.User{ID: destMeta.ID, Name: destMeta.Name, Email: destMeta.Email, FullName: destMeta.FullName, IsActive: destMeta.IsActive, IsAdmin: destMeta.IsAdmin}
 		daemonPath := owner + "/" + body.Name + ".git"
 		if d.RepoRoot == "" {
 			return RepoCreateOut{}, op.Errorf(op.CodeUnavailable, "repository root is not configured")
@@ -731,11 +732,11 @@ func listReposHandler(d Deps) func(context.Context, op.Principal, RepoListIn) (R
 			if oerr := checkOwnerName(strings.ToLower(in.Owner)); oerr != nil {
 				return RepoListOut{}, oerr
 			}
-			user, uerr := d.Service.GetUser(ctx, strings.ToLower(in.Owner))
+			umeta, uerr := d.Store.LookupUserByName(ctx, strings.ToLower(in.Owner))
 			if uerr != nil {
 				return RepoListOut{Repos: []RepoJSON{}}, nil
 			}
-			filter.OwnerUserID = user.ID
+			filter.OwnerUserID = umeta.ID
 		}
 		var rows []store.RepoRow
 		var next string
@@ -749,7 +750,7 @@ func listReposHandler(d Deps) func(context.Context, op.Principal, RepoListIn) (R
 		}
 		out := RepoListOut{Next: next, Repos: []RepoJSON{}}
 		for _, row := range rows {
-			owner := repoOwnerName(ctx, d.Service, row)
+			owner := repoOwnerName(ctx, st, row)
 			if owner == "" {
 				continue
 			}
@@ -923,7 +924,7 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 				return RepoRenameOut{}, oerr
 			}
 		}
-		newUser, uerr := d.Service.GetUser(ctx, newOwnerName)
+		newUser, uerr := d.Store.LookupUserByName(ctx, newOwnerName)
 		if uerr != nil {
 			return RepoRenameOut{}, op.Errorf(op.CodeValidation, "destination owner does not exist")
 		}
@@ -1209,7 +1210,7 @@ func addCollaboratorHandler(d Deps) func(context.Context, op.Principal, Collabor
 		if uerr := checkOwnerName(targetName); uerr != nil {
 			return CollaboratorAddOut{}, uerr
 		}
-		target, uerr := d.Service.GetUser(ctx, targetName)
+		target, uerr := d.Store.LookupUserByName(ctx, targetName)
 		if uerr != nil {
 			return CollaboratorAddOut{}, op.Errorf(op.CodeNotFound, "user was not found")
 		}
@@ -1247,7 +1248,7 @@ func removeCollaboratorHandler(d Deps) func(context.Context, op.Principal, Colla
 			return CollaboratorRemoveOut{}, derr
 		}
 		targetName := strings.ToLower(strings.TrimSpace(in.User))
-		target, uerr := d.Service.GetUser(ctx, targetName)
+		target, uerr := d.Store.LookupUserByName(ctx, targetName)
 		if uerr != nil {
 			return CollaboratorRemoveOut{}, op.Errorf(op.CodeNotFound, "user was not found")
 		}
