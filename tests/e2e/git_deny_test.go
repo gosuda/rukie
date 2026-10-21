@@ -324,34 +324,6 @@ func (h *denyHarness) opens() int {
 	return len(h.fake.opens)
 }
 
-func (h *denyHarness) lsRemote(t *testing.T, repoURL string) map[string]string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	out, err := gitRun(ctx, t, t.TempDir(), "ls-remote", repoURL)
-	if err != nil {
-		t.Fatalf("ls-remote: %v\n%s", err, out)
-	}
-	refs := map[string]string{}
-	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
-		oid, name, _ := strings.Cut(line, "\t")
-		refs[name] = oid
-	}
-	return refs
-}
-
-func (h *denyHarness) repoURL(username, token string) string {
-	plain, _ := strings.CutPrefix(h.url, "http://")
-	creds := ""
-	if username != "" {
-		creds = username + ":" + token + "@"
-	}
-	return "http://" + creds + plain + "/ada/hello.git"
-}
-
 func TestGitDenialsOpenNoStream(t *testing.T) {
 	h := newDenyHarness(t, nil, 0, "private")
 	stranger := h.addUser(t, "mallory", "repo:read", "repo:write")
