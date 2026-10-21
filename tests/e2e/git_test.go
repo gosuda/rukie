@@ -260,30 +260,11 @@ func (s *stack) addRepo(t *testing.T, owner, name, visibility string) int64 {
 
 func (s *stack) addRule(t *testing.T, repoID int64, pattern, mode string) {
 	t.Helper()
-	s.putRule(t, repoID, pattern, mode, false)
-}
-
-func (s *stack) addRuleWithBypass(t *testing.T, repoID int64, pattern, mode string) {
-	t.Helper()
-	s.putRule(t, repoID, pattern, mode, true)
-}
-
-func (s *stack) putRule(t *testing.T, repoID int64, pattern, mode string, withBypass bool) {
-	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	now := time.Now()
-	var err error
-	if withBypass {
-		err = s.st.Write(ctx, func(tx *store.WriteTx) error {
-			return tx.PutBookmarkRuleWithBypass(repoID, pattern, mode, now)
-		})
-	} else {
-		err = s.st.Write(ctx, func(tx *store.WriteTx) error {
-			return tx.PutBookmarkRule(repoID, pattern, mode, now)
-		})
-	}
-	if err != nil {
+	if err := s.st.Write(ctx, func(tx *store.WriteTx) error {
+		return tx.PutBookmarkRule(repoID, pattern, mode, time.Now())
+	}); err != nil {
 		t.Fatalf("insert rule: %v", err)
 	}
 }

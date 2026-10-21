@@ -103,6 +103,7 @@ func (r *Resolver) Repo(id int64) (access.RepoRecord, bool) {
 	})
 	return out, ok
 }
+
 // refused_by: modify_delete_guard · collision: none (no common ancestor text)
 
 type accessAllowJSON struct {

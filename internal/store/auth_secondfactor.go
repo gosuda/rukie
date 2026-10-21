@@ -148,20 +148,19 @@ func (s *Store) PromoteTOTPSecret(ctx context.Context, userID int64, counter, no
 			return fmt.Errorf("PromoteTOTPSecret: %w", qerr)
 		} else if !pending.Valid || pending.String == "" {
 			return nil
-		} else {
-			pres, perr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET secret_sealed = ?, pending_secret_sealed = NULL,
-				last_counter = ?, verified_at = ? WHERE user_id = ? AND last_counter < ?`,
-				pending.String, counter, now, userID, counter)
-			if perr != nil {
-				return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(perr))
-			}
-			affected, aerr := pres.RowsAffected()
-			if aerr != nil {
-				return fmt.Errorf("PromoteTOTPSecret: %w", aerr)
-			}
-			if affected != 1 {
-				return nil
-			}
+		}
+		pres, perr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET secret_sealed = ?, pending_secret_sealed = NULL,
+			last_counter = ?, verified_at = ? WHERE user_id = ? AND last_counter < ?`,
+			pending.String, counter, now, userID, counter)
+		if perr != nil {
+			return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(perr))
+		}
+		affected, aerr := pres.RowsAffected()
+		if aerr != nil {
+			return fmt.Errorf("PromoteTOTPSecret: %w", aerr)
+		}
+		if affected != 1 {
+			return nil
 		}
 		if _, uerr := inner.ExecContext(tx.ctx, `UPDATE users SET totp_enabled = 1, updated_at = ? WHERE id = ?`,
 			now, userID); uerr != nil {

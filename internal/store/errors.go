@@ -46,11 +46,11 @@ var (
 	// ErrMigrationChanged reports an applied migration whose bytes changed.
 	ErrMigrationChanged = errors.New("store: applied migration checksum differs from embedded file")
 	// ErrMigrationFailed reports a migration whose transaction rolled back.
-	ErrMigrationFailed  = errors.New("store: migration failed; transaction rolled back")
+	ErrMigrationFailed = errors.New("store: migration failed; transaction rolled back")
 	// ErrAdminExists reports a bootstrap refused because an admin already exists.
 	ErrAdminExists = errors.New("store: admin already exists")
 	// ErrSoleOwner reports a user deletion refused because the user is a sole owner.
-	ErrSoleOwner = errors.New("store: sole owner cannot be removed")
+	ErrSoleOwner        = errors.New("store: sole owner cannot be removed")
 	ErrBackupInProgress = barrierRefusal{}
 )
 

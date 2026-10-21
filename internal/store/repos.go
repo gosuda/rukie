@@ -532,14 +532,6 @@ VALUES (?, ?, 'Open', 0, '[]', '[]', '[]', 1, ?)`,
 }
 
 func (tx *WriteTx) PutBookmarkRule(repoID int64, pattern, mode string, now time.Time) error {
-	return tx.putBookmarkRule(repoID, pattern, mode, 0, now)
-}
-
-func (tx *WriteTx) PutBookmarkRuleWithBypass(repoID int64, pattern, mode string, now time.Time) error {
-	return tx.putBookmarkRule(repoID, pattern, mode, 1, now)
-}
-
-func (tx *WriteTx) putBookmarkRule(repoID int64, pattern, mode string, bypass int, now time.Time) error {
 	inner, err := tx.live()
 	if err != nil {
 		return err
@@ -547,17 +539,12 @@ func (tx *WriteTx) putBookmarkRule(repoID int64, pattern, mode string, bypass in
 	switch mode {
 	case "Open", "LandOnly":
 	default:
-		return fmt.Errorf("putBookmarkRule: %w: unknown mode %q", ErrInvalid, mode)
-	}
-	switch bypass {
-	case 0, 1:
-	default:
-		return fmt.Errorf("putBookmarkRule: %w: bypass must be 0 or 1", ErrInvalid)
+		return fmt.Errorf("PutBookmarkRule: %w: unknown mode %q", ErrInvalid, mode)
 	}
 	_, merr := inner.ExecContext(tx.ctx, `INSERT INTO bookmark_rules
 (repo_id, pattern, mode, bypass_admin, push_allow, land_allow, required, version, created_at)
-VALUES (?, ?, ?, ?, '[]', '[]', '[]', 1, ?)`,
-		repoID, pattern, mode, bypass, msOf(now))
+VALUES (?, ?, ?, 0, '[]', '[]', '[]', 1, ?)`,
+		repoID, pattern, mode, msOf(now))
 	return merr
 }
 

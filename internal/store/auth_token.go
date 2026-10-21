@@ -22,8 +22,7 @@ type TokenRecord struct {
 	PublicOnly   bool
 }
 
-const sqlTokenColumns = `rowid, token_hash, public_prefix, user_id, name, scopes,
-	expires_at, created_at, last_used_at, last_used_ip, revoked_at, public_only`
+const tokenColumnList = `rowid, token_hash, public_prefix, user_id, name, scopes, expires_at, created_at, last_used_at, last_used_ip, revoked_at, public_only` //nolint:gosec // column list, not a credential
 
 func scanTokenRecord(row interface{ Scan(dest ...any) error }, out *TokenRecord) error {
 	var lastUsed, revoked sql.NullInt64
@@ -46,7 +45,9 @@ func scanTokenRecord(row interface{ Scan(dest ...any) error }, out *TokenRecord)
 	return nil
 }
 
+//nolint:govet // field order mirrors the token record; packing savings are noise here
 type TokenCreate struct {
+	RepoIDs    []int64
 	Hash       string
 	Prefix     string
 	Name       string
@@ -56,7 +57,6 @@ type TokenCreate struct {
 	ExpiresAt  int64
 	CreatedAt  int64
 	PublicOnly bool
-	RepoIDs    []int64
 }
 
 func (s *Store) CreateToken(ctx context.Context, in TokenCreate) error {
@@ -91,7 +91,7 @@ func (s *Store) GetTokenByHash(ctx context.Context, hash string) (TokenRecord, e
 			return lerr
 		}
 		if serr := scanTokenRecord(inner.QueryRowContext(tx.ctx,
-			`SELECT `+sqlTokenColumns+` FROM scoped_tokens WHERE token_hash = ?`, hash), &out); serr != nil {
+			`SELECT `+tokenColumnList+` FROM scoped_tokens WHERE token_hash = ?`, hash), &out); serr != nil {
 			if errors.Is(serr, sql.ErrNoRows) {
 				return fmt.Errorf("GetTokenByHash: %w", ErrNotFound)
 			}
@@ -113,7 +113,7 @@ func (s *Store) GetTokenByRowID(ctx context.Context, rowid int64) (TokenRecord, 
 			return lerr
 		}
 		if serr := scanTokenRecord(inner.QueryRowContext(tx.ctx,
-			`SELECT `+sqlTokenColumns+` FROM scoped_tokens WHERE rowid = ?`, rowid), &out); serr != nil {
+			`SELECT `+tokenColumnList+` FROM scoped_tokens WHERE rowid = ?`, rowid), &out); serr != nil {
 			if errors.Is(serr, sql.ErrNoRows) {
 				return fmt.Errorf("GetTokenByRowID: %w: %d", ErrNotFound, rowid)
 			}
@@ -148,7 +148,7 @@ func (s *Store) ListTokensByUser(ctx context.Context, userID int64) ([]TokenReco
 		if lerr != nil {
 			return lerr
 		}
-		rows, qerr := inner.QueryContext(tx.ctx, `SELECT `+sqlTokenColumns+`
+		rows, qerr := inner.QueryContext(tx.ctx, `SELECT `+tokenColumnList+`
 			FROM scoped_tokens WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`, userID)
 		if qerr != nil {
 			return fmt.Errorf("ListTokensByUser: %w", qerr)
