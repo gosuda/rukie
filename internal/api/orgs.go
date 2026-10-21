@@ -65,6 +65,7 @@ func matchTeamETag(ifMatch string, row store.TeamRow) error {
 type TeamJSON struct {
 	Description  string `json:"description,omitempty"`
 	Name         string `json:"name"`
+	ID           int64  `json:"-"`
 	Permission   string `json:"permission"`
 	RepoScope    string `json:"repo_scope"`
 	CreatedAt    int64  `json:"created_at"`
@@ -76,7 +77,7 @@ func teamJSON(row store.TeamRow) TeamJSON {
 	return TeamJSON{
 		Name: row.Name, Description: row.Description, Permission: row.Permission,
 		RepoScope: row.RepoScope, CanCreateRep: row.CanCreateRep,
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ID: row.ID,
 	}
 }
 
