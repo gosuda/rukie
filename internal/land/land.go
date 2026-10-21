@@ -60,7 +60,10 @@ func (w Worker) EnqueueRun(ctx context.Context, key Key, planPublicID, runPublic
 	if w.Queue == nil {
 		return false, fmt.Errorf("land: queue is not configured")
 	}
-	payload, _ := jsonv2.Marshal(runPayload{Run: runPublicID, Plan: planPublicID}, jsonv1.DefaultOptionsV1())
+	payload, merr := jsonv2.Marshal(runPayload{Run: runPublicID, Plan: planPublicID}, jsonv1.DefaultOptionsV1())
+	if merr != nil {
+		return false, merr
+	}
 	return w.Queue.Enqueue(ctx, queue.EnqueueSpec{
 		ID:      key.JobID(runPublicID),
 		Kind:    queue.KindLand,

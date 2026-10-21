@@ -820,7 +820,8 @@ func checkViewPredicates(raw string) error {
 		if viewPredicateKeys[key] {
 			continue
 		}
-		if key == "revset" || strings.HasPrefix(key, "facet") || strings.HasPrefix(key, "gap") {
+		if key == "revset" || strings.HasPrefix(key, "facet.") || strings.HasPrefix(key, "facet:") ||
+			strings.HasPrefix(key, "gap.") || strings.HasPrefix(key, "gap:") {
 			continue
 		}
 		return op.Errorf(op.CodeValidation, "predicate %q is not served", key)

@@ -100,6 +100,24 @@ func TestGapsBlockOnOtherHeadIgnored(t *testing.T) {
 	}
 }
 
+func TestMatchKindLeadingStarNeverMatches(t *testing.T) {
+	if matchKind("*/approve", "review/approve") {
+		t.Fatal("leading star matches a kind")
+	}
+	if matchKind("ci*bad", "ci/foo") {
+		t.Fatal("mid-pattern star matches as a prefix")
+	}
+	if !matchKind("ci/*", "ci/foo") {
+		t.Fatal("trailing wildcard does not match")
+	}
+	if !matchKind("ci/*", "ci") {
+		t.Fatal("trailing wildcard does not match the bare prefix")
+	}
+	if matchKind("review/approve", "model/review") {
+		t.Fatal("exact kind matches another kind")
+	}
+}
+
 func TestGapsPairingErrorKeepsHostedCode(t *testing.T) {
 	err := PairingError("compare")
 	var rerr *ruk.Error

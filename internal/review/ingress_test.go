@@ -68,6 +68,32 @@ func TestSpansFromPatch(t *testing.T) {
 	}
 }
 
+func TestSpansFromPureInsertion(t *testing.T) {
+	patch := `--- a/a.txt
++++ b/a.txt
+@@ -2,0 +3,2 @@
++new3
++new4
+`
+	spans := SpansFromPatch(map[string]string{"a.txt": patch})
+	got, ok := spans["a.txt"]
+	if !ok {
+		t.Fatal("no spans for a.txt")
+	}
+	if len(got) != 1 {
+		t.Fatalf("spans = %+v, want only the leading run", got)
+	}
+	if got[0] != (Span{OldStart: 1, NewStart: 1, Lines: 1}) {
+		t.Fatalf("span 0 = %+v, want old 1 to new 1", got[0])
+	}
+	if _, ok := RemapLine(2, got); ok {
+		t.Fatal("old line 2 at the insertion point remaps by guess")
+	}
+	if mapped, ok := RemapLine(1, got); !ok || mapped != 1 {
+		t.Fatalf("old line 1 maps to (%d, %v), want (1, true)", mapped, ok)
+	}
+}
+
 func TestSpansFromPatchEmpty(t *testing.T) {
 	if spans := SpansFromPatch(nil); len(spans) != 0 {
 		t.Fatalf("nil patches yield %d spans", len(spans))

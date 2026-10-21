@@ -358,7 +358,7 @@ func createRepoHandler(d Deps) func(context.Context, op.Principal, RepoCreateIn)
 			if ierr != nil {
 				return ierr
 			}
-			if rerr := tx.InsertDefaultRule(id, now, defaultBranch); rerr != nil {
+			if rerr := tx.InsertDefaultRule(id, now, "refs/heads/"+defaultBranch); rerr != nil {
 				return rerr
 			}
 			createdBody, _ := marshalJSON(map[string]any{

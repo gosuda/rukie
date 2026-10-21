@@ -30,8 +30,3 @@ func RemapLine(line uint32, spans []Span) (uint32, bool) {
 	}
 	return 0, false
 }
-
-// WholeFileUnchanged reports whether a file survives a rewrite untouched.
-func WholeFileUnchanged(oldLines, newLines uint32) bool {
-	return oldLines == newLines
-}

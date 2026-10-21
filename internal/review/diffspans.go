@@ -47,8 +47,8 @@ func spansFromUnified(patch string) []Span {
 			if head, _, found := strings.Cut(newPart, " @@"); found {
 				newPart = head
 			}
-			oldStart, _ := parseHunkRange(oldPart)
-			newStart, _ := parseHunkRange(newPart)
+			oldStart, oldCount := parseHunkRange(oldPart)
+			newStart, newCount := parseHunkRange(newPart)
 			if oldStart > oldCursor || newStart > newCursor {
 				closeSpan()
 				length := oldStart - oldCursor
@@ -64,10 +64,19 @@ func spansFromUnified(patch string) []Span {
 			}
 			oldCursor = oldStart
 			newCursor = newStart
+			if oldCount == 0 {
+				oldCursor++
+			}
+			if newCount == 0 {
+				newCursor++
+			}
 			continue
 		}
 		if line == "" {
 			closeSpan()
+			continue
+		}
+		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
 			continue
 		}
 		switch line[0] {
