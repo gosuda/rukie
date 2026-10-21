@@ -3,6 +3,7 @@ package op_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gosuda/rukie/internal/op"
@@ -82,5 +83,61 @@ func TestIdempotencyReplayIsScopedToCredential(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("handler calls %d, want 2", calls)
+	}
+}
+
+func TestIdempotencyReplayIncludesSetCookie(t *testing.T) {
+	table := op.NewTable()
+	calls := 0
+	mustRegister(t, table, op.Op[jsonCreateIn, jsonCreateOut]{
+		Name: "test.cookie.create", Kind: op.KindMutation, Method: http.MethodPost, Path: "/test/cookie",
+		Scope: op.ScopeRepoRead, Summary: "Create cookie",
+		Handler: func(ctx context.Context, _ op.Principal, _ jsonCreateIn) (jsonCreateOut, error) {
+			calls++
+			op.SetCookie(ctx, &http.Cookie{
+				Name:     "__Host-rukie_session",
+				Value:    "session-secret",
+				Path:     "/",
+				Secure:   true,
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			})
+			return jsonCreateOut{Note: "cookie-created"}, nil
+		},
+	})
+	srv, err := op.Mount(http.NewServeMux(), table, op.Config{
+		Authenticator: tokenIDAuth{},
+		Idempotency:   op.NewMemoryIdempotency(),
+		CSRFKey:       testCSRFKey,
+		Title:         "test",
+		Version:       "0",
+	})
+	if err != nil {
+		t.Fatalf("mount: %v", err)
+	}
+	headers := map[string]string{
+		"Accept":          "application/json",
+		"Authorization":   "Bearer fresh-session",
+		"Content-Type":    "application/json",
+		"Idempotency-Key": "cookie-key",
+	}
+	first := doRequest(srv, http.MethodPost, "/test/cookie", headers, `{"note":"cookie"}`)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first status %d, want 201: %s", first.Code, first.Body.String())
+	}
+	firstCookies := first.Header().Values("Set-Cookie")
+	if len(firstCookies) != 1 || !strings.Contains(firstCookies[0], "session-secret") {
+		t.Fatalf("first Set-Cookie = %v", firstCookies)
+	}
+	replay := doRequest(srv, http.MethodPost, "/test/cookie", headers, `{"note":"cookie"}`)
+	if replay.Code != http.StatusCreated {
+		t.Fatalf("replay status %d, want 201: %s", replay.Code, replay.Body.String())
+	}
+	replayCookies := replay.Header().Values("Set-Cookie")
+	if len(replayCookies) != 1 || replayCookies[0] != firstCookies[0] {
+		t.Fatalf("replay Set-Cookie = %v, want %v", replayCookies, firstCookies)
+	}
+	if calls != 1 {
+		t.Fatalf("handler calls %d, want 1", calls)
 	}
 }

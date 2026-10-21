@@ -55,6 +55,7 @@ type Recorded struct {
 	Location string
 	ETag     string
 	Link     string
+	Cookies  []string
 	Body     []byte
 	Status   int
 }
@@ -1434,8 +1435,12 @@ func (s *Server) renderReplay(st *reqState) (int, http.Header, []byte) {
 	st.location = rec.Location
 	st.etag = strings.Trim(rec.ETag, `"`)
 	st.link = rec.Link
+	header := http.Header{}
+	for _, cookie := range rec.Cookies {
+		header.Add("Set-Cookie", cookie)
+	}
 	if st.media == MediaHTML && st.spec != nil && st.spec.Kind == KindMutation {
-		return http.StatusSeeOther, http.Header{}, nil
+		return http.StatusSeeOther, header, nil
 	}
 	if st.media == MediaMarkdown {
 		var decoded any
@@ -1444,16 +1449,16 @@ func (s *Server) renderReplay(st *reqState) (int, http.Header, []byte) {
 			c := ViewCtx{Spec: st.spec, Principal: st.principal, RequestID: st.requestID, Path: st.path}
 			if fn, ok := s.views.markdown[st.spec.Name]; ok {
 				if err := fn(&buf, c, decoded); err == nil {
-					return rec.Status, http.Header{}, buf.Bytes()
+					return rec.Status, header, buf.Bytes()
 				}
 			}
 			buf.Reset()
 			if err := RenderMarkdown(&buf, decoded); err == nil {
-				return rec.Status, http.Header{}, buf.Bytes()
+				return rec.Status, header, buf.Bytes()
 			}
 		}
 	}
-	return rec.Status, http.Header{}, rec.Body
+	return rec.Status, header, rec.Body
 }
 
 func (s *Server) renderSuccess(st *reqState, status int, header http.Header, body []byte) (int, http.Header, []byte) {
@@ -1615,6 +1620,9 @@ func (s *Server) completeIdempotent(r *http.Request, st *reqState, status int, b
 		}
 	}
 	rec := Recorded{Status: status, Location: st.location, Link: st.link, Body: body}
+	for _, cookie := range st.cookies {
+		rec.Cookies = append(rec.Cookies, cookie.String())
+	}
 	if st.etag != "" {
 		rec.ETag = `"` + st.etag + `"`
 	}
