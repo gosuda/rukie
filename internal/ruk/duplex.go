@@ -89,11 +89,11 @@ func RunCommandStream(ctx context.Context, c *Client, cmd StreamCommand) (wire.C
 type streamDriver struct {
 	pc       *conn
 	stdout   io.Writer
+	signal   chan struct{}
 	service  string
 	invoking string
 	stderr   []byte
 	refusal  wire.ErrorReply
-	signal   chan struct{}
 	window   uint64
 	mu       sync.Mutex
 	id       uint64

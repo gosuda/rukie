@@ -18,8 +18,8 @@ import (
 
 type scriptFake struct {
 	t      *testing.T
-	mu     sync.Mutex
 	stdin  []byte
+	mu     sync.Mutex
 	naked  bool
 	exited bool
 }
@@ -105,6 +105,10 @@ func (f *scriptFake) command(nc net.Conn) {
 		case KindStdinEOF:
 			return
 		case KindWindowUpdate, KindCancel:
+			// Flow control only; keep reading.
+		case KindAccepted, KindStdout, KindStderr, KindExit, KindError, KindHookCall, KindHookReply:
+			// The fake never receives daemon-to-client frames; anything else ends the session.
+			return
 		default:
 			return
 		}
@@ -112,8 +116,8 @@ func (f *scriptFake) command(nc net.Conn) {
 }
 
 type syncBuffer struct {
-	mu sync.Mutex
 	b  bytes.Buffer
+	mu sync.Mutex
 }
 
 func (s *syncBuffer) Write(p []byte) (int, error) {
@@ -153,8 +157,8 @@ func TestRunCommandStreamMultiplexesRounds(t *testing.T) {
 	fake := &scriptFake{t: t}
 	go func() {
 		for {
-			nc, err := ln.Accept()
-			if err != nil {
+			nc, acceptErr := ln.Accept()
+			if acceptErr != nil {
 				return
 			}
 			go fake.serveConn(nc)
@@ -170,9 +174,9 @@ func TestRunCommandStreamMultiplexesRounds(t *testing.T) {
 	stdinR, stdinW := io.Pipe()
 	var stdout syncBuffer
 	type outcome struct {
-		report wire.CommandExitReport
-		stderr []byte
 		err    error
+		stderr []byte
+		report wire.CommandExitReport
 	}
 	outcomeDone := make(chan outcome, 1)
 	go func() {
