@@ -777,7 +777,7 @@ func reviewCreateHandler(d Deps) func(context.Context, op.Principal, ReviewCreat
 				body = body + ": " + in.Body.Body
 			}
 			saved, ierr := tx.InsertComment(d.now(), store.CommentRow{
-				ChangeID: row.ID, HeadOid: row.HeadOid, Body: body, AuthorUserID: rq.user.ID,
+				ChangeID: row.ID, HeadOid: row.HeadOid, Body: body, AuthorUserID: rq.user.ID, Kind: "review",
 			})
 			if ierr != nil {
 				return ierr

@@ -37,6 +37,7 @@ type CommentRow struct {
 	PublicID     string
 	Body         string
 	RemappedFrom string
+	Kind         string
 	Path         sql.NullString
 	IntentID     sql.NullInt64
 	Line         sql.NullInt64
@@ -311,12 +312,14 @@ func (tx *WriteTx) InsertComment(now time.Time, row CommentRow) (CommentRow, err
 	if row.PublicID == "" {
 		row.PublicID = string(NewID(now))
 	}
+	if row.Kind == "" {
+		row.Kind = "comment"
+	}
 	res, ierr := inner.ExecContext(tx.ctx, `INSERT INTO change_comments
-(public_id, change_id, intent_id, head_oid, path, line, body, author_user_id, remapped_from, unmatched, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		row.PublicID, row.ChangeID, nullInt(row.IntentID), row.HeadOid,
+(public_id, change_id, intent_id, head_oid, path, line, body, author_user_id, remapped_from, unmatched, kind, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.PublicID, row.ChangeID, nullInt(row.IntentID), row.HeadOid,
 		nullStr(row.Path), nullInt(row.Line), row.Body, row.AuthorUserID,
-		row.RemappedFrom, boolInt(row.Unmatched), msOf(now))
+		row.RemappedFrom, boolInt(row.Unmatched), row.Kind, msOf(now))
 	if ierr != nil {
 		return CommentRow{}, ierr
 	}
@@ -336,11 +339,11 @@ func (tx *WriteTx) GetComment(id int64) (CommentRow, error) {
 	var row CommentRow
 	var unmatched int64
 	serr := inner.QueryRowContext(tx.ctx, `SELECT id, public_id, change_id, intent_id,
-head_oid, path, line, body, author_user_id, remapped_from, unmatched, created_at
+head_oid, path, line, body, author_user_id, remapped_from, unmatched, kind, created_at
 FROM change_comments WHERE id = ?`, id).Scan(
 		&row.ID, &row.PublicID, &row.ChangeID, &row.IntentID, &row.HeadOid,
 		&row.Path, &row.Line, &row.Body, &row.AuthorUserID, &row.RemappedFrom,
-		&unmatched, &row.CreatedAt)
+		&unmatched, &row.Kind, &row.CreatedAt)
 	if errors.Is(serr, sql.ErrNoRows) {
 		return CommentRow{}, fmt.Errorf("GetComment: %w: comment %d", ErrNotFound, id)
 	}
@@ -365,7 +368,7 @@ func (tx *ReadTx) listCommentsAtHead(changeID int64, headOid string, includeUnma
 		return nil, err
 	}
 	query := `SELECT id, public_id, change_id, intent_id, head_oid, path, line, body,
-author_user_id, remapped_from, unmatched, created_at
+author_user_id, remapped_from, unmatched, kind, created_at
 FROM change_comments WHERE change_id = ? AND head_oid = ?`
 	if !includeUnmatched {
 		query += ` AND unmatched = 0`
@@ -382,7 +385,7 @@ FROM change_comments WHERE change_id = ? AND head_oid = ?`
 		var unmatched int64
 		if serr := rows.Scan(&row.ID, &row.PublicID, &row.ChangeID, &row.IntentID,
 			&row.HeadOid, &row.Path, &row.Line, &row.Body, &row.AuthorUserID,
-			&row.RemappedFrom, &unmatched, &row.CreatedAt); serr != nil {
+			&row.RemappedFrom, &unmatched, &row.Kind, &row.CreatedAt); serr != nil {
 			return nil, serr
 		}
 		row.Unmatched = unmatched == 1
@@ -971,7 +974,7 @@ func (tx *WriteTx) WholeChangeComments(changeID int64, headOid string) ([]Commen
 		return nil, err
 	}
 	rows, qerr := inner.QueryContext(tx.ctx, `SELECT id, public_id, change_id, intent_id, head_oid,
-path, line, body, author_user_id, remapped_from, unmatched, created_at
+path, line, body, author_user_id, remapped_from, unmatched, kind, created_at
 FROM change_comments WHERE change_id = ? AND head_oid = ? AND path IS NULL ORDER BY id ASC`,
 		changeID, headOid)
 	if qerr != nil {
@@ -984,7 +987,7 @@ FROM change_comments WHERE change_id = ? AND head_oid = ? AND path IS NULL ORDER
 		var unmatched int64
 		if serr := rows.Scan(&row.ID, &row.PublicID, &row.ChangeID, &row.IntentID,
 			&row.HeadOid, &row.Path, &row.Line, &row.Body, &row.AuthorUserID,
-			&row.RemappedFrom, &unmatched, &row.CreatedAt); serr != nil {
+			&row.RemappedFrom, &unmatched, &row.Kind, &row.CreatedAt); serr != nil {
 			return nil, serr
 		}
 		row.Unmatched = unmatched == 1
@@ -1070,7 +1073,7 @@ func (tx *WriteTx) ListCommentsAtHeadIncludingUnmatched(changeID int64, headOid 
 		return nil, err
 	}
 	rows, qerr := inner.QueryContext(tx.ctx, `SELECT id, public_id, change_id, intent_id, head_oid, path, line, body,
-author_user_id, remapped_from, unmatched, created_at
+author_user_id, remapped_from, unmatched, kind, created_at
 FROM change_comments WHERE change_id = ? AND head_oid = ? ORDER BY id ASC`, changeID, headOid)
 	if qerr != nil {
 		return nil, qerr
@@ -1082,7 +1085,7 @@ FROM change_comments WHERE change_id = ? AND head_oid = ? ORDER BY id ASC`, chan
 		var unmatched int64
 		if serr := rows.Scan(&row.ID, &row.PublicID, &row.ChangeID, &row.IntentID,
 			&row.HeadOid, &row.Path, &row.Line, &row.Body, &row.AuthorUserID,
-			&row.RemappedFrom, &unmatched, &row.CreatedAt); serr != nil {
+			&row.RemappedFrom, &unmatched, &row.Kind, &row.CreatedAt); serr != nil {
 			return nil, serr
 		}
 		row.Unmatched = unmatched == 1

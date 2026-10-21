@@ -192,6 +192,9 @@ func (d Deps) liveGapsInTx(ctx context.Context, daemon ruk.Repo, tx *store.Write
 	}
 	approvers := map[int64]bool{}
 	for _, comment := range comments {
+		if comment.Kind != "review" {
+			continue
+		}
 		if comment.AuthorUserID == change.AuthorUserID {
 			continue
 		}
