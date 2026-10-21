@@ -15,7 +15,6 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 )
 
-// reviewCaller adapts Deps to the pending-call surface.
 type reviewCaller struct {
 	deps Deps
 }

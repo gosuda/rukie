@@ -149,9 +149,6 @@ func landPlanCreateHandler(d Deps) func(context.Context, op.Principal, LandPlanC
 	}
 }
 
-// liveGaps evaluates the bookmark requirements against live attestations.
-// Unknown signer strings never match the numeric author id, so the author
-// exclusion in gap evaluation only drops exact numeric matches.
 func (d Deps) liveGaps(ctx context.Context, daemon ruk.Repo, repoID int64, row store.ChangeRow) ([]review.Gap, error) {
 	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
 	rules := resolver.Rules(repoID)
@@ -180,10 +177,6 @@ func (d Deps) liveGaps(ctx context.Context, daemon ruk.Repo, repoID int64, row s
 	return review.GapsForChange(row.HeadOid, row.AuthorUserID, reqs, facts), nil
 }
 
-// liveGapsInTx evaluates live requirements and folds in store-recorded
-// human approvals, whose attestations pend on the F2 pin. A needs_review
-// gap on review/approve clears only when a recorded approval comes from a
-// signer other than the change author.
 func (d Deps) liveGapsInTx(ctx context.Context, daemon ruk.Repo, tx *store.WriteTx, repoID int64, change store.ChangeRow) ([]review.Gap, error) {
 	gaps, gerr := d.liveGaps(ctx, daemon, repoID, change)
 	if gerr != nil {

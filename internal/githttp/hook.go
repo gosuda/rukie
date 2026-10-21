@@ -134,10 +134,6 @@ func (s *Server) judge(ctx context.Context, caller access.Caller, repoID int64, 
 	return wire.AcceptVerdict()
 }
 
-// divertChange creates or updates the review change for a refs/for push and
-// diverts the command to refs/changes/<nn>/patchset/<k>. The change commits
-// synchronously inside the hook budget; any commit failure answers ng, never
-// ok. Refs/for ingress needs only read access.
 func (s *Server) divertChange(ctx context.Context, caller access.Caller, repoID int64, cmd wire.HookCommand) wire.HookVerdict {
 	if isZeroOid(cmd.New) {
 		return wire.RejectVerdict(truncateReason("refs/for does not delete"))
@@ -200,10 +196,6 @@ func firstChangeLine(err error) string {
 	return line
 }
 
-// changeSpans loads unchanged spans between the previous change head and the
-// pushed head so anchored comments remap exactly. Span failures stay
-// best-effort: a nil map moves every prior comment to the fallback bucket
-// without failing the push.
 func (s *Server) changeSpans(ctx context.Context, repoID, authorID int64, branch, topic, newHead string) map[string][]review.Span {
 	key := branch + "~" + topic
 	if topic == "" {
@@ -247,7 +239,6 @@ func (s *Server) changeSpans(ctx context.Context, repoID, authorID int64, branch
 	return spansFromDiffReply(raw)
 }
 
-// repoDaemonPath resolves the daemon repository path for a repo id.
 func (s *Server) repoDaemonPath(repoID int64) (string, bool) {
 	var owner, name sql.NullString
 	if err := s.db.QueryRow(`SELECT u.name, r.name FROM repos r

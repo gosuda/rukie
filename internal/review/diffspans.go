@@ -101,7 +101,6 @@ func spansFromUnified(patch string) []Span {
 	return spans
 }
 
-// toUint32 converts a line number with an overflow guard.
 func toUint32(v int64) (uint32, bool) {
 	if v < 0 || v > int64(^uint32(0)) {
 		return 0, false

@@ -33,7 +33,6 @@ func (k Key) JobID(runPublicID string) string {
 	return "land:" + strings.TrimSpace(k.Target) + ":" + runPublicID
 }
 
-// runPayload is the land job body.
 type runPayload struct {
 	Run  string `json:"run"`
 	Plan string `json:"plan"`
@@ -185,7 +184,6 @@ func (w Worker) finish(ctx context.Context, job store.Job, err error) error {
 	return err
 }
 
-// clientCaller adapts a daemon client to the pending-call surface.
 type clientCaller struct {
 	client *ruk.Client
 }
@@ -203,7 +201,6 @@ func (c clientCaller) CallRuk(ctx context.Context, repo ruk.Repo, method wire.Me
 	return jsonv2.Unmarshal(encoded, out, jsonv1.DefaultOptionsV1())
 }
 
-// daemonPath joins the repository root with a stored relative daemon path.
 func daemonPath(root, rel string) string {
 	return filepath.Join(root, filepath.Clean("/"+rel))
 }

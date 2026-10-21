@@ -519,8 +519,6 @@ func (tx *WriteTx) DeleteGrant(repoID, userID int64) error {
 	return nil
 }
 
-// defaultLandRequired is the default bookmark requirement: one review/approve
-// from a trusted signer who is not the change author.
 const defaultLandRequired = `[{"kind":"review/approve","result":"approved","trusted":{},"min_signers":1}]`
 
 func (tx *WriteTx) InsertDefaultRule(repoID int64, now time.Time, pattern string) error {

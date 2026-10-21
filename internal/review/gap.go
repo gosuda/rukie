@@ -86,8 +86,6 @@ func GapsForChange(head string, authorID int64, reqs []Requirement, facts []Atte
 	return out
 }
 
-// matchKind matches exact kinds and trailing "/*" wildcards only. A
-// leading star never matches: malformed patterns stay exact and fail closed.
 func matchKind(pattern, kind string) bool {
 	prefix, found := strings.CutSuffix(pattern, "/*")
 	if !found {
