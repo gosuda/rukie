@@ -193,8 +193,8 @@ func (s *Spool) quarantine(id string) error {
 	if err != nil {
 		return fmt.Errorf("quarantine: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return fmt.Errorf("quarantine: %w", err)
+	if merr := os.MkdirAll(filepath.Dir(dst), 0o700); merr != nil {
+		return fmt.Errorf("quarantine: %w", merr)
 	}
 	src, err := s.path(id)
 	if err != nil {

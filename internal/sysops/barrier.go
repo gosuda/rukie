@@ -56,8 +56,8 @@ func ensureRunDir(dataDir string) error {
 type Barrier struct {
 	file  *os.File
 	id    string
-	dir   string
 	since time.Time
+	dir   string
 }
 
 // BeginBarrier takes the backup mutex exclusively, waiting past

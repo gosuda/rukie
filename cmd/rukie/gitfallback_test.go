@@ -63,13 +63,13 @@ func TestDaemonCallsFailFast503(t *testing.T) {
 	if got := res.Header.Get("Retry-After"); got != "5" {
 		t.Fatalf("Retry-After = %q, want 5", got)
 	}
-	raw, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("read 503 body: %v", err)
+	raw, rerr := io.ReadAll(res.Body)
+	if rerr != nil {
+		t.Fatalf("read 503 body: %v", rerr)
 	}
 	var decoded map[string]any
-	if err := jsonv2.Unmarshal(raw, &decoded, jsonv1.DefaultOptionsV1()); err != nil {
-		t.Fatalf("decode 503 body: %v", err)
+	if derr := jsonv2.Unmarshal(raw, &decoded, jsonv1.DefaultOptionsV1()); derr != nil {
+		t.Fatalf("decode 503 body: %v", derr)
 	}
 	if decoded["type"] != "/-/problems/unavailable" {
 		t.Fatalf("type = %v, want the catalogue unavailable problem", decoded["type"])

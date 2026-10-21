@@ -192,15 +192,15 @@ func TestRenewOwnership(t *testing.T) {
 		t.Fatalf("claimed = %+v, want one job carrying a fencing token", claimed)
 	}
 	token := claimed[0].LeaseToken
-	if err := q.Renew(ctx, "w2", []string{"a"}, token, time.Minute); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("foreign renew err = %v, want stale", err)
+	if rerr := q.Renew(ctx, "w2", []string{"a"}, token, time.Minute); !errors.Is(rerr, store.ErrStale) {
+		t.Fatalf("foreign renew err = %v, want stale", rerr)
 	}
-	if err := q.Renew(ctx, "w1", []string{"a"}, "bogus-token", time.Minute); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("wrong-token renew err = %v, want stale", err)
+	if rerr := q.Renew(ctx, "w1", []string{"a"}, "bogus-token", time.Minute); !errors.Is(rerr, store.ErrStale) {
+		t.Fatalf("wrong-token renew err = %v, want stale", rerr)
 	}
 	now = now.Add(30 * time.Second)
-	if err := q.Renew(ctx, "w1", []string{"a"}, token, time.Minute); err != nil {
-		t.Fatalf("owner renew: %v", err)
+	if rerr := q.Renew(ctx, "w1", []string{"a"}, token, time.Minute); rerr != nil {
+		t.Fatalf("owner renew: %v", rerr)
 	}
 	job, err := q.Job(ctx, "a")
 	if err != nil {
@@ -234,17 +234,17 @@ func TestCompleteAndFail(t *testing.T) {
 	if tokens["a"] == "" || tokens["b"] == "" {
 		t.Fatalf("claims carry no fencing tokens: %+v", claimed)
 	}
-	if err := q.Complete(ctx, "w2", "a", tokens["a"]); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("foreign complete err = %v, want stale", err)
+	if cerr := q.Complete(ctx, "w2", "a", tokens["a"]); !errors.Is(cerr, store.ErrStale) {
+		t.Fatalf("foreign complete err = %v, want stale", cerr)
 	}
-	if err := q.Complete(ctx, "w1", "a", "bogus-token"); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("wrong-token complete err = %v, want stale", err)
+	if cerr := q.Complete(ctx, "w1", "a", "bogus-token"); !errors.Is(cerr, store.ErrStale) {
+		t.Fatalf("wrong-token complete err = %v, want stale", cerr)
 	}
-	if err := q.Complete(ctx, "w1", "a", tokens["a"]); err != nil {
-		t.Fatalf("complete: %v", err)
+	if cerr := q.Complete(ctx, "w1", "a", tokens["a"]); cerr != nil {
+		t.Fatalf("complete: %v", cerr)
 	}
-	if err := q.Fail(ctx, "w1", "b", tokens["b"]); err != nil {
-		t.Fatalf("fail: %v", err)
+	if ferr := q.Fail(ctx, "w1", "b", tokens["b"]); ferr != nil {
+		t.Fatalf("fail: %v", ferr)
 	}
 	done, err := q.Job(ctx, "a")
 	if err != nil {
@@ -263,10 +263,10 @@ func TestCompleteAndFail(t *testing.T) {
 	if queued.RunAfter <= now.UnixMilli() {
 		t.Fatalf("failed job run_after = %d, want a future backoff", queued.RunAfter)
 	}
-	if reclaimed, err := q.Claim(ctx, "w2", time.Minute, 10); err != nil {
-		t.Fatalf("early reclaim: %v", err)
-	} else if len(reclaimed) != 0 {
-		t.Fatalf("early reclaimed = %+v, want nothing before the backoff passes", reclaimed)
+	if early, rerr := q.Claim(ctx, "w2", time.Minute, 10); rerr != nil {
+		t.Fatalf("early reclaim: %v", rerr)
+	} else if len(early) != 0 {
+		t.Fatalf("early reclaimed = %+v, want nothing before the backoff passes", early)
 	}
 	now = now.Add(2 * time.Hour)
 	reclaimed, err := q.Claim(ctx, "w2", time.Minute, 10)
@@ -376,8 +376,8 @@ func TestFailBacksOffThenDeadLetters(t *testing.T) {
 		if len(claimed) != 1 {
 			t.Fatalf("claim %d returned %d jobs, want 1", attempt, len(claimed))
 		}
-		if err := q.Fail(ctx, "w1", "poison", claimed[0].LeaseToken); err != nil {
-			t.Fatalf("fail %d: %v", attempt, err)
+		if ferr := q.Fail(ctx, "w1", "poison", claimed[0].LeaseToken); ferr != nil {
+			t.Fatalf("fail %d: %v", attempt, ferr)
 		}
 		job, err := q.Job(ctx, "poison")
 		if err != nil {
@@ -462,11 +462,11 @@ func TestExpiredLeaseCannotCompleteAfterReclaim(t *testing.T) {
 	if second[0].LeaseToken == first[0].LeaseToken {
 		t.Fatal("reclaim reused the lease token; fences cannot distinguish epochs")
 	}
-	if err := q1.Complete(ctx, "w1", "a", first[0].LeaseToken); !errors.Is(err, store.ErrStale) {
-		t.Fatalf("stale complete err = %v, want stale: the first worker lost the lease", err)
+	if cerr := q1.Complete(ctx, "w1", "a", first[0].LeaseToken); !errors.Is(cerr, store.ErrStale) {
+		t.Fatalf("stale complete err = %v, want stale: the first worker lost the lease", cerr)
 	}
-	if err := q2.Complete(ctx, "w2", "a", second[0].LeaseToken); err != nil {
-		t.Fatalf("replacement complete: %v", err)
+	if cerr := q2.Complete(ctx, "w2", "a", second[0].LeaseToken); cerr != nil {
+		t.Fatalf("replacement complete: %v", cerr)
 	}
 	done, err := q1.Job(ctx, "a")
 	if err != nil {

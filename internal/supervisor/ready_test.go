@@ -112,13 +112,13 @@ func TestDaemonCallsFailFast503(t *testing.T) {
 	if got := res.Header.Get("Content-Type"); got != "application/problem+json" {
 		t.Fatalf("Content-Type = %q, want application/problem+json", got)
 	}
-	raw, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("read 503 body: %v", err)
+	raw, rerr := io.ReadAll(res.Body)
+	if rerr != nil {
+		t.Fatalf("read 503 body: %v", rerr)
 	}
 	var decoded map[string]any
-	if err := jsonv2.Unmarshal(raw, &decoded, jsonv1.DefaultOptionsV1()); err != nil {
-		t.Fatalf("decode 503 body: %v", err)
+	if derr := jsonv2.Unmarshal(raw, &decoded, jsonv1.DefaultOptionsV1()); derr != nil {
+		t.Fatalf("decode 503 body: %v", derr)
 	}
 	if decoded["type"] != "/-/problems/unavailable" {
 		t.Fatalf("type = %v, want /-/problems/unavailable from the op-table catalogue", decoded["type"])

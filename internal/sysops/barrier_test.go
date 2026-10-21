@@ -13,8 +13,8 @@ import (
 
 func TestBarrierBlocksMutationsAndReleases(t *testing.T) {
 	dir := t.TempDir()
-	release, ok := HoldSharedBarrier(dir)
-	if !ok {
+	release, held := HoldSharedBarrier(dir)
+	if !held {
 		t.Fatal("shared hold on a free mutex refused")
 	}
 	if _, active := BarrierActive(dir); active {
@@ -47,7 +47,7 @@ func TestBarrierBlocksMutationsAndReleases(t *testing.T) {
 	if id, active := BarrierActive(dir); !active || id != b.ID() {
 		t.Fatalf("Active = (%q, %v), want (%q, true)", id, active, b.ID())
 	}
-	if _, ok := HoldSharedBarrier(dir); ok {
+	if _, held := HoldSharedBarrier(dir); held {
 		t.Fatal("shared hold succeeded under an exclusive barrier; a push would write past the snapshot")
 	}
 	if err := b.Close(); err != nil {
@@ -112,40 +112,40 @@ func TestRestoreRefusesLegacyManifestWithoutBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
-	if err := st.Close(t.Context()); err != nil {
-		t.Fatalf("Close: %v", err)
+	if cerr := st.Close(t.Context()); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
 	}
 	legacyDir := filepath.Join(cfg.DataDir, "legacy")
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("legacy dir: %v", err)
+	if merr := os.MkdirAll(legacyDir, 0o700); merr != nil {
+		t.Fatalf("legacy dir: %v", merr)
 	}
-	doc, err := ReadManifest(filepath.Dir(manifest))
-	if err != nil {
-		t.Fatalf("ReadManifest: %v", err)
+	doc, rerr := ReadManifest(filepath.Dir(manifest))
+	if rerr != nil {
+		t.Fatalf("ReadManifest: %v", rerr)
 	}
 	doc.BarrierID = ""
-	if err := writeManifest(legacyDir, doc); err != nil {
-		t.Fatalf("write legacy manifest: %v", err)
+	if werr := writeManifest(legacyDir, doc); werr != nil {
+		t.Fatalf("write legacy manifest: %v", werr)
 	}
 	for _, f := range doc.Files {
-		raw, rerr := os.ReadFile(filepath.Join(filepath.Dir(manifest), f.Path))
-		if rerr != nil {
-			t.Fatalf("copy backup file: %v", rerr)
+		raw, frerr := os.ReadFile(filepath.Join(filepath.Dir(manifest), f.Path))
+		if frerr != nil {
+			t.Fatalf("copy backup file: %v", frerr)
 		}
 		dst := filepath.Join(legacyDir, f.Path)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			t.Fatalf("legacy parent: %v", err)
+		if merr := os.MkdirAll(filepath.Dir(dst), 0o700); merr != nil {
+			t.Fatalf("legacy parent: %v", merr)
 		}
-		if err := os.WriteFile(dst, raw, 0o600); err != nil {
-			t.Fatalf("legacy file: %v", err)
+		if werr := os.WriteFile(dst, raw, 0o600); werr != nil {
+			t.Fatalf("legacy file: %v", werr)
 		}
 	}
 	if _, err := Restore(t.Context(), cfg, legacyDir); err == nil {
 		t.Fatal("Restore of a barrier-less manifest succeeded; only --force may proceed past a legacy backup")
 	}
-	rep, err := RestoreLenient(t.Context(), cfg, legacyDir)
-	if err != nil {
-		t.Fatalf("RestoreLenient: %v", err)
+	rep, lerr := RestoreLenient(t.Context(), cfg, legacyDir)
+	if lerr != nil {
+		t.Fatalf("RestoreLenient: %v", lerr)
 	}
 	if len(rep.Warnings) == 0 {
 		t.Fatal("forced restore of a legacy manifest recorded no warning")
@@ -170,15 +170,15 @@ func TestRestoreRollsBackMidCopyFailure(t *testing.T) {
 	}
 	blocker := filepath.Join(cfg.Ruk.RepoRoot, "ada")
 	_ = os.RemoveAll(blocker)
-	if err := os.WriteFile(blocker, []byte("in the way"), 0o600); err != nil {
-		t.Fatalf("blocker: %v", err)
+	if berr := os.WriteFile(blocker, []byte("in the way"), 0o600); berr != nil {
+		t.Fatalf("blocker: %v", berr)
 	}
-	if _, err := Restore(t.Context(), cfg, filepath.Dir(manifest)); err == nil {
+	if _, rerr := Restore(t.Context(), cfg, filepath.Dir(manifest)); rerr == nil {
 		t.Fatal("Restore past a blocked destination succeeded, want a mid-copy failure")
 	}
-	stuck, err := store.Open(t.Context(), store.Options{Path: cfg.Store.SQLite.Path})
-	if err != nil {
-		t.Fatalf("restored store does not open after rollback: %v", err)
+	stuck, serr := store.Open(t.Context(), store.Options{Path: cfg.Store.SQLite.Path})
+	if serr != nil {
+		t.Fatalf("restored store does not open after rollback: %v", serr)
 	}
 	_ = stuck.Close(t.Context())
 }

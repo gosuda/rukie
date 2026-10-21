@@ -188,7 +188,7 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		writeText(w, http.StatusForbidden, "token is not granted this repository")
 		return
 	}
-	var releaseBarrier func() = func() {}
+	var releaseBarrier func()
 	if name == receiveServiceName && s.barrier != nil {
 		var ok bool
 		if releaseBarrier, ok = s.barrier(); !ok {

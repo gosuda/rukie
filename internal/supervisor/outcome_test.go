@@ -97,15 +97,15 @@ func TestGitServiceStreamReconcileRespectsCancel(t *testing.T) {
 func TestGitServiceStreamReconcileDeletionTarget(t *testing.T) {
 	landed := "abc123"
 	for _, tc := range []struct {
-		name    string
 		want    map[string]string
 		current map[string]string
+		name    string
 		verdict Verdict
 	}{
-		{"empty want target with absent tip commits", map[string]string{"refs/heads/gone": ""}, map[string]string{}, VerdictCommitted},
-		{"zero want target with absent tip commits", map[string]string{"refs/heads/gone": strings.Repeat("0", 40)}, map[string]string{}, VerdictCommitted},
-		{"empty want target with present tip stays unknown", map[string]string{"refs/heads/gone": ""}, map[string]string{"refs/heads/gone": landed}, VerdictUnknown},
-		{"zero current tip counts as absent", map[string]string{"refs/heads/gone": ""}, map[string]string{"refs/heads/gone": strings.Repeat("0", 40)}, VerdictCommitted},
+		{map[string]string{"refs/heads/gone": ""}, map[string]string{}, "empty want target with absent tip commits", VerdictCommitted},
+		{map[string]string{"refs/heads/gone": strings.Repeat("0", 40)}, map[string]string{}, "zero want target with absent tip commits", VerdictCommitted},
+		{map[string]string{"refs/heads/gone": ""}, map[string]string{"refs/heads/gone": landed}, "empty want target with present tip stays unknown", VerdictUnknown},
+		{map[string]string{"refs/heads/gone": ""}, map[string]string{"refs/heads/gone": strings.Repeat("0", 40)}, "zero current tip counts as absent", VerdictCommitted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := ReconcileUnknownOutcome(context.Background(),

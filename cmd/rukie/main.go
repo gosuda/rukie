@@ -365,8 +365,8 @@ func watchShutdownSignals(sigCh <-chan os.Signal, stop context.CancelFunc, halve
 }
 
 type halveRegistry struct {
-	mu     sync.Mutex
 	fns    []func()
+	mu     sync.Mutex
 	halved bool
 }
 
@@ -393,10 +393,10 @@ func (r *halveRegistry) halveAll() {
 }
 
 type halveDeadline struct {
-	mu       sync.Mutex
 	deadline time.Time
 	timer    *time.Timer
 	cancel   context.CancelCauseFunc
+	mu       sync.Mutex
 	halved   bool
 }
 

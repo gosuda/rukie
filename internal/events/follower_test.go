@@ -266,8 +266,8 @@ func TestFollowerIngestSkipsAlreadyAppliedTip(t *testing.T) {
 		t.Fatalf("seed tip: %v", err)
 	}
 	event := tailEvent(5, "refs/heads/main", strings.Repeat("a", 40), applied)
-	if err := f.Ingest(ctx, []ruk.RefEvent{event}); err != nil {
-		t.Fatalf("ingest: %v", err)
+	if ierr := f.Ingest(ctx, []ruk.RefEvent{event}); ierr != nil {
+		t.Fatalf("ingest: %v", ierr)
 	}
 	if n := countOutboxKind(t, st, kindRefUpdated); n != 0 {
 		t.Fatalf("ref.updated rows = %d, want 0: the transition is already applied", n)
@@ -298,7 +298,7 @@ func TestFollowerIngestSkipsAlreadyAppliedTip(t *testing.T) {
 
 func TestListAllCarriesMinimumAsOf(t *testing.T) {
 	ctx := feedCtx(t)
-	list := func(_ context.Context, prefix, after string) (ruk.RefsListReply, error) {
+	list := func(_ context.Context, _ string, after string) (ruk.RefsListReply, error) {
 		if after == "" {
 			reply := listReply(10, map[string]string{"refs/heads/main": strings.Repeat("a", 40)})
 			next := "cursor-1"

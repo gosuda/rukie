@@ -398,7 +398,10 @@ func TestSupervisorResetsBudgetAfterStableReady(t *testing.T) {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-done:
+		case cerr := <-done:
+			if cerr != nil {
+				t.Errorf("cancelled Run returned %v, want nil", cerr)
+			}
 		case <-time.After(5 * time.Second):
 			t.Error("supervisor did not stop after cancel")
 		}
@@ -457,7 +460,10 @@ func TestSupervisorExternalSocketReprobes(t *testing.T) {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-done:
+		case cerr := <-done:
+			if cerr != nil {
+				t.Errorf("external Run returned %v after cancel, want nil", cerr)
+			}
 		case <-time.After(5 * time.Second):
 			t.Error("external Run did not return after cancel")
 		}

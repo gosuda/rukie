@@ -42,11 +42,11 @@ type ManifestFile struct {
 // it stays empty until the op.log wrapper lands (F2) and reconcile
 // compares content hashes meanwhile.
 type ManifestDoc struct {
+	Positions      map[string]uint64 `toml:"positions"`
 	BarrierID      string            `toml:"barrier_id"`
 	SnapshotSource string            `toml:"snapshot_source"`
 	KeyID          string            `toml:"key_id"`
 	Files          []ManifestFile    `toml:"files"`
-	Positions      map[string]uint64 `toml:"positions"`
 	Version        int               `toml:"version"`
 	CreatedAt      int64             `toml:"created_at"`
 	SchemaVersion  int64             `toml:"schema_version"`
@@ -137,11 +137,12 @@ func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase str
 		barrier        *Barrier
 		offlineLock    *DirLock
 	)
-	offlineLock, lerr := AcquireDataDirLock(cfg.DataDir)
-	if lerr == nil {
+	switch lock, lerr := AcquireDataDirLock(cfg.DataDir); {
+	case lerr == nil:
 		barrierID = ulidNow()
+		offlineLock = lock
 		defer func() { _ = offlineLock.Release() }()
-	} else if errors.Is(lerr, ErrDataDirLive) {
+	case errors.Is(lerr, ErrDataDirLive):
 		b, berr := BeginBarrier(cfg.DataDir)
 		if berr != nil {
 			return "", berr
@@ -149,7 +150,7 @@ func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase str
 		barrier = b
 		barrierID = b.ID()
 		snapshotSource = "barrier-held"
-	} else {
+	default:
 		return "", lerr
 	}
 	dir, err := freshBackupDir(outBase)

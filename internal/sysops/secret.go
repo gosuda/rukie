@@ -121,8 +121,9 @@ func LoadSecretKey(path string) ([]byte, error) {
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return nil, fmt.Errorf("sysops: key file %s has mode %04o, want 0600 or stricter (no group or other access)", path, perm)
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid != uint32(os.Getuid()) {
-		return nil, fmt.Errorf("sysops: key file %s is owned by uid %d, want uid %d", path, stat.Uid, os.Getuid())
+	me := os.Getuid()
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && (me < 0 || uint64(me) != uint64(stat.Uid)) {
+		return nil, fmt.Errorf("sysops: key file %s is owned by uid %d, want uid %d", path, stat.Uid, me)
 	}
 	raw, err := os.ReadFile(clean)
 	if err != nil {

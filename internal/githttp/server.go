@@ -40,11 +40,11 @@ type Config struct {
 	Client      *ruk.Client
 	Feed        *events.HookSink
 	Clock       func() time.Time
+	Barrier     func() (release func(), ok bool)
 	RepoRoot    string
 	SocketPath  string
 	Limits      wire.GitLimits
 	HookTimeout time.Duration
-	Barrier     func() (release func(), ok bool)
 }
 
 type Server struct {
@@ -55,13 +55,13 @@ type Server struct {
 	resolver    *access.SQLResolver
 	db          *sql.DB
 	clock       func() time.Time
+	barrier     func() (func(), bool)
+	wants       map[string]map[string]string
 	repoRoot    string
 	socketPath  string
 	limits      wire.GitLimits
 	hookTimeout time.Duration
-	barrier     func() (func(), bool)
 	mu          sync.Mutex
-	wants       map[string]map[string]string
 }
 
 func (s *Server) stashWant(invocation string, want map[string]string) {

@@ -309,7 +309,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			_, exited := errors.AsType[*childExitError](perr)
 			if !exited {
 				_ = child.Signal(killSignal())
-				<-exit
+				if reapErr := <-exit; reapErr != nil {
+					perr = errors.Join(perr, reapErr)
+				}
 			}
 			if exited || s.restarts.Load() > 0 || s.everReady.Load() {
 				if bend := s.spendRestart(ctx, backoffs, perr); bend != nil {
