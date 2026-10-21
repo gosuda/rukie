@@ -37,6 +37,7 @@ type Config struct {
 	Client            *ruk.Client
 	Feed              *events.HookSink
 	Clock             func() time.Time
+	Barrier           func() (release func(), ok bool)
 	SocketPath        string
 	RepoRoot          string
 	HostKeys          []ssh.Signer
@@ -45,7 +46,6 @@ type Config struct {
 	MaxSessions       int
 	IdleTimeout       time.Duration
 	KeepaliveInterval time.Duration
-	Barrier           func() (release func(), ok bool)
 }
 
 // Server speaks git-upload-pack and git-receive-pack over SSH exec.
@@ -60,6 +60,7 @@ type Server struct {
 	clock     func() time.Time
 	auth      *auth.Service
 	listeners map[net.Listener]struct{}
+	barrier   func() (release func(), ok bool)
 	repoRoot  string
 	sock      string
 	hostKeys  []ssh.Signer
@@ -68,7 +69,6 @@ type Server struct {
 	keepEvery time.Duration
 	maxSess   int
 	hookAfter time.Duration
-	barrier   func() (release func(), ok bool)
 	sessions  int
 	mu        sync.Mutex
 	closed    atomic.Bool

@@ -87,19 +87,6 @@ func unquotePath(arg string) (string, error) {
 	return arg, nil
 }
 
-func (s *Server) serveSession(ctx context.Context, perms *ssh.Permissions, channel ssh.Channel, reqs <-chan *ssh.Request, live *sessionLive) {
-	defer func() { _ = channel.Close() }()
-	for req := range reqs {
-		if req.Type != "exec" {
-			_ = req.Reply(false, nil)
-			continue
-		}
-		_ = req.Reply(true, nil)
-		s.serveExec(ctx, perms, channel, req.Payload, live)
-		return
-	}
-}
-
 func (s *Server) serveExec(ctx context.Context, perms *ssh.Permissions, channel ssh.Channel, payload []byte, live *sessionLive) {
 	live.touch()
 	defer live.touch()
@@ -199,18 +186,18 @@ func (s *Server) serveExec(ctx context.Context, perms *ssh.Permissions, channel 
 		}
 		open.SessionID = &session
 		open.RequestID = &request
-		report, stderr, err := ruk.RunCommand(runCtx, client, ruk.Command{
+		pushReport, pushStderr, pushErr := ruk.RunCommand(runCtx, client, ruk.Command{
 			Open: open, Stdin: io.Reader(channel), Stdout: channel, Hook: s.git.HookHandler(caller, repoID, request), HookBudget: s.hookAfter,
 		})
-		if err != nil {
-			failExec(channel, 128, "round: "+commandFailure(err, stderr))
+		if pushErr != nil {
+			failExec(channel, 128, "round: "+commandFailure(pushErr, pushStderr))
 			return
 		}
-		if report.ExitCode != 0 || report.Cancelled {
-			failExec(channel, 128, "round: "+commandFailure(nil, stderr))
+		if pushReport.ExitCode != 0 || pushReport.Cancelled {
+			failExec(channel, 128, "round: "+commandFailure(nil, pushStderr))
 			return
 		}
-		sendExit(channel, int(report.ExitCode))
+		sendExit(channel, int(pushReport.ExitCode))
 		return
 	}
 	report, stderr, err := ruk.RunCommandStream(runCtx, client, ruk.StreamCommand{

@@ -10,9 +10,9 @@ import (
 )
 
 type fakeChannel struct {
-	mu       sync.Mutex
-	stderr   bytes.Buffer
 	requests []fakeRequest
+	stderr   bytes.Buffer
+	mu       sync.Mutex
 	closed   bool
 }
 

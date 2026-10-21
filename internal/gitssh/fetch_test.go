@@ -45,7 +45,7 @@ func TestSSHMultiRoundFetchCompletes(t *testing.T) {
 	fetchCtx, stop := context.WithTimeout(t.Context(), 60*time.Second)
 	defer stop()
 	start := time.Now()
-	if out, err := sshGitRun(fetchCtx, t, s, adaKey.file, cloneDir, "fetch", "origin"); err != nil {
+	if out, fetchErr := sshGitRun(fetchCtx, t, s, adaKey.file, cloneDir, "fetch", "origin"); fetchErr != nil {
 		t.Fatalf("fetch stalled or failed after %v:\n%s", time.Since(start), out)
 	}
 	got, err := sshGitRun(ctx, t, s, adaKey.file, cloneDir, "rev-parse", "origin/main")
