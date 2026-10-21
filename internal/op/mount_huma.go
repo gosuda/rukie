@@ -52,12 +52,9 @@ const (
 )
 
 type Recorded struct {
-	Location string
-	ETag     string
-	Link     string
-	Cookies  []string
-	Body     []byte
-	Status   int
+	Header http.Header
+	Body   []byte
+	Status int
 }
 
 type Claim struct {
@@ -1334,6 +1331,13 @@ func (s *Server) dispatch(r *http.Request, st *reqState) {
 }
 
 func (s *Server) finish(w http.ResponseWriter, r *http.Request, st *reqState, start time.Time, decision string) {
+	if st.failure == nil && st.replay != nil {
+		status, header, body := s.renderReplay(st)
+		s.audit(r, st, status, decision, time.Since(start))
+		writeResponse(w, status, header, body)
+		return
+	}
+
 	var status int
 	header := http.Header{}
 	var body []byte
@@ -1344,8 +1348,6 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request, st *reqState, st
 		header.Set("Content-Type", "application/problem+json")
 		raw, _ := jsonv2.Marshal(p, jsonv1.DefaultOptionsV1())
 		body = raw
-	case st.replay != nil:
-		status, header, body = s.renderReplay(st)
 	default:
 		status, header, body = st.dispatchStatus, st.dispatchHeader, st.dispatchBody
 	}
@@ -1409,8 +1411,12 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request, st *reqState, st
 	for _, c := range st.cookies {
 		out.Add("Set-Cookie", c.String())
 	}
-	s.completeIdempotent(r, st, status, body)
+	s.completeIdempotent(r, st, status, out, body)
 	s.audit(r, st, status, decision, time.Since(start))
+	writeResponse(w, status, out, body)
+}
+
+func writeResponse(w http.ResponseWriter, status int, out http.Header, body []byte) {
 	for k, values := range out {
 		for _, v := range values {
 			w.Header().Add(k, v)
@@ -1432,33 +1438,11 @@ func matchETag(header, etag string) bool {
 
 func (s *Server) renderReplay(st *reqState) (int, http.Header, []byte) {
 	rec := st.replay
-	st.location = rec.Location
-	st.etag = strings.Trim(rec.ETag, `"`)
-	st.link = rec.Link
-	header := http.Header{}
-	for _, cookie := range rec.Cookies {
-		header.Add("Set-Cookie", cookie)
+	header := rec.Header.Clone()
+	if header == nil {
+		header = http.Header{}
 	}
-	if st.media == MediaHTML && st.spec != nil && st.spec.Kind == KindMutation {
-		return http.StatusSeeOther, header, nil
-	}
-	if st.media == MediaMarkdown {
-		var decoded any
-		if err := jsonv2.Unmarshal(rec.Body, &decoded, jsonv1.DefaultOptionsV1()); err == nil {
-			var buf bytes.Buffer
-			c := ViewCtx{Spec: st.spec, Principal: st.principal, RequestID: st.requestID, Path: st.path}
-			if fn, ok := s.views.markdown[st.spec.Name]; ok {
-				if err := fn(&buf, c, decoded); err == nil {
-					return rec.Status, header, buf.Bytes()
-				}
-			}
-			buf.Reset()
-			if err := RenderMarkdown(&buf, decoded); err == nil {
-				return rec.Status, header, buf.Bytes()
-			}
-		}
-	}
-	return rec.Status, header, rec.Body
+	return rec.Status, header, bytes.Clone(rec.Body)
 }
 
 func (s *Server) renderSuccess(st *reqState, status int, header http.Header, body []byte) (int, http.Header, []byte) {
@@ -1599,7 +1583,7 @@ func enrichProblem(st *reqState, body []byte) problemBody {
 	return p
 }
 
-func (s *Server) completeIdempotent(r *http.Request, st *reqState, status int, body []byte) {
+func (s *Server) completeIdempotent(r *http.Request, st *reqState, status int, header http.Header, body []byte) {
 	_ = r
 	if st.claim == nil || st.srv == nil {
 		return
@@ -1619,12 +1603,10 @@ func (s *Server) completeIdempotent(r *http.Request, st *reqState, status int, b
 			}
 		}
 	}
-	rec := Recorded{Status: status, Location: st.location, Link: st.link, Body: body}
-	for _, cookie := range st.cookies {
-		rec.Cookies = append(rec.Cookies, cookie.String())
-	}
-	if st.etag != "" {
-		rec.ETag = `"` + st.etag + `"`
+	rec := Recorded{
+		Header: header.Clone(),
+		Body:   bytes.Clone(body),
+		Status: status,
 	}
 	row := AuditRow{RequestID: st.requestID}
 	_ = st.srv.cfg.Idempotency.Complete(r.Context(), *st.claim, rec, row)

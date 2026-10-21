@@ -2,7 +2,9 @@ package op_test
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -140,4 +142,91 @@ func TestIdempotencyReplayIncludesSetCookie(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("handler calls %d, want 1", calls)
 	}
+}
+
+func TestIdempotencyReplayUsesRecordedRepresentation(t *testing.T) {
+	newServer := func(t *testing.T) *op.Server {
+		t.Helper()
+		table := op.NewTable()
+		mustRegister(t, table, op.Op[jsonCreateIn, jsonCreateOut]{
+			Name: "test.replay.create", Kind: op.KindMutation, Method: http.MethodPost, Path: "/test/replay",
+			Scope: op.ScopeRepoRead, Summary: "Replay representation",
+			Location: func(jsonCreateOut) string { return "/test/replay-result" },
+			Handler: func(context.Context, op.Principal, jsonCreateIn) (jsonCreateOut, error) {
+				return jsonCreateOut{Note: "recorded-secret"}, nil
+			},
+		})
+		views := op.NewViews()
+		views.Form("test.replay.create", func(io.Writer, op.ViewCtx) error {
+			return nil
+		})
+		srv, err := op.Mount(http.NewServeMux(), table, op.Config{
+			Authenticator: tokenIDAuth{},
+			Idempotency:   op.NewMemoryIdempotency(),
+			CSRFKey:       testCSRFKey,
+			Title:         "test",
+			Version:       "0",
+			Views:         views,
+		})
+		if err != nil {
+			t.Fatalf("mount: %v", err)
+		}
+		return srv
+	}
+	request := func(srv *op.Server, accept, key string) *httptest.ResponseRecorder {
+		return doRequest(srv, http.MethodPost, "/test/replay", map[string]string{
+			"Accept":          accept,
+			"Authorization":   "Bearer fresh-session",
+			"Content-Type":    "application/json",
+			"Idempotency-Key": key,
+		}, `{"note":"request"}`)
+	}
+
+	t.Run("markdown body is not rerendered", func(t *testing.T) {
+		srv := newServer(t)
+		first := request(srv, "text/markdown", "markdown-key")
+		if first.Code != http.StatusCreated {
+			t.Fatalf("first status %d, want 201: %s", first.Code, first.Body.String())
+		}
+		replay := request(srv, "text/markdown", "markdown-key")
+		if replay.Code != first.Code || replay.Body.String() != first.Body.String() {
+			t.Fatalf("markdown replay = %d %q, want %d %q", replay.Code, replay.Body.String(), first.Code, first.Body.String())
+		}
+		if !strings.HasPrefix(replay.Header().Get("Content-Type"), "text/markdown") {
+			t.Fatalf("markdown replay content type %q", replay.Header().Get("Content-Type"))
+		}
+	})
+
+	t.Run("json replay ignores later accept", func(t *testing.T) {
+		srv := newServer(t)
+		first := request(srv, "application/json", "json-key")
+		if first.Code != http.StatusCreated {
+			t.Fatalf("first status %d, want 201: %s", first.Code, first.Body.String())
+		}
+		replay := request(srv, "text/markdown", "json-key")
+		if replay.Code != first.Code || replay.Body.String() != first.Body.String() {
+			t.Fatalf("json replay = %d %q, want %d %q", replay.Code, replay.Body.String(), first.Code, first.Body.String())
+		}
+		if !strings.HasPrefix(replay.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("json replay content type %q", replay.Header().Get("Content-Type"))
+		}
+	})
+
+	t.Run("html mutation replay preserves 303 headers", func(t *testing.T) {
+		srv := newServer(t)
+		first := request(srv, "text/html", "html-key")
+		if first.Code != http.StatusSeeOther {
+			t.Fatalf("first status %d, want 303: %s", first.Code, first.Body.String())
+		}
+		replay := request(srv, "application/json", "html-key")
+		if replay.Code != http.StatusSeeOther || replay.Body.Len() != 0 {
+			t.Fatalf("html replay = %d %q, want 303 empty", replay.Code, replay.Body.String())
+		}
+		if replay.Header().Get("Content-Type") != first.Header().Get("Content-Type") {
+			t.Fatalf("html replay content type %q, want %q", replay.Header().Get("Content-Type"), first.Header().Get("Content-Type"))
+		}
+		if replay.Header().Get("Location") != first.Header().Get("Location") {
+			t.Fatalf("html replay location %q, want %q", replay.Header().Get("Location"), first.Header().Get("Location"))
+		}
+	})
 }
