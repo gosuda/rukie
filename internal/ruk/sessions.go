@@ -42,11 +42,19 @@ func (s *sessionCache) drop(repo string) {
 	delete(s.byRepo, repo)
 }
 
-func (c *Client) ensureSession(ctx context.Context, repo Repo) (*sessionEntry, error) {
-	if entry, ok := c.sessions.get(repo.Path); ok && entry.active {
+func (c *Client) ensureSessionInner(ctx context.Context, repo Repo, allowInactive bool) (*sessionEntry, error) {
+	if entry, ok := c.sessions.get(repo.Path); ok && (entry.active || allowInactive) {
 		return entry, nil
 	}
 	return c.openSession(ctx, repo)
+}
+
+func (c *Client) ensureLiveSession(ctx context.Context, repo Repo) (*sessionEntry, error) {
+	return c.ensureSessionInner(ctx, repo, false)
+}
+
+func (c *Client) ensureReplaySession(ctx context.Context, repo Repo) (*sessionEntry, error) {
+	return c.ensureSessionInner(ctx, repo, true)
 }
 
 func (c *Client) openSession(ctx context.Context, repo Repo) (*sessionEntry, error) {

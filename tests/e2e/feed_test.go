@@ -468,6 +468,7 @@ func TestRukFirstWriteOrderCrash(t *testing.T) {
 		t.Fatal("crashing commit succeeded")
 	}
 	restartDaemonKeepClient(t, s)
+	repo = openFeedRepo(t, s, "ada", "hello")
 	var second []byte
 	err = events.WriteAfterRuk(ctx, s.st, id, call, call, func(tx *store.WriteTx, receipt jsontext.Value) error {
 		second = bytes.Clone(receipt)
@@ -477,9 +478,7 @@ func TestRukFirstWriteOrderCrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	if string(first) != string(second) {
-		t.Fatal("retry replayed a different receipt")
-	}
+	assertTagReplay(t, jsonv1.RawMessage(first), jsonv1.RawMessage(second))
 	var tips map[string]string
 	rerr := s.st.Read(ctx, func(tx *store.ReadTx) error {
 		got, gerr := tx.RefTips(repoID)
@@ -515,6 +514,44 @@ func feedTagTarget(t *testing.T, s *stack, repo ruk.Repo, name string) string {
 	}
 	t.Fatalf("tag %s missing from refs.list", name)
 	return ""
+}
+
+func assertTagReplay(t *testing.T, first, second jsonv1.RawMessage) {
+	t.Helper()
+	var fmap map[string]any
+	if err := jsonv1.Unmarshal([]byte(first), &fmap); err != nil {
+		t.Fatalf("decode first: %v", err)
+	}
+	var smap map[string]any
+	if err := jsonv1.Unmarshal([]byte(second), &smap); err != nil {
+		t.Fatalf("decode second: %v", err)
+	}
+	freceipt, _ := fmap["outcome"].(map[string]any)["receipt"].(map[string]any)
+	sreceipt, _ := smap["outcome"].(map[string]any)["receipt"].(map[string]any)
+	if freplayed, _ := freceipt["replayed"].(bool); freplayed {
+		t.Fatal("first replayed = true, want false for the initial commit")
+	}
+	if sreplayed, _ := sreceipt["replayed"].(bool); !sreplayed {
+		t.Fatal("second replayed = false, want true: the retry did not replay the stored report")
+	}
+	if fmap["name"] != smap["name"] {
+		t.Fatalf("name = %v vs %v, want equal", fmap["name"], smap["name"])
+	}
+	ftarget, _ := jsonv1.Marshal(fmap["target"])
+	starget, _ := jsonv1.Marshal(smap["target"])
+	if string(ftarget) != string(starget) {
+		t.Fatalf("target = %s vs %s, want equal", string(ftarget), string(starget))
+	}
+	if freceipt["retained_until"] != sreceipt["retained_until"] {
+		t.Fatal("retained_until changed across the kill; the retry re-executed instead of replaying")
+	}
+	freceipt["replayed"] = false
+	sreceipt["replayed"] = false
+	fnorm, _ := jsonv1.Marshal(fmap)
+	snorm, _ := jsonv1.Marshal(smap)
+	if string(fnorm) != string(snorm) {
+		t.Fatal("receipt changed across the kill; the retry did not replay the stored report")
+	}
 }
 
 func restartDaemon(t *testing.T, s *stack) {
@@ -566,13 +603,12 @@ func TestServiceReceiptsSurviveDaemonKill(t *testing.T) {
 		t.Fatalf("first: %v", err)
 	}
 	restartDaemonKeepClient(t, s)
+	repo = openFeedRepo(t, s, "ada", "hello")
 	second, err := ruk.Retry[map[string]any, jsonv1.RawMessage](ctx, s.client, repo, wire.MethodTagSet, requestID, args)
 	if err != nil {
 		t.Fatalf("retry after kill: %v", err)
 	}
-	if string(first) != string(second) {
-		t.Fatal("receipt changed across the kill; the retry did not replay the stored report")
-	}
+	assertTagReplay(t, first, second)
 	if got := feedTagTarget(t, s, repo, "refs/tags/receipt-probe"); got != oid {
 		t.Fatalf("tag target = %q, want %q: the mutation applied exactly once", got, oid)
 	}

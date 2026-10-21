@@ -168,15 +168,23 @@ func attemptCall[Resp any](ctx context.Context, c *Client, repo Repo, op string,
 	sessionful := kind != wire.MethodAnonymous && kind != wire.MethodBootstrap
 	var sessionID *string
 	if sessionful {
-		entry, err := c.ensureSession(ctx, repo)
-		if err != nil {
-			return zero, NotCommitted, "", 0, false, err
+		if autoRetry {
+			entry, err := c.ensureLiveSession(ctx, repo)
+			if err != nil {
+				return zero, NotCommitted, "", 0, false, err
+			}
+			if kind == wire.MethodMutation && !entry.active {
+				forbidden := &Error{Code: wire.CodeForbidden, Op: op, Message: "session lacks active authority", Outcome: NotCommitted}
+				return zero, NotCommitted, string(wire.CodeForbidden), 0, false, forbidden
+			}
+			sessionID = &entry.id
+		} else {
+			entry, err := c.ensureReplaySession(ctx, repo)
+			if err != nil {
+				return zero, NotCommitted, "", 0, false, err
+			}
+			sessionID = &entry.id
 		}
-		if kind == wire.MethodMutation && !entry.active {
-			forbidden := &Error{Code: wire.CodeForbidden, Op: op, Message: "session lacks active authority", Outcome: NotCommitted}
-			return zero, NotCommitted, string(wire.CodeForbidden), 0, false, forbidden
-		}
-		sessionID = &entry.id
 	}
 	argsText := string(args)
 	open := wire.InvocationOpen{
