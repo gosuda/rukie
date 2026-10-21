@@ -1,13 +1,9 @@
 package gitssh
 
 import (
-	"errors"
-	"io"
 	"testing"
 	"time"
 )
-
-var errChunkBoom = errors.New("boom")
 
 func TestParseGitCommandTable(t *testing.T) {
 	valid := map[string]gitCommand{
@@ -49,58 +45,6 @@ func TestParseGitCommandTable(t *testing.T) {
 			t.Fatalf("%q accepted", raw)
 		}
 	}
-}
-
-func TestBufferUploadRequestTable(t *testing.T) {
-	full := []byte("00a4want 0123456789abcdef0123456789abcdef01234567 multi_ack ofs-delta\n0000")
-	done := []byte("0009done\n")
-	if out, err := bufferUploadRequest(singleRead(full, done), 1<<20); err != nil || string(out) != string(full)+string(done) {
-		t.Fatalf("split marker = %q, %v", out, err)
-	}
-	if out, err := bufferUploadRequest(singleRead(full), 1<<20); err != nil || string(out) != string(full) {
-		t.Fatalf("unsplit marker = %q, %v", out, err)
-	}
-	if out, err := bufferUploadRequest(emptyRead(), 1<<20); err != nil || len(out) != 0 {
-		t.Fatalf("empty = %q, %v", out, err)
-	}
-	if _, err := bufferUploadRequest(singleRead(full, done), uint64(len(full)+len(done)-1)); err == nil {
-		t.Fatal("over-cap accepted")
-	}
-	if _, err := bufferUploadRequest(singleRead(full, done), uint64(len(full)+len(done))); err != nil {
-		t.Fatalf("exact cap rejected: %v", err)
-	}
-	if _, err := bufferUploadRequest(failRead(), 1<<20); err == nil {
-		t.Fatal("read error swallowed")
-	}
-}
-
-func emptyRead() *chunkReader {
-	return &chunkReader{chunks: [][]byte{}}
-}
-
-func singleRead(parts ...[]byte) *chunkReader {
-	return &chunkReader{chunks: parts}
-}
-
-func failRead() *chunkReader {
-	return &chunkReader{fail: true}
-}
-
-type chunkReader struct {
-	chunks [][]byte
-	fail   bool
-}
-
-func (r *chunkReader) Read(p []byte) (int, error) {
-	if r.fail {
-		return 0, errChunkBoom
-	}
-	if len(r.chunks) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, r.chunks[0])
-	r.chunks = r.chunks[1:]
-	return n, nil
 }
 
 func TestTryAcquireBoundary(t *testing.T) {

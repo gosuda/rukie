@@ -1,7 +1,6 @@
 package gitssh
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,33 +25,7 @@ const (
 	stdoutCredit       = 1 << 20
 	uploadServiceName  = "upload-pack"
 	receiveServiceName = "receive-pack"
-	uploadChunkBytes   = 32 << 10
 )
-
-var uploadDoneMarker = []byte("0009done\n")
-
-func bufferUploadRequest(stdin io.Reader, limit uint64) ([]byte, error) {
-	var buf []byte
-	chunk := make([]byte, uploadChunkBytes)
-	for {
-		n, readErr := stdin.Read(chunk)
-		if n > 0 {
-			if uint64(len(buf)+n) > limit {
-				return nil, fmt.Errorf("request body is too large")
-			}
-			buf = append(buf, chunk[:n]...)
-			if i := bytes.Index(buf, uploadDoneMarker); i >= 0 {
-				return buf[:i+len(uploadDoneMarker)], nil
-			}
-		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				return buf, nil
-			}
-			return nil, readErr
-		}
-	}
-}
 
 type gitCommand struct {
 	service string
@@ -218,8 +191,6 @@ func (s *Server) serveExec(ctx context.Context, perms *ssh.Permissions, channel 
 		StdoutCredit: stdoutCredit,
 		Limits:       s.limits,
 	}
-	var handle ruk.HookHandler
-	stdin := io.Reader(channel)
 	if cmd.receive {
 		session, request, openErr := s.git.OpenPushSession(runCtx, client, path)
 		if openErr != nil {
@@ -228,17 +199,22 @@ func (s *Server) serveExec(ctx context.Context, perms *ssh.Permissions, channel 
 		}
 		open.SessionID = &session
 		open.RequestID = &request
-		handle = s.git.HookHandler(caller, repoID, request)
-	} else {
-		buffered, bufErr := bufferUploadRequest(channel, s.limits.MaxStdinBytes)
-		if bufErr != nil {
-			failExec(channel, 128, commandFailure(bufErr, nil))
+		report, stderr, err := ruk.RunCommand(runCtx, client, ruk.Command{
+			Open: open, Stdin: io.Reader(channel), Stdout: channel, Hook: s.git.HookHandler(caller, repoID, request), HookBudget: s.hookAfter,
+		})
+		if err != nil {
+			failExec(channel, 128, "round: "+commandFailure(err, stderr))
 			return
 		}
-		stdin = bytes.NewReader(buffered)
+		if report.ExitCode != 0 || report.Cancelled {
+			failExec(channel, 128, "round: "+commandFailure(nil, stderr))
+			return
+		}
+		sendExit(channel, int(report.ExitCode))
+		return
 	}
-	report, stderr, err := ruk.RunCommand(runCtx, client, ruk.Command{
-		Open: open, Stdin: stdin, Stdout: channel, Hook: handle, HookBudget: s.hookAfter,
+	report, stderr, err := ruk.RunCommandStream(runCtx, client, ruk.StreamCommand{
+		Open: open, Stdin: io.Reader(channel), Stdout: channel,
 	})
 	if err != nil {
 		failExec(channel, 128, "round: "+commandFailure(err, stderr))
