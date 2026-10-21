@@ -1,10 +1,20 @@
 package githttp
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
+
+func TestClientIPIgnoresForwardedHeaders(t *testing.T) {
+	r := httptest.NewRequest("GET", "http://example.com/", nil)
+	r.RemoteAddr = "192.0.2.5:54321"
+	r.Header.Set("X-Forwarded-For", "198.51.100.77")
+	if got := clientIP(r); got != "192.0.2.5" {
+		t.Fatalf("clientIP = %q, want peer address", got)
+	}
+}
 
 func TestParseRouteTable(t *testing.T) {
 	cases := []struct {
