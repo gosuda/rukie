@@ -857,10 +857,10 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --locked
 cargo test --workspace --locked --doc
 
-# rukie: web app build (npm ci + rescript build + esbuild into internal/web/assets), then vet
-# (untagged and all tags), lint, tests, govulncheck, gofmt, go mod tidy -diff, go mod verify
-# make check depends on build-web, so `go build` always sees the generated bundle (O41).
-make build-web
+# rukie: vet (untagged and all tags), lint, tests, govulncheck, gofmt, go mod tidy -diff, go mod verify
+# The ENG-63/64 scaffold adds `build-web` (npm ci + rescript build + esbuild into
+# internal/web/assets) and makes `check` depend on it; from that commit the gate
+# runs `make build-web` first so `go build` always sees the generated bundle (O41).
 make check
 
 # rukie integration (real daemon), from K2 on
