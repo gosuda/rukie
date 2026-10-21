@@ -93,6 +93,7 @@ func Routes() []Route {
 		{Pattern: "GET /settings/keys", Op: "auth.sshkey.list"},
 		{Pattern: "POST /settings/keys", Op: "auth.sshkey.add"},
 		{Pattern: "POST /settings/keys/{id}/delete", Op: "auth.sshkey.remove"},
+		{Pattern: "GET " + keysExportPath, Op: "auth.sshkey.keys"},
 		{Pattern: "GET /healthz"},
 		{Pattern: "GET /readyz"},
 		{Pattern: "POST /-/mcp"},

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -306,4 +307,92 @@ func TestOwnerKeysReservedFallsThrough(t *testing.T) {
 			t.Fatalf("%q routes owner-side as %q, want site fall-through", path, owner)
 		}
 	}
+}
+
+func TestKeysExportOpRouteMatchesTable(t *testing.T) {
+	e := openKeysTestEnv(t)
+	opv := api.KeysExportOp(e.deps)
+	if opv.Name != "auth.sshkey.keys" {
+		t.Fatalf("name = %q", opv.Name)
+	}
+	if opv.Path != "/{owner}.keys" {
+		t.Fatalf("path = %q", opv.Path)
+	}
+	if opv.Method != http.MethodGet || opv.Kind != op.KindRead {
+		t.Fatalf("method/kind = %q/%v", opv.Method, opv.Kind)
+	}
+	if opv.Scope != op.ScopePublicRead {
+		t.Fatalf("scope = %v", opv.Scope)
+	}
+	matched := false
+	for _, r := range api.Routes() {
+		if r.Op == opv.Name {
+			matched = true
+			if r.Pattern != "GET "+opv.Path {
+				t.Fatalf("route = %q, want GET %s", r.Pattern, opv.Path)
+			}
+		}
+	}
+	if !matched {
+		t.Fatalf("no route entry derives from %q", opv.Name)
+	}
+	scratch := op.NewTable()
+	if err := op.Register(scratch, opv); err != nil {
+		t.Fatalf("op fails table validation: %v", err)
+	}
+}
+
+func TestKeysExportOpHandler(t *testing.T) {
+	e := openKeysTestEnv(t)
+	user, cookie := keysUser(t, e, "erin", false)
+	line := testKeyLine(t)
+	if rec := doJSON(t, e, "POST", "/settings/keys", cookie, `{"key":"`+line+`"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("add = %d", rec.Code)
+	}
+	opv := api.KeysExportOp(e.deps)
+	out, err := opv.Handler(t.Context(), op.AnonymousPrincipal(), api.KeysExportIn{Owner: "erin"})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(out.Keys) != 1 || strings.TrimSpace(out.Keys[0]) != line {
+		t.Fatalf("keys = %q", out.Keys)
+	}
+	first := opv.ETag(out)
+	line2 := testKeyLine(t)
+	if rec := doJSON(t, e, "POST", "/settings/keys", cookie, `{"key":"`+line2+`"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("add second = %d", rec.Code)
+	}
+	out2, err := opv.Handler(t.Context(), op.AnonymousPrincipal(), api.KeysExportIn{Owner: "erin"})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(out2.Keys) != 2 {
+		t.Fatalf("keys = %q", out2.Keys)
+	}
+	if second := opv.ETag(out2); second == first {
+		t.Fatalf("etag unchanged after key add")
+	}
+	if _, err := opv.Handler(t.Context(), op.AnonymousPrincipal(), api.KeysExportIn{Owner: "ghost"}); !isKeysNotFound(err) {
+		t.Fatalf("unknown user err = %v", err)
+	}
+	admin, err := e.svc.GetUser(t.Context(), "ada")
+	if err != nil {
+		t.Fatalf("ada: %v", err)
+	}
+	tag, err := e.svc.ETagFor(user.ID)
+	if err != nil {
+		t.Fatalf("etag: %v", err)
+	}
+	inactive := false
+	if _, err := e.svc.UpdateUser(t.Context(), admin.ID, auth.UpdateUserInput{Target: user.Name, IsActive: &inactive, IfMatch: tag}, "127.0.0.1"); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+	if _, err := opv.Handler(t.Context(), op.AnonymousPrincipal(), api.KeysExportIn{Owner: "erin"}); !isKeysNotFound(err) {
+		t.Fatalf("inactive user err = %v", err)
+	}
+}
+
+func isKeysNotFound(err error) bool {
+	oerr, ok := errors.AsType[*op.Error](err)
+	return ok && oerr.Code == op.CodeNotFound
 }

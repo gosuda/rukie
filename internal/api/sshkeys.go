@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -189,18 +192,110 @@ func RegisterSSHKeysViews(v *op.Views) {
 	})
 }
 
-// OwnerKeysPath matches single-segment *.keys paths for the owner handler.
-// The stripped owner must route owner-side under the same first-segment
-// dispatch rule as the git catch-all: names inside the reserved registry
-// (see internal/reserved, api.SiteSegment) fall through to the site mux
-// and never serve owner keys.
-func OwnerKeysPath(path string) (string, bool) {
-	name := strings.Trim(path, "/")
-	if name == "" || strings.Contains(name, "/") {
+const keysExportPath = "/{owner}.keys"
+
+type KeysExportIn struct {
+	Owner string `path:"owner"`
+}
+
+type KeysExportOut struct {
+	Keys []string `json:"keys"`
+}
+
+func KeysExportOp(d Deps) op.Op[KeysExportIn, KeysExportOut] {
+	return op.Op[KeysExportIn, KeysExportOut]{
+		Name:        "auth.sshkey.keys",
+		Kind:        op.KindRead,
+		Method:      http.MethodGet,
+		Path:        keysExportPath,
+		Scope:       op.ScopePublicRead,
+		Summary:     "List one user's public SSH keys",
+		Description: "Public export of the authorized_keys lines attached to a username.",
+		Problems:    []op.Code{op.CodeNotFound},
+		ETag: func(out KeysExportOut) string {
+			sum := sha256.Sum256([]byte(strings.Join(out.Keys, "\n")))
+			return hex.EncodeToString(sum[:])
+		},
+		Handler: func(ctx context.Context, _ op.Principal, in KeysExportIn) (KeysExportOut, error) {
+			lines, err := d.exportKeys(ctx, in.Owner)
+			if err != nil {
+				return KeysExportOut{}, err
+			}
+			return KeysExportOut{Keys: lines}, nil
+		},
+	}
+}
+
+func (d Deps) exportKeys(ctx context.Context, owner string) ([]string, error) {
+	user, err := d.Service.GetUser(ctx, owner)
+	if err != nil || !user.IsActive {
+		return nil, op.Errorf(op.CodeNotFound, "unknown user")
+	}
+	keys, err := d.Service.ListSSHKeys(ctx, user.ID)
+	if err != nil {
+		return nil, op.Wrap(op.CodeInternal, err, "list ssh keys failed")
+	}
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, key.PublicKey)
+	}
+	return lines, nil
+}
+
+func matchKeysTemplate(path string) (string, bool) {
+	params, ok := matchRouteTemplate(keysExportPath, "/"+strings.Trim(path, "/"))
+	if !ok {
 		return "", false
 	}
-	owner, ok := strings.CutSuffix(name, ".keys")
-	if !ok || owner == "" {
+	owner := params["owner"]
+	if owner == "" {
+		return "", false
+	}
+	return owner, true
+}
+
+func matchRouteTemplate(tmpl, path string) (map[string]string, bool) {
+	tsegs := strings.Split(tmpl, "/")
+	psegs := strings.Split(path, "/")
+	if len(tsegs) != len(psegs) {
+		return nil, false
+	}
+	out := map[string]string{}
+	for i, ts := range tsegs {
+		ps := psegs[i]
+		if !strings.Contains(ts, "{") {
+			if ts != ps {
+				return nil, false
+			}
+			continue
+		}
+		name, prefix, suffix, ok := splitRouteSegment(ts)
+		if !ok {
+			return nil, false
+		}
+		if !strings.HasPrefix(ps, prefix) || !strings.HasSuffix(ps, suffix) {
+			return nil, false
+		}
+		out[name] = ps[len(prefix) : len(ps)-len(suffix)]
+	}
+	return out, true
+}
+
+func splitRouteSegment(seg string) (string, string, string, bool) {
+	prefix, after, ok := strings.Cut(seg, "{")
+	if !ok {
+		return "", "", "", false
+	}
+	name, suffix, ok := strings.Cut(after, "}")
+	if !ok || strings.Contains(name, "{") || strings.Contains(suffix, "{") {
+		return "", "", "", false
+	}
+	return name, prefix, suffix, true
+}
+
+func OwnerKeysPath(path string) (string, bool) {
+	owner, ok := matchKeysTemplate(path)
+	if !ok {
 		return "", false
 	}
 	if SiteSegment(owner) {
@@ -209,26 +304,25 @@ func OwnerKeysPath(path string) (string, bool) {
 	return owner, true
 }
 
-// ServeOwnerKeys serves public key lines as text for the owner handler.
 func ServeOwnerKeys(w http.ResponseWriter, r *http.Request, deps Deps, owner string) {
-	user, err := deps.Service.GetUser(r.Context(), owner)
-	if err != nil || !user.IsActive {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, "unknown user\n")
-		return
-	}
-	keys, err := deps.Service.ListSSHKeys(r.Context(), user.ID)
+	lines, err := deps.exportKeys(r.Context(), owner)
 	if err != nil {
+		oerr, isNotFound := errors.AsType[*op.Error](err)
+		status := http.StatusInternalServerError
+		body := "internal error\n"
+		if isNotFound && oerr.Code == op.CodeNotFound {
+			status = http.StatusNotFound
+			body = "unknown user\n"
+		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = io.WriteString(w, "internal error\n")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
-	for _, key := range keys {
-		_, _ = io.WriteString(w, key.PublicKey+"\n")
+	for _, line := range lines {
+		_, _ = io.WriteString(w, line+"\n")
 	}
 }

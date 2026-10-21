@@ -207,11 +207,19 @@ func routeKey(method, path string) string {
 
 func pathPlaceholders(path string) []string {
 	var out []string
-	for _, seg := range strings.Split(path, "/") {
-		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
-			inner := seg[1 : len(seg)-1]
-			inner = strings.TrimSuffix(inner, "...")
-			out = append(out, inner)
+	for seg := range strings.SplitSeq(path, "/") {
+		rest := seg
+		for {
+			_, after, ok := strings.Cut(rest, "{")
+			if !ok {
+				break
+			}
+			name, remaining, ok := strings.Cut(after, "}")
+			if !ok || strings.Contains(name, "{") {
+				break
+			}
+			out = append(out, strings.TrimSuffix(name, "..."))
+			rest = remaining
 		}
 	}
 	return out
