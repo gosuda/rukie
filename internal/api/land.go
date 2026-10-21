@@ -169,12 +169,23 @@ func (d Deps) liveGaps(ctx context.Context, daemon ruk.Repo, repoID int64, row s
 	}
 	facts := make([]review.AttestationFact, 0, len(reply.Records.Items))
 	for _, record := range reply.Records.Items {
-		facts = append(facts, review.AttestationFact{
-			Kind: record.Kind, Result: record.Result, OID: row.HeadOid,
-			Live: record.Status == "live",
-		})
+		fact, ok := countableFact(row.HeadOid, record)
+		if !ok {
+			continue
+		}
+		facts = append(facts, fact)
 	}
 	return review.GapsForChange(row.HeadOid, row.AuthorUserID, reqs, facts), nil
+}
+
+func countableFact(head string, record AttestationRecord) (review.AttestationFact, bool) {
+	if record.Kind == "review/approve" {
+		return review.AttestationFact{}, false
+	}
+	return review.AttestationFact{
+		Kind: record.Kind, Result: record.Result, OID: head,
+		Live: record.Status == "live",
+	}, true
 }
 
 func (d Deps) liveGapsInTx(ctx context.Context, daemon ruk.Repo, tx *store.WriteTx, repoID int64, change store.ChangeRow) ([]review.Gap, error) {
@@ -208,11 +219,6 @@ func (d Deps) liveGapsInTx(ctx context.Context, daemon ruk.Repo, tx *store.Write
 		kept = append(kept, gap)
 	}
 	if !eligible && !keptApprove {
-		for _, gap := range gaps {
-			if gap.Kind == "review/approve" {
-				_ = gap
-			}
-		}
 		kept = append(kept, review.Gap{
 			Kind: "review/approve", Reason: "needs_review",
 			Detail: "review/approve wants 1 more", NextOp: "change.review.create",
