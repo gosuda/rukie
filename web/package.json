@@ -1,0 +1,19 @@
+{
+  "name": "rukie-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@12.14.0",
+  "scripts": {
+    "rescript:build": "rescript build",
+    "bundle": "esbuild src/App.res.js --bundle --format=esm --minify --target=es2022 --outfile=../internal/web/assets/app.js",
+    "build": "pnpm run rescript:build && pnpm run bundle"
+  },
+  "dependencies": {
+    "preact": "11.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "rescript": "12.3.1"
+  }
+}

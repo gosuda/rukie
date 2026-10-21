@@ -9,11 +9,11 @@ import (
 	"github.com/gosuda/rukie/internal/web/trusted"
 )
 
-//go:embed app.css chroma.css favicon.svg
-var files embed.FS
+//go:embed app.js app.css chroma.css favicon.svg
+var FS embed.FS
 
 func mustRead(name string) []byte {
-	b, err := files.ReadFile(name)
+	b, err := FS.ReadFile(name)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -55,5 +55,7 @@ func Handler() *http.ServeMux {
 	for _, a := range Registry() {
 		mux.Handle("GET "+a.URLPath(), a)
 	}
+	b := Bundle()
+	mux.Handle("GET "+BundleURL(), b)
 	return mux
 }

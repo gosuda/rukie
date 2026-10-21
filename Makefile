@@ -1,4 +1,8 @@
-.PHONY: fmt vet lint test vuln check goals
+.PHONY: fmt vet lint test vuln check goals build-web
+
+build-web:
+	cd web && pnpm install --frozen-lockfile
+	cd web && pnpm run build
 
 fmt:
 	gofmt -w .

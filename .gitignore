@@ -2,3 +2,6 @@
 /.rendered/
 *.test
 *.out
+web/node_modules/
+web/lib/
+web/src/*.res.js
