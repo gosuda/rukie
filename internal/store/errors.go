@@ -49,6 +49,7 @@ var (
 	ErrMigrationFailed = errors.New("store: migration failed; transaction rolled back")
 	// ErrAdminExists reports a bootstrap refused because an admin already exists.
 	ErrAdminExists = errors.New("store: admin already exists")
+	ErrLastAdmin   = errors.New("store: cannot deactivate the last active admin")
 	// ErrSoleOwner reports a user deletion refused because the user is a sole owner.
 	ErrSoleOwner        = errors.New("store: sole owner cannot be removed")
 	ErrBackupInProgress = barrierRefusal{}

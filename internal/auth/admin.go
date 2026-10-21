@@ -238,9 +238,6 @@ func (s *Service) UpdateUser(ctx context.Context, actor int64, in UpdateUserInpu
 	if !etagMatch(in.IfMatch, quoteETag(u.ID, u.UpdatedAt)) {
 		return User{}, errStale
 	}
-	if u.IsAdmin && u.IsActive && in.IsActive != nil && !*in.IsActive && s.CountActiveAdmins(ctx) <= 1 {
-		return User{}, errors.New("cannot deactivate the last active admin")
-	}
 	now := millis(s.clock())
 	fullName := u.FullName
 	if in.FullName != nil {
@@ -261,6 +258,9 @@ func (s *Service) UpdateUser(ctx context.Context, actor int64, in UpdateUserInpu
 		active = *in.IsActive
 	}
 	if uerr := s.store.UpdateAuthUserAdmin(ctx, u.ID, fullName, email, active, now); uerr != nil {
+		if errors.Is(uerr, store.ErrLastAdmin) {
+			return User{}, errors.New("cannot deactivate the last active admin")
+		}
 		return User{}, uerr
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.user_update", Target: "user:" + u.Name, IP: ip, Result: "ok"})

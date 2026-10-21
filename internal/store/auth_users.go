@@ -385,6 +385,19 @@ func (s *Store) UpdateAuthUserAdmin(ctx context.Context, userID int64, fullName,
 		if lerr != nil {
 			return lerr
 		}
+		if !active {
+			var count int64
+			if err := inner.QueryRowContext(tx.ctx, `SELECT COUNT(*) FROM users WHERE is_admin != 0 AND is_active != 0 AND id != ?`, userID).Scan(&count); err != nil {
+				return fmt.Errorf("UpdateAuthUserAdmin: %w", err)
+			}
+			var target int64
+			if err := inner.QueryRowContext(tx.ctx, `SELECT COUNT(*) FROM users WHERE id = ? AND is_admin != 0 AND is_active != 0`, userID).Scan(&target); err != nil {
+				return fmt.Errorf("UpdateAuthUserAdmin: %w", err)
+			}
+			if target == 1 && count == 0 {
+				return ErrLastAdmin
+			}
+		}
 		_, uerr := inner.ExecContext(tx.ctx, `UPDATE users SET full_name = ?, email = ?, is_active = ?, updated_at = ? WHERE id = ?`,
 			fullName, email, boolToInt64(active), now, userID)
 		if uerr != nil {
