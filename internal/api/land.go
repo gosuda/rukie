@@ -91,9 +91,9 @@ func landPlanCreateHandler(d Deps) func(context.Context, op.Principal, LandPlanC
 			return LandPlanCreateOut{}, oerr
 		}
 		rc.daemon = daemon
-		baseResolved, berr := d.resolveRev(ctx, rc, branch)
-		if berr != nil {
-			return LandPlanCreateOut{}, berr
+		baseTip, ok := d.exactRefTarget(ctx, rc, in.Body.TargetRef)
+		if !ok {
+			return LandPlanCreateOut{}, op.Errorf(op.CodeNotFound, "target branch was not found")
 		}
 		out := LandPlanCreateOut{}
 		werr := d.Store.Write(ctx, func(tx *store.WriteTx) error {
@@ -124,7 +124,7 @@ func landPlanCreateHandler(d Deps) func(context.Context, op.Principal, LandPlanC
 				RepoID: row.RepoID, TargetRef: in.Body.TargetRef,
 				ChangeID:         sql.NullInt64{Int64: row.ID, Valid: true},
 				CandidateOid:     row.HeadOid,
-				BaseOid:          baseResolved.commit,
+				BaseOid:          baseTip,
 				PolicyGeneration: ruleVersion,
 				Gap:              string(gapJSON),
 				CreatedBy:        rq.user.ID,

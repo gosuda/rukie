@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,15 +19,33 @@ func f2Stack(t *testing.T) (*stack, *apiHarness, userRec) {
 	return s, h, ada
 }
 
-func f2Repo(t *testing.T, h *apiHarness, ada userRec, owner, name string) {
+func f2SeedRepo(t *testing.T, s *stack, ada userRec, owner, name string, files map[string]string) {
 	t.Helper()
-	session := apiLogin(t, h, "ada", "long-test-password-01")
-	token := apiToken(t, h, session, "repo:create repo:read repo:write intents:read intents:write")
-	status, decoded := apiCall(t, h, "POST", "/new/repo", token, `{"owner":"`+owner+`","name":"`+name+`","visibility":"private"}`)
-	if status != http.StatusCreated {
-		t.Fatalf("repo.create = %d: %v", status, decoded)
+	repoID := s.addRepo(t, owner, name, "private")
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO bookmark_rules
+(repo_id, pattern, mode, bypass_admin, push_allow, land_allow, required, version, created_at)
+VALUES (?, ?, 'LandOnly', 1, ?, '[]', ?, 1, ?)`,
+		repoID, "refs/heads/main", `[{"users":[`+strconv.FormatInt(ada.user.ID, 10)+`]}]`,
+		`[{"kind":"review/approve","result":"approved","trusted":{},"min_signers":1}]`,
+		time.Now().UnixMilli()); err != nil {
+		t.Fatalf("seed rule: %v", err)
 	}
-	_ = ada
+	if _, err := s.db.ExecContext(ctx, `UPDATE repos SET ruk_path = ? WHERE id = ?`,
+		owner+"/"+name+".git", repoID); err != nil {
+		t.Fatalf("seed ruk path: %v", err)
+	}
+	work, _ := s.localRepo(t, files)
+	pushCtx, pushCancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer pushCancel()
+	if out, err := gitRun(pushCtx, t, work, "push", s.repoURL(owner, name, "ada", ada.token), "HEAD:refs/heads/main"); err != nil {
+		t.Fatalf("seed main: %v\n%s", err, out)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE bookmark_rules SET bypass_admin = 0, push_allow = '[]' WHERE repo_id = ?`,
+		repoID); err != nil {
+		t.Fatalf("tighten rule: %v", err)
+	}
 }
 
 func f2PushFor(t *testing.T, s *stack, ada userRec, repo string, files map[string]string) string {
@@ -68,13 +87,12 @@ func TestRefsForRequiresOnlyRead(t *testing.T) {
 
 func TestLandRequirementsUnmetProblem(t *testing.T) {
 	s, h, ada := f2Stack(t)
-	f2Repo(t, h, ada, "ada", "hello")
+	f2SeedRepo(t, s, ada, "ada", "hello", map[string]string{"README.md": "hello\n"})
 	f2PushFor(t, s, ada, "hello", map[string]string{"README.md": "hello\n"})
 	session := apiLogin(t, h, "ada", "long-test-password-01")
 	token := apiToken(t, h, session, "repo:read repo:write intents:read")
-	key := "main~#1"
-	planStatus, plan := apiCall(t, h, "POST", "/ada/hello/land/plans", token,
-		`{"target_ref":"refs/heads/main","change":"`+key+`"}`)
+	key := "main~" + strconv.FormatInt(ada.user.ID, 10)
+	planStatus, plan := apiCall(t, h, "POST", "/ada/hello/land/plans", token, `{"target_ref":"refs/heads/main","change":"`+key+`"}`)
 	if planStatus != http.StatusCreated {
 		t.Fatalf("land.plan.create = %d: %v", planStatus, plan)
 	}

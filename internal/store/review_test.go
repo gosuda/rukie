@@ -68,7 +68,7 @@ func TestReviewChangePatchsetFlow(t *testing.T) {
 	var changeID int64
 	if err := st.Write(t.Context(), func(tx *WriteTx) error {
 		row, ierr := tx.InsertChange(now, ChangeRow{
-			RepoID: repoID, ChangeKey: "main~#7", TargetBranch: "main",
+			RepoID: repoID, ChangeKey: "main~7", TargetBranch: "main",
 			AuthorUserID: userID, HeadOid: headA,
 		})
 		if ierr != nil {

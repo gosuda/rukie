@@ -72,7 +72,7 @@ func TestReviewCommentCreateAndList(t *testing.T) {
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	repoID := rseedRepo(t, e, admin.ID, "hello", "private")
 	head := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	rseedChange(t, e, repoID, admin.ID, "main~#1", head)
+	rseedChange(t, e, repoID, admin.ID, "main~1", head)
 	token := rtoken(t, e, admin, "repo:read", "repo:write")
 	created := rdo(t, e, "POST", "/ada/hello/changes/main~%231/comments", token,
 		`{"path":"a.txt","line":3,"body":"nit"}`)
@@ -98,7 +98,7 @@ func TestNoSelfApproval(t *testing.T) {
 	repoID := rseedRepo(t, e, admin.ID, "hello", "private")
 	rgrant(t, e, repoID, mallory.ID, "write")
 	head := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	rseedChange(t, e, repoID, admin.ID, "main~#1", head)
+	rseedChange(t, e, repoID, admin.ID, "main~1", head)
 	adaToken := rtoken(t, e, admin, "repo:read", "repo:write")
 	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/reviews", adaToken,
 		`{"verdict":"approve"}`), 403, "forbidden")
@@ -115,7 +115,7 @@ func TestChangeStateAbandonClosesComments(t *testing.T) {
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	repoID := rseedRepo(t, e, admin.ID, "hello", "private")
 	head := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	rseedChange(t, e, repoID, admin.ID, "main~#1", head)
+	rseedChange(t, e, repoID, admin.ID, "main~1", head)
 	token := rtoken(t, e, admin, "repo:read", "repo:write")
 	moved := rdo(t, e, "POST", "/ada/hello/changes/main~%231/state", token, `{"state":"abandoned"}`)
 	if moved.Code != http.StatusOK && moved.Code != http.StatusCreated {
@@ -131,10 +131,10 @@ func TestLandRunRequiresDaemon(t *testing.T) {
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	repoID := rseedRepo(t, e, admin.ID, "hello", "private")
 	head := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	rseedChange(t, e, repoID, admin.ID, "main~#1", head)
+	rseedChange(t, e, repoID, admin.ID, "main~1", head)
 	var planPublic string
 	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
-		row, gerr := tx.GetChangeByKey(repoID, "main~#1")
+		row, gerr := tx.GetChangeByKey(repoID, "main~1")
 		if gerr != nil {
 			return gerr
 		}

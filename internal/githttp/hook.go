@@ -199,7 +199,7 @@ func firstChangeLine(err error) string {
 func (s *Server) changeSpans(ctx context.Context, repoID, authorID int64, branch, topic, newHead string) map[string][]review.Span {
 	key := branch + "~" + topic
 	if topic == "" {
-		key = branch + "~#" + strconv.FormatInt(authorID, 10)
+		key = branch + "~" + strconv.FormatInt(authorID, 10)
 	}
 	var oldHead string
 	_ = s.store.Read(ctx, func(tx *store.ReadTx) error {

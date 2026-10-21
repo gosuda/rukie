@@ -40,7 +40,7 @@ type Ingress struct {
 func IngressChange(tx *store.WriteTx, now time.Time, in Ingress) (store.ChangeRow, string, error) {
 	key := in.Branch + "~" + in.Topic
 	if in.Topic == "" {
-		key = fmt.Sprintf("%s~#%d", in.Branch, in.AuthorID)
+		key = fmt.Sprintf("%s~%d", in.Branch, in.AuthorID)
 	}
 	if row, gerr := tx.GetChangeByKey(in.RepoID, key); gerr == nil && row.State == "open" {
 		updated, aerr := tx.AppendPatchset(now, row.ID, in.HeadOid)
