@@ -278,7 +278,6 @@ func gitEnv(t *testing.T) []string {
 		"GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GIT_CONFIG_SYSTEM=" + os.DevNull,
 		"GIT_TERMINAL_PROMPT=0",
-		"GIT_TRACE_CURL=" + os.Getenv("GIT_TRACE_CURL"),
 		"GIT_AUTHOR_NAME=e2e",
 		"GIT_AUTHOR_EMAIL=e2e@example.test",
 		"GIT_COMMITTER_NAME=e2e",

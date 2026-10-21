@@ -158,6 +158,20 @@ func drainStdin(conn net.Conn, stream uint64) error {
 	}
 }
 
+func waitScripted(t *testing.T, ch <-chan [2]time.Time, timeout time.Duration) ([2]time.Time, bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !time.Now().After(deadline) {
+		select {
+		case got := <-ch:
+			return got, true
+		default:
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return [2]time.Time{}, false
+}
+
 func watchClose(conn net.Conn, stream uint64, seen chan<- [2]time.Time) {
 	var at [2]time.Time
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
@@ -378,14 +392,12 @@ func TestCommandCancelBeforeStdinEOFClosesFast(t *testing.T) {
 		Stdin:  strings.NewReader(strings.Repeat("a", 1<<20)),
 		Stdout: &stdout,
 	})
-	srv.wg.Wait()
-	srv.assertNoErrors(t)
-	var at [2]time.Time
-	select {
-	case at = <-seen:
-	case <-time.After(10 * time.Second):
+	at, ok := waitScripted(t, seen, 10*time.Second)
+	if !ok {
 		t.Fatal("scripted daemon saw no close")
 	}
+	srv.wg.Wait()
+	srv.assertNoErrors(t)
 	if at[0].IsZero() {
 		t.Fatal("scripted daemon saw no cancel")
 	}

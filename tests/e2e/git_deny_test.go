@@ -87,6 +87,7 @@ func (f *trackFake) serve(t *testing.T, conn net.Conn) {
 	}
 	for {
 		kind, stream, payload := readFrameSoft(conn)
+		fakeLog("serve kind=%d stream=%d", kind, stream)
 		if kind == 0 {
 			return
 		}
@@ -138,6 +139,18 @@ func (f *trackFake) serveTyped(t *testing.T, conn net.Conn, stream uint64, paylo
 	writeRawFrame(t, conn, 10, stream, []byte(`{"code":"","outcome":"completed","completed_at":0,"status":0}`))
 }
 
+func fakeLog(format string, args ...any) {
+	if os.Getenv("RUKIE_DEBUG_FAKE") == "" {
+		return
+	}
+	f, err := os.OpenFile("/tmp/fake.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(f, "%d "+format+"\n", append([]any{time.Now().UnixMilli()}, args...)...)
+	_ = f.Close()
+}
+
 func readFrameSoft(conn net.Conn) (byte, uint64, []byte) {
 	var hdr [13]byte
 	if _, err := io.ReadFull(conn, hdr[:]); err != nil {
@@ -158,6 +171,7 @@ func (f *trackFake) drainRound(t *testing.T, conn net.Conn, stream uint64) {
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	for {
 		kind, _, _ := readFrameSoft(conn)
+		fakeLog("drain kind=%d", kind)
 		if kind == 0 {
 			return
 		}
@@ -390,19 +404,18 @@ func TestGitRefsForPostOpensOneStream(t *testing.T) {
 	if n := h.opens(); n != 1 {
 		t.Fatalf("refs/for POST opened %d daemon streams, want exactly 1", n)
 	}
-	select {
-	case reply := <-h.fake.replies:
-		if len(reply.Verdicts) != 1 {
-			t.Fatalf("hook verdicts = %+v, want one", reply.Verdicts)
-		}
-		if reply.Verdicts[0].Verdict.Kind != wire.HookReject {
-			t.Fatalf("refs/for verdict = %q, want reject", reply.Verdicts[0].Verdict.Kind)
-		}
-		if !strings.Contains(reply.Verdicts[0].Verdict.Reason, "change review is not available") {
-			t.Fatalf("refs/for reason = %q, want the pinned rejection", reply.Verdicts[0].Verdict.Reason)
-		}
-	case <-time.After(10 * time.Second):
+	reply, ok := waitFor(t, h.fake.replies, 10*time.Second)
+	if !ok {
 		t.Fatal("hook reply never arrived")
+	}
+	if len(reply.Verdicts) != 1 {
+		t.Fatalf("hook verdicts = %+v, want one", reply.Verdicts)
+	}
+	if reply.Verdicts[0].Verdict.Kind != wire.HookReject {
+		t.Fatalf("refs/for verdict = %q, want reject", reply.Verdicts[0].Verdict.Kind)
+	}
+	if !strings.Contains(reply.Verdicts[0].Verdict.Reason, "change review is not available") {
+		t.Fatalf("refs/for reason = %q, want the pinned rejection", reply.Verdicts[0].Verdict.Reason)
 	}
 }
 
@@ -441,25 +454,35 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 	cancel()
-	_ = pw.Close()
-	select {
-	case derr := <-done:
-		if derr != nil {
-			t.Logf("disconnected POST ended: %v", derr)
-		}
-	case <-time.After(15 * time.Second):
+	derr, ok := waitFor(t, done, 15*time.Second)
+	if !ok {
 		t.Fatal("disconnected POST never returned")
 	}
-	select {
-	case <-h.fake.cancels:
-	case <-time.After(10 * time.Second):
+	if derr != nil {
+		t.Logf("disconnected POST ended: %v", derr)
+	}
+	if _, ok := waitFor(t, h.fake.cancels, 10*time.Second); !ok {
 		t.Fatal("daemon saw no cancel after client disconnect")
 	}
-	select {
-	case <-h.fake.closes:
-	case <-time.After(10 * time.Second):
+	_ = pw.Close()
+	if _, ok := waitFor(t, h.fake.closes, 10*time.Second); !ok {
 		t.Fatal("daemon stream never closed after client disconnect")
 	}
+}
+
+func waitFor[T any](t *testing.T, ch <-chan T, timeout time.Duration) (T, bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !time.Now().After(deadline) {
+		select {
+		case got := <-ch:
+			return got, true
+		default:
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var zero T
+	return zero, false
 }
 
 func serveWithTimeouts(t *testing.T, h http.Handler) (string, func()) {

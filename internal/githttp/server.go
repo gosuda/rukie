@@ -163,15 +163,6 @@ func New(cfg Config) (*Server, error) {
 	}, nil
 }
 
-// SetHookTimeout overrides the per-hook verdict deadline. Tests use a
-// small budget to force the timeout path without touching production.
-func (s *Server) SetHookTimeout(d time.Duration) {
-	if d <= 0 {
-		return
-	}
-	s.hookTimeout = d
-}
-
 func (s *Server) clientFor(ctx context.Context) (*ruk.Client, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
