@@ -370,7 +370,7 @@ func TestGitDenialsOpenNoStream(t *testing.T) {
 	}
 }
 
-func TestGitRefsForPostOpensOneStream(t *testing.T) {
+func TestGitRefsForDivertOpensOneStream(t *testing.T) {
 	hook := &wire.HookCall{
 		Phase:      wire.HookPreReceive,
 		Commands:   []wire.HookCommand{{Name: "refs/for/main", Old: strings.Repeat("0", 40), New: strings.Repeat("1", 40), Authorized: true}},
@@ -403,11 +403,11 @@ func TestGitRefsForPostOpensOneStream(t *testing.T) {
 	if len(reply.Verdicts) != 1 {
 		t.Fatalf("hook verdicts = %+v, want one", reply.Verdicts)
 	}
-	if reply.Verdicts[0].Verdict.Kind != wire.HookReject {
-		t.Fatalf("refs/for verdict = %q, want reject", reply.Verdicts[0].Verdict.Kind)
+	if reply.Verdicts[0].Verdict.Kind != wire.HookDivert {
+		t.Fatalf("refs/for verdict = %q, want divert", reply.Verdicts[0].Verdict.Kind)
 	}
-	if !strings.Contains(reply.Verdicts[0].Verdict.Reason, "change review is not available") {
-		t.Fatalf("refs/for reason = %q, want the pinned rejection", reply.Verdicts[0].Verdict.Reason)
+	if !strings.HasPrefix(reply.Verdicts[0].Verdict.ReviewRef, "refs/changes/") {
+		t.Fatalf("refs/for review ref = %q, want a refs/changes ref", reply.Verdicts[0].Verdict.ReviewRef)
 	}
 }
 
