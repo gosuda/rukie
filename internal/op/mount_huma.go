@@ -112,6 +112,11 @@ func idemMapKey(owner int64, key string) string {
 	return strconv.FormatInt(owner, 10) + "\x00" + key
 }
 
+func scopedIdempotencyKey(p Principal, key string) string {
+	return strconv.FormatInt(int64(p.Kind), 10) + "\x00" +
+		strconv.FormatInt(p.TokenID, 10) + "\x00" + key
+}
+
 func (m *MemoryIdempotency) Lookup(ctx context.Context, owner int64, key string, digest [32]byte, now time.Time) (Outcome, *Recorded, error) {
 	_ = ctx
 	m.mu.Lock()
@@ -714,7 +719,8 @@ func beginIdempotent(ctx context.Context, st *reqState) error {
 	if srv == nil {
 		return Errorf(CodeInternal, "internal error")
 	}
-	claim, outcome, err := srv.cfg.Idempotency.Begin(ctx, st.principal.UserID, st.key, st.digest, srv.now())
+	key := scopedIdempotencyKey(st.principal, st.key)
+	claim, outcome, err := srv.cfg.Idempotency.Begin(ctx, st.principal.UserID, key, st.digest, srv.now())
 	if err != nil {
 		return Errorf(CodeInternal, "internal error")
 	}
@@ -1067,7 +1073,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if st.failure == nil && spec.Kind == KindMutation && st.key != "" {
-		outcome, recorded, lerr := s.cfg.Idempotency.Lookup(r.Context(), st.principal.UserID, st.key, st.digest, s.now())
+		key := scopedIdempotencyKey(st.principal, st.key)
+		outcome, recorded, lerr := s.cfg.Idempotency.Lookup(r.Context(), st.principal.UserID, key, st.digest, s.now())
 		if lerr != nil {
 			st.failure = Errorf(CodeInternal, "internal error")
 			decision = "rejected:idempotency"
