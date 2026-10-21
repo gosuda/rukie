@@ -82,11 +82,18 @@ func (s *Service) CreateUser(ctx context.Context, actor int64, in CreateUserInpu
 	return u, nil
 }
 
-func (s *Service) CreateUserRandom(ctx context.Context, actor int64, name, email, fullName, ip string) (User, string, error) {
-	if err := CheckUsername(name); err != nil {
+type CreateUserRandomInput struct {
+	Name     string
+	Email    string
+	FullName string
+	IsAdmin  bool
+}
+
+func (s *Service) CreateUserRandom(ctx context.Context, actor int64, in CreateUserRandomInput, ip string) (User, string, error) {
+	if err := CheckUsername(in.Name); err != nil {
 		return User{}, "", err
 	}
-	if len(email) > 255 || len(fullName) > 255 {
+	if len(in.Email) > 255 || len(in.FullName) > 255 {
 		return User{}, "", errors.New("email and full name must fit 255 characters")
 	}
 	temp := randomTempPassword()
@@ -95,12 +102,16 @@ func (s *Service) CreateUserRandom(ctx context.Context, actor int64, name, email
 		return User{}, "", err
 	}
 	now := millis(s.clock())
+	admin := 0
+	if in.IsAdmin {
+		admin = 1
+	}
 	var u User
 	err = s.execTx(ctx, func(tx *sql.Tx) error {
 		res, txErr := tx.ExecContext(ctx, `INSERT INTO users
-			(name, lower_name, email, full_name, password_hash, password_algo, password_changed_at, must_change_password, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, 'argon2id-v19', ?, 1, ?, ?)`,
-			name, strings.ToLower(name), email, fullName, hash, now, now, now)
+			(name, lower_name, email, full_name, password_hash, password_algo, password_changed_at, must_change_password, is_admin, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, 'argon2id-v19', ?, 1, ?, ?, ?)`,
+			in.Name, strings.ToLower(in.Name), in.Email, in.FullName, hash, now, admin, now, now)
 		if txErr != nil {
 			return txErr
 		}
@@ -108,8 +119,8 @@ func (s *Service) CreateUserRandom(ctx context.Context, actor int64, name, email
 		if txErr != nil {
 			return txErr
 		}
-		u = User{ID: id, Name: name, LowerName: strings.ToLower(name), Email: email,
-			FullName: fullName, PasswordAlgo: argonAlgo, IsActive: true, MustChangePassword: true,
+		u = User{ID: id, Name: in.Name, LowerName: strings.ToLower(in.Name), Email: in.Email,
+			FullName: in.FullName, PasswordAlgo: argonAlgo, IsActive: true, MustChangePassword: true, IsAdmin: in.IsAdmin,
 			PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now}
 		return nil
 	})
@@ -119,7 +130,7 @@ func (s *Service) CreateUserRandom(ctx context.Context, actor int64, name, email
 		}
 		return User{}, "", err
 	}
-	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.user_create", Target: "user:" + name, IP: ip, Result: "ok"})
+	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.user_create", Target: "user:" + in.Name, IP: ip, Result: "ok"})
 	return u, temp, nil
 }
 

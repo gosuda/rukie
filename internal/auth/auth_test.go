@@ -381,3 +381,28 @@ func TestPasswordFieldHasNoInlineFlag(t *testing.T) {
 		t.Fatalf("512-byte secret rejected: %v", len(exact))
 	}
 }
+func TestCreateUserRandomIsAdmin(t *testing.T) {
+	svc, _ := openTestService(t)
+	ctx := t.Context()
+	made, _, err := svc.CreateUserRandom(ctx, 0, CreateUserRandomInput{Name: "randadmin", IsAdmin: true}, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("random admin: %v", err)
+	}
+	if !made.IsAdmin {
+		t.Fatal("random+is_admin user is not an admin")
+	}
+	stored, err := svc.GetUserByID(ctx, made.ID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !stored.IsAdmin {
+		t.Fatal("stored random user lost is_admin")
+	}
+	plain, _, err := svc.CreateUserRandom(ctx, 0, CreateUserRandomInput{Name: "randplain"}, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("random plain: %v", err)
+	}
+	if plain.IsAdmin {
+		t.Fatal("random non-admin user gained admin")
+	}
+}

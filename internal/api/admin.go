@@ -148,7 +148,9 @@ func RegisterAdmin(t *op.Table, deps Deps) error {
 				return AdminCreateOut{}, derr
 			}
 			if in.Body.Random {
-				_, temp, cerr := deps.Service.CreateUserRandom(ctx, admin.ID, in.Body.Name, in.Body.Email, in.Body.FullName, "")
+				_, temp, cerr := deps.Service.CreateUserRandom(ctx, admin.ID, auth.CreateUserRandomInput{
+					Name: in.Body.Name, Email: in.Body.Email, FullName: in.Body.FullName, IsAdmin: in.Body.IsAdmin,
+				}, "")
 				if cerr != nil {
 					return AdminCreateOut{}, mapAuthError(cerr)
 				}
