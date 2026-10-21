@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,7 +19,14 @@ type Args map[string]any
 
 func (a Args) scalar(key string) (string, bool) {
 	v, ok := a[key]
-	if !ok || v == nil {
+	if !ok {
+		return "", false
+	}
+	return scalarValue(v)
+}
+
+func scalarValue(v any) (string, bool) {
+	if v == nil {
 		return "", false
 	}
 	switch t := v.(type) {
@@ -38,6 +46,20 @@ func (a Args) scalar(key string) (string, bool) {
 		}
 		return string(raw), true
 	}
+}
+
+func addArrayQuery(query url.Values, name string, value any) bool {
+	items := reflect.ValueOf(value)
+	if items.Kind() != reflect.Slice && items.Kind() != reflect.Array {
+		return false
+	}
+	query.Del(name)
+	for i := range items.Len() {
+		if item, ok := scalarValue(items.Index(i).Interface()); ok {
+			query.Add(name, item)
+		}
+	}
+	return true
 }
 
 func (a Args) ToRequest(s *Spec, d *Document, base *url.URL) (*http.Request, error) {
@@ -76,6 +98,9 @@ func (a Args) ToRequest(s *Spec, d *Document, base *url.URL) (*http.Request, err
 	query := target.Query()
 	for _, p := range os.Params {
 		if p.In != "query" {
+			continue
+		}
+		if value, ok := a[p.Name]; ok && value != nil && p.Schema["type"] == "array" && addArrayQuery(query, p.Name, value) {
 			continue
 		}
 		if value, ok := a.scalar(p.Name); ok {

@@ -71,6 +71,34 @@ func pathSpec(t *testing.T, server *op.Server, name string) op.Spec {
 	return op.Spec{}
 }
 
+func TestToRequestArrayQueryUsesRepeatedFormValues(t *testing.T) {
+	spec := op.Spec{Name: "test.list", Method: http.MethodGet, Path: "/test/list"}
+	doc := &op.Document{Operations: map[string]op.OperationSchema{
+		spec.Name: {Params: []op.Param{{In: "query", Name: "path", Schema: op.Schema{"type": "array"}}}},
+	}}
+	base, err := url.Parse("http://127.0.0.1:3000?path=base")
+	if err != nil {
+		t.Fatalf("base: %v", err)
+	}
+	req, err := (op.Args{"path": []string{"src/main.go", "docs/read me.md"}}).ToRequest(&spec, doc, base)
+	if err != nil {
+		t.Fatalf("ToRequest: %v", err)
+	}
+	got := req.URL.Query()["path"]
+	want := []string{"src/main.go", "docs/read me.md"}
+	if len(got) != len(want) {
+		t.Fatalf("path values = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("path values = %q, want %q", got, want)
+		}
+	}
+	if req.URL.RawQuery != "path=src%2Fmain.go&path=docs%2Fread+me.md" {
+		t.Fatalf("raw query = %q", req.URL.RawQuery)
+	}
+}
+
 func TestToRequestCatchAllKeepsSlashes(t *testing.T) {
 	server, doc := mountPathTable(t)
 	spec := pathSpec(t, server, "test.path.get")
