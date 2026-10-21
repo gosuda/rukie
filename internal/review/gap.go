@@ -25,7 +25,9 @@ type AttestationFact struct {
 }
 
 // Gap names one machine-checkable reason a change cannot land yet.
+// Kind carries the requirement pattern that produced the gap.
 type Gap struct {
+	Kind   string
 	Reason string
 	Detail string
 	NextOp string
@@ -48,7 +50,7 @@ func GapsForChange(head string, authorID int64, reqs []Requirement, facts []Atte
 				if !fact.Live || fact.OID != head || fact.Kind != "review/block" {
 					continue
 				}
-				out = append(out, Gap{Reason: "blocked_review", Detail: "review/block is live", NextOp: "change.review.create"})
+				out = append(out, Gap{Kind: req.Kind, Reason: "blocked_review", Detail: "review/block is live", NextOp: "change.review.create"})
 				break
 			}
 			continue
@@ -75,6 +77,7 @@ func GapsForChange(head string, authorID int64, reqs []Requirement, facts []Atte
 				reason = "needs_ci"
 			}
 			out = append(out, Gap{
+				Kind:   req.Kind,
 				Reason: reason,
 				Detail: req.Kind + " wants " + itoa(need-len(seen)) + " more",
 				NextOp: "change.review.create",

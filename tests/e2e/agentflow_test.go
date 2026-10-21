@@ -57,6 +57,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterRepos(table, deps) },
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
+		func() error { return api.RegisterReview(table, deps) },
 	} {
 		if err := step(); err != nil {
 			t.Fatalf("register: %v", err)
@@ -73,6 +74,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterReposViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
+	api.RegisterReviewViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()
@@ -274,10 +276,15 @@ func TestAgentFlow(t *testing.T) {
 		pushURL := s.repoURL("ada", "hello", "ada", secret)
 		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 		defer cancel()
-		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
-			t.Fatalf("push: %v\n%s", err, out)
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err == nil {
+			t.Fatalf("direct push to the protected default branch landed:\n%s", out)
+		} else if !strings.Contains(out, "protected:allowlist") {
+			t.Fatalf("direct push lacks the LandOnly denial:\n%s", out)
 		}
-		waitRefUpdated(t, s, "refs/heads/main", 2*time.Second)
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/side"); err != nil {
+			t.Fatalf("side branch push: %v\n%s", err, out)
+		}
+		waitRefUpdated(t, s, "refs/heads/side", 2*time.Second)
 	})
 }
 

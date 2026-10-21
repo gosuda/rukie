@@ -39,6 +39,7 @@ type Config struct {
 	Limiter     *access.Limiter
 	Client      *ruk.Client
 	Feed        *events.HookSink
+	Store       *store.Store
 	Clock       func() time.Time
 	Barrier     func() (release func(), ok bool)
 	RepoRoot    string
@@ -55,6 +56,7 @@ type Server struct {
 	limiter     *access.Limiter
 	client      *ruk.Client
 	feed        *events.HookSink
+	store       *store.Store
 	resolver    *access.SQLResolver
 	db          *sql.DB
 	clock       func() time.Time
@@ -151,6 +153,7 @@ func New(cfg Config) (*Server, error) {
 		limiter:     cfg.Limiter,
 		client:      cfg.Client,
 		feed:        cfg.Feed,
+		store:       cfg.Store,
 		resolver:    access.NewSQLResolver(cfg.Auth.DB(), access.NewStoreTeams(cfg.Auth.DB(), nil)),
 		db:          cfg.Auth.DB(),
 		repoRoot:    filepath.Clean(cfg.RepoRoot),

@@ -19,6 +19,7 @@ import (
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 const (
@@ -36,6 +37,7 @@ type Config struct {
 	Limiter           *access.Limiter
 	Client            *ruk.Client
 	Feed              *events.HookSink
+	Store             *store.Store
 	Clock             func() time.Time
 	SocketPath        string
 	RepoRoot          string
@@ -129,6 +131,7 @@ func New(cfg Config) (*Server, error) {
 		RepoRoot:   cfg.RepoRoot,
 		Limits:     cfg.Limits,
 		Feed:       cfg.Feed,
+		Store:      cfg.Store,
 		Clock:      clock,
 	})
 	if err != nil {

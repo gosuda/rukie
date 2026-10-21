@@ -519,6 +519,10 @@ func (tx *WriteTx) DeleteGrant(repoID, userID int64) error {
 	return nil
 }
 
+// defaultLandRequired is the default bookmark requirement: one review/approve
+// from a trusted signer who is not the change author.
+const defaultLandRequired = `[{"kind":"review/approve","result":"approved","trusted":{},"min_signers":1}]`
+
 func (tx *WriteTx) InsertDefaultRule(repoID int64, now time.Time, pattern string) error {
 	inner, err := tx.live()
 	if err != nil {
@@ -526,8 +530,8 @@ func (tx *WriteTx) InsertDefaultRule(repoID int64, now time.Time, pattern string
 	}
 	_, merr := inner.ExecContext(tx.ctx, `INSERT INTO bookmark_rules
 (repo_id, pattern, mode, bypass_admin, push_allow, land_allow, required, version, created_at)
-VALUES (?, ?, 'Open', 0, '[]', '[]', '[]', 1, ?)`,
-		repoID, pattern, msOf(now))
+VALUES (?, ?, 'LandOnly', 0, '[]', '[]', ?, 1, ?)`,
+		repoID, pattern, defaultLandRequired, msOf(now))
 	return merr
 }
 

@@ -153,6 +153,7 @@ func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string
 		Limiter:          access.NewLimiter(),
 		Client:           client,
 		Feed:             events.OpenHookSink(st, spool, time.Now),
+		Store:            st,
 		RepoRoot:         roots,
 		Limits:           useLimits,
 		MaxHTTPBodyBytes: httpCap,

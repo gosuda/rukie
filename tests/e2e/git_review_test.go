@@ -161,34 +161,28 @@ func TestGitReadOnlyRawPushRejectedNg(t *testing.T) {
 	}
 }
 
-func TestGitRefsForRawPushRejectedPinned(t *testing.T) {
+func TestGitRefsForDivertCreatesChange(t *testing.T) {
 	s := newStack(t, nil)
 	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
-	mallory := s.addUser(t, "mallory", "repo:read", "repo:write")
-	repoID := s.addRepo(t, "ada", "hello", "private")
-	s.addGrant(t, repoID, mallory.user.ID, "read")
-	work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
-	recorded := capturePush(t, s, ada, work, "refs/for/probe")
+	s.addRepo(t, "ada", "hello", "private")
+	work, oid := s.localRepo(t, map[string]string{"README.md": "hello\n"})
 	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/ada/hello.git/git-receive-pack", bytes.NewReader(recorded))
-	if err != nil {
-		t.Fatalf("request: %v", err)
+	if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/for/main"); err != nil {
+		t.Fatalf("refs/for push: %v\n%s", err, out)
 	}
-	req.SetBasicAuth("mallory", mallory.token)
-	req.Header.Set("Content-Type", "application/x-git-receive-pack-request")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("post: %v", err)
+	matched := false
+	for ref, target := range s.lsRemote(t, pushURL) {
+		if strings.HasPrefix(ref, "refs/changes/") && target == oid {
+			matched = true
+		}
+		if ref == "refs/for/main" || strings.HasPrefix(ref, "refs/for/") {
+			t.Fatalf("refs/for landed as a real ref: %q", ref)
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(raw), "change review is not available") {
-		t.Fatalf("refs/for push lacks the pinned reason:\n%s", raw)
-	}
-	if refs := s.lsRemote(t, pushURL); refs["refs/for/probe"] != "" {
-		t.Fatalf("refs/for/probe landed as a real ref: %q", refs["refs/for/probe"])
+	if !matched {
+		t.Fatalf("no refs/changes ref carries %s", oid)
 	}
 }
 

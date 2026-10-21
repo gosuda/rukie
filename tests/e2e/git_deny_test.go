@@ -293,6 +293,7 @@ func newDenyHarness(t *testing.T, hook *wire.HookCall, delay time.Duration, visi
 		Client:   client,
 		RepoRoot: roots,
 		Limits:   wire.DefaultGitLimits(),
+		Store:    st,
 	})
 	if err != nil {
 		t.Fatalf("githttp: %v", err)

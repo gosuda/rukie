@@ -810,3 +810,300 @@ func boolInt(v bool) int64 {
 	}
 	return 0
 }
+
+// ReadLandIntentByPublicID loads one land intent by its public id for reads.
+func (tx *ReadTx) ReadLandIntentByPublicID(repoID int64, publicID string) (LandIntentRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return LandIntentRow{}, err
+	}
+	var row LandIntentRow
+	serr := inner.QueryRowContext(tx.ctx, `SELECT id, public_id, repo_id, target_ref, change_id,
+candidate_oid, base_oid, policy_generation, state, reprepares, gap, created_by, created_at, updated_at
+FROM land_intents WHERE repo_id = ? AND public_id = ?`, repoID, publicID).Scan(
+		&row.ID, &row.PublicID, &row.RepoID, &row.TargetRef, &row.ChangeID,
+		&row.CandidateOid, &row.BaseOid, &row.PolicyGeneration, &row.State,
+		&row.Reprepares, &row.Gap, &row.CreatedBy, &row.CreatedAt, &row.UpdatedAt)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return LandIntentRow{}, fmt.Errorf("ReadLandIntentByPublicID: %w: %s", ErrNotFound, publicID)
+	}
+	return row, serr
+}
+
+// ListLandRunsByPlanID lists every recorded attempt of one land intent.
+func (tx *ReadTx) ListLandRunsByPlanID(planID int64) ([]LandRunRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return nil, err
+	}
+	rows, qerr := inner.QueryContext(tx.ctx, `SELECT id, public_id, plan_id, state, detail, created_at
+FROM land_runs WHERE plan_id = ? ORDER BY id ASC`, planID)
+	if qerr != nil {
+		return nil, qerr
+	}
+	defer func() { _ = rows.Close() }()
+	var out []LandRunRow
+	for rows.Next() {
+		var row LandRunRow
+		if serr := rows.Scan(&row.ID, &row.PublicID, &row.PlanID, &row.State, &row.Detail, &row.CreatedAt); serr != nil {
+			return nil, serr
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// ReadViewByPublicID loads one view by its public id for reads.
+func (tx *ReadTx) ReadViewByPublicID(repoID int64, publicID string) (ViewRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return ViewRow{}, err
+	}
+	var row ViewRow
+	var version sql.NullInt64
+	serr := inner.QueryRowContext(tx.ctx, `SELECT v.id, v.public_id, v.repo_id, v.name,
+v.owner_user_id, v.shared, max(vv.version), vv.revset, vv.predicates
+FROM views v LEFT JOIN view_versions vv ON vv.view_id = v.id
+WHERE v.repo_id = ? AND v.public_id = ? GROUP BY v.id`, repoID, publicID).Scan(
+		&row.ID, &row.PublicID, &row.RepoID, &row.Name, &row.OwnerUserID,
+		&row.Shared, &version, &row.Revset, &row.Predicates)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return ViewRow{}, fmt.Errorf("ReadViewByPublicID: %w: %s", ErrNotFound, publicID)
+	}
+	if version.Valid {
+		row.Version = version.Int64
+	}
+	return row, serr
+}
+
+// ListViewsByRepo lists the saved queries of one repository.
+func (tx *ReadTx) ListViewsByRepo(repoID int64) ([]ViewRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return nil, err
+	}
+	rows, qerr := inner.QueryContext(tx.ctx, `SELECT v.id, v.public_id, v.repo_id, v.name,
+v.owner_user_id, v.shared, max(vv.version)
+FROM views v LEFT JOIN view_versions vv ON vv.view_id = v.id
+WHERE v.repo_id = ? GROUP BY v.id ORDER BY v.name ASC`, repoID)
+	if qerr != nil {
+		return nil, qerr
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ViewRow
+	for rows.Next() {
+		var row ViewRow
+		var version sql.NullInt64
+		if serr := rows.Scan(&row.ID, &row.PublicID, &row.RepoID, &row.Name,
+			&row.OwnerUserID, &row.Shared, &version); serr != nil {
+			return nil, serr
+		}
+		if version.Valid {
+			row.Version = version.Int64
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// DeleteView removes one saved query and its versions.
+func (tx *WriteTx) DeleteView(id int64) error {
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	moved, merr := execAffected(tx.ctx, inner, `DELETE FROM views WHERE id = ?`, id)
+	if merr != nil {
+		return merr
+	}
+	if moved == 0 {
+		return fmt.Errorf("DeleteView: %w: view %d", ErrNotFound, id)
+	}
+	return nil
+}
+
+// SetViewShared flips the sharing of one saved query.
+func (tx *WriteTx) SetViewShared(now time.Time, id int64, shared bool) error {
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	moved, merr := execAffected(tx.ctx, inner, `UPDATE views SET shared = ?, updated_at = ? WHERE id = ?`,
+		boolInt(shared), msOf(now), id)
+	if merr != nil {
+		return merr
+	}
+	if moved == 0 {
+		return fmt.Errorf("SetViewShared: %w: view %d", ErrNotFound, id)
+	}
+	return nil
+}
+
+// ReadLandIntentByPublic loads one land intent by public id across repos.
+func (tx *ReadTx) ReadLandIntentByPublic(publicID string) (LandIntentRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return LandIntentRow{}, err
+	}
+	var row LandIntentRow
+	serr := inner.QueryRowContext(tx.ctx, `SELECT id, public_id, repo_id, target_ref, change_id,
+candidate_oid, base_oid, policy_generation, state, reprepares, gap, created_by, created_at, updated_at
+FROM land_intents WHERE public_id = ?`, publicID).Scan(
+		&row.ID, &row.PublicID, &row.RepoID, &row.TargetRef, &row.ChangeID,
+		&row.CandidateOid, &row.BaseOid, &row.PolicyGeneration, &row.State,
+		&row.Reprepares, &row.Gap, &row.CreatedBy, &row.CreatedAt, &row.UpdatedAt)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return LandIntentRow{}, fmt.Errorf("ReadLandIntentByPublic: %w: %s", ErrNotFound, publicID)
+	}
+	return row, serr
+}
+
+// WholeChangeComments lists path-less review records at a change head.
+func (tx *WriteTx) WholeChangeComments(changeID int64, headOid string) ([]CommentRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return nil, err
+	}
+	rows, qerr := inner.QueryContext(tx.ctx, `SELECT id, public_id, change_id, intent_id, head_oid,
+path, line, body, author_user_id, remapped_from, unmatched, created_at
+FROM change_comments WHERE change_id = ? AND head_oid = ? AND path IS NULL ORDER BY id ASC`,
+		changeID, headOid)
+	if qerr != nil {
+		return nil, qerr
+	}
+	defer func() { _ = rows.Close() }()
+	var out []CommentRow
+	for rows.Next() {
+		var row CommentRow
+		var unmatched int64
+		if serr := rows.Scan(&row.ID, &row.PublicID, &row.ChangeID, &row.IntentID,
+			&row.HeadOid, &row.Path, &row.Line, &row.Body, &row.AuthorUserID,
+			&row.RemappedFrom, &unmatched, &row.CreatedAt); serr != nil {
+			return nil, serr
+		}
+		row.Unmatched = unmatched == 1
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// UpdateBookmarkRule replaces the mode and requirements of one bookmark rule
+// and bumps its version, returning the new policy generation.
+func (tx *WriteTx) UpdateBookmarkRule(repoID int64, pattern, mode, required string) (int64, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return 0, err
+	}
+	res, uerr := inner.ExecContext(tx.ctx, `UPDATE bookmark_rules
+SET mode = ?, required = ?, version = version + 1 WHERE repo_id = ? AND pattern = ?`,
+		mode, required, repoID, pattern)
+	if uerr != nil {
+		return 0, uerr
+	}
+	affected, aerr := res.RowsAffected()
+	if aerr != nil {
+		return 0, aerr
+	}
+	if affected == 0 {
+		return 0, fmt.Errorf("UpdateBookmarkRule: %w: %s", ErrNotFound, pattern)
+	}
+	var version int64
+	if qerr := inner.QueryRowContext(tx.ctx, `SELECT version FROM bookmark_rules
+WHERE repo_id = ? AND pattern = ?`, repoID, pattern).Scan(&version); qerr != nil {
+		return 0, qerr
+	}
+	return version, nil
+}
+
+// GetLandIntentByPublicID loads one land intent by its public id inside a write transaction.
+func (tx *WriteTx) GetLandIntentByPublicID(repoID int64, publicID string) (LandIntentRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return LandIntentRow{}, err
+	}
+	var row LandIntentRow
+	serr := inner.QueryRowContext(tx.ctx, `SELECT id, public_id, repo_id, target_ref, change_id,
+candidate_oid, base_oid, policy_generation, state, reprepares, gap, created_by, created_at, updated_at
+FROM land_intents WHERE repo_id = ? AND public_id = ?`, repoID, publicID).Scan(
+		&row.ID, &row.PublicID, &row.RepoID, &row.TargetRef, &row.ChangeID,
+		&row.CandidateOid, &row.BaseOid, &row.PolicyGeneration, &row.State,
+		&row.Reprepares, &row.Gap, &row.CreatedBy, &row.CreatedAt, &row.UpdatedAt)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return LandIntentRow{}, fmt.Errorf("GetLandIntentByPublicID: %w: %s", ErrNotFound, publicID)
+	}
+	return row, serr
+}
+
+// GetViewByPublicID loads one view by its public id inside a write transaction.
+func (tx *WriteTx) GetViewByPublicID(repoID int64, publicID string) (ViewRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return ViewRow{}, err
+	}
+	var row ViewRow
+	var version sql.NullInt64
+	serr := inner.QueryRowContext(tx.ctx, `SELECT v.id, v.public_id, v.repo_id, v.name,
+v.owner_user_id, v.shared, max(vv.version), vv.revset, vv.predicates
+FROM views v LEFT JOIN view_versions vv ON vv.view_id = v.id
+WHERE v.repo_id = ? AND v.public_id = ? GROUP BY v.id`, repoID, publicID).Scan(
+		&row.ID, &row.PublicID, &row.RepoID, &row.Name, &row.OwnerUserID,
+		&row.Shared, &version, &row.Revset, &row.Predicates)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return ViewRow{}, fmt.Errorf("GetViewByPublicID: %w: %s", ErrNotFound, publicID)
+	}
+	if version.Valid {
+		row.Version = version.Int64
+	}
+	return row, serr
+}
+
+// ListCommentsAtHeadIncludingUnmatched lists every comment at a head inside a write transaction.
+func (tx *WriteTx) ListCommentsAtHeadIncludingUnmatched(changeID int64, headOid string) ([]CommentRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return nil, err
+	}
+	rows, qerr := inner.QueryContext(tx.ctx, `SELECT id, public_id, change_id, intent_id, head_oid, path, line, body,
+author_user_id, remapped_from, unmatched, created_at
+FROM change_comments WHERE change_id = ? AND head_oid = ? ORDER BY id ASC`, changeID, headOid)
+	if qerr != nil {
+		return nil, qerr
+	}
+	defer func() { _ = rows.Close() }()
+	var out []CommentRow
+	for rows.Next() {
+		var row CommentRow
+		var unmatched int64
+		if serr := rows.Scan(&row.ID, &row.PublicID, &row.ChangeID, &row.IntentID,
+			&row.HeadOid, &row.Path, &row.Line, &row.Body, &row.AuthorUserID,
+			&row.RemappedFrom, &unmatched, &row.CreatedAt); serr != nil {
+			return nil, serr
+		}
+		row.Unmatched = unmatched == 1
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// SetLandRunState moves one land run along the awaiting, executing, landed,
+// failed machine.
+func (tx *WriteTx) SetLandRunState(now time.Time, id int64, state string) error {
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	switch state {
+	case "awaiting", "executing", "landed", "failed":
+	default:
+		return fmt.Errorf("SetLandRunState: unknown state %q", state)
+	}
+	moved, merr := execAffected(tx.ctx, inner, `UPDATE land_runs
+SET state = ? WHERE id = ?`, state, id)
+	if merr != nil {
+		return merr
+	}
+	if moved == 0 {
+		return fmt.Errorf("SetLandRunState: %w: run %d", ErrNotFound, id)
+	}
+	return nil
+}
