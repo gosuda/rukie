@@ -852,10 +852,25 @@ func matchRepoETag(ifMatch, owner string, row store.RepoRow) error {
 		return op.Errorf(op.CodePreconditionReq, "If-Match is required")
 	}
 	named := fmt.Sprintf("\"repo-%s-%s-%d\"", owner, row.Name, row.UpdatedAt)
-	if !etagMatches(ifMatch, repoETag(row)) && !etagMatches(ifMatch, named) {
-		return op.Errorf(op.CodeStale, "repository changed under this request")
+	if etagMatches(ifMatch, repoETag(row)) || etagMatches(ifMatch, named) || etagMatchesRepoCommit(ifMatch, owner, row) {
+		return nil
 	}
-	return nil
+	return op.Errorf(op.CodeStale, "repository changed under this request")
+}
+
+func etagMatchesRepoCommit(header, owner string, row store.RepoRow) bool {
+	prefix := fmt.Sprintf("repo-%s-%s-%d-", owner, row.Name, row.UpdatedAt)
+	for part := range strings.SplitSeq(header, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "*" {
+			return true
+		}
+		unquoted := strings.Trim(trimmed, `"`)
+		if strings.HasPrefix(unquoted, prefix) && len(unquoted) > len(prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func etagMatches(header, etag string) bool {
