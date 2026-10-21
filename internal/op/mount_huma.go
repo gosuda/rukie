@@ -975,7 +975,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		srv:     s,
 		header:  http.Header{},
 		query:   r.URL.Query(),
-		path:    r.URL.Path,
+		path:    r.URL.EscapedPath(),
 		media:   MediaJSON,
 		surface: SurfaceHTTP,
 	}
