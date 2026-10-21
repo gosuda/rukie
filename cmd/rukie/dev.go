@@ -392,6 +392,16 @@ func waitDaemon(ctx context.Context, socket string) error {
 	}
 }
 
+func devHTTPServer(app *app, cfg config.Config) *http.Server {
+	return &http.Server{
+		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeoutMs) * time.Millisecond,
+		ReadHeaderTimeout: time.Duration(cfg.HTTP.ReadHeaderTimeoutMs) * time.Millisecond,
+		WriteTimeout:      time.Duration(cfg.HTTP.WriteTimeoutMs) * time.Millisecond,
+		IdleTimeout:       time.Duration(cfg.HTTP.IdleTimeoutMs) * time.Millisecond,
+		Handler:           app.handler,
+	}
+}
+
 func (d *devRun) serve(ctx context.Context) int {
 	if d.fresh {
 		defer func() {
@@ -469,13 +479,7 @@ func (d *devRun) serve(ctx context.Context) int {
 		emitDevErr(d.std, err.Error())
 		return 1
 	}
-	httpServer := &http.Server{
-		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeoutMs) * time.Millisecond,
-		ReadHeaderTimeout: time.Duration(cfg.HTTP.ReadHeaderTimeoutMs) * time.Millisecond,
-		WriteTimeout:      time.Duration(cfg.HTTP.WriteTimeoutMs) * time.Millisecond,
-		IdleTimeout:       time.Duration(cfg.HTTP.IdleTimeoutMs) * time.Millisecond,
-		Handler:           app.server,
-	}
+	httpServer := devHTTPServer(app, cfg)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- httpServer.Serve(ln)
