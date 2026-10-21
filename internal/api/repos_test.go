@@ -363,6 +363,30 @@ func TestRepoLifecycle(t *testing.T) {
 	rassertProblem(t, rdoFull(t, e, "POST", "/ada/priv/settings/restore", adaCookie, "application/json", map[string]string{"If-Match": restored.Header().Get("ETag")}, ""), 409, "conflict")
 }
 
+func TestRepoRestoreStrangerDenied(t *testing.T) {
+	e := buildRepoEnv(t)
+	rbootstrap(t, e, "ada", "long-test-password-01")
+	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	ruser(t, e, ada.ID, "bob")
+	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
+	bobCookie := rlogin(t, e, "bob", "long-test-password-01")
+	goneID := rseedRepo(t, e, ada.ID, "gone", "private")
+	if werr := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		return tx.SoftDeleteRepo(goneID, time.Now(), time.Now().Add(time.Hour))
+	}); werr != nil {
+		t.Fatalf("soft delete: %v", werr)
+	}
+	rassertProblem(t, rdo(t, e, "POST", "/ada/gone/settings/restore", bobCookie, ""), 404, "not-found")
+	gone := rdo(t, e, "GET", "/ada/gone", adaCookie, "")
+	if gone.Code != 200 {
+		t.Fatalf("owner deleted get = %d: %s", gone.Code, gone.Body.String())
+	}
+	restored := rdoFull(t, e, "POST", "/ada/gone/settings/restore", adaCookie, "application/json", map[string]string{"If-Match": gone.Header().Get("ETag")}, "")
+	if restored.Code != 200 {
+		t.Fatalf("restore = %d: %s", restored.Code, restored.Body.String())
+	}
+}
+
 func TestRepoOpRegistration(t *testing.T) {
 	e := buildRepoEnv(t)
 	names := map[string]bool{}

@@ -77,6 +77,12 @@ AND (t.repo_scope = 'all' OR EXISTS
 	return best, found
 }
 func (r *Resolver) Repo(id int64) (access.RepoRecord, bool) {
+	return r.resolveRepoRow(id, `SELECT id, owner_user_id, org_id, visibility, archived FROM repos WHERE id = ? AND deleted_at IS NULL`)
+}
+func (r *Resolver) RepoIncludingDeleted(id int64) (access.RepoRecord, bool) {
+	return r.resolveRepoRow(id, `SELECT id, owner_user_id, org_id, visibility, archived FROM repos WHERE id = ?`)
+}
+func (r *Resolver) resolveRepoRow(id int64, query string) (access.RepoRecord, bool) {
 	var out access.RepoRecord
 	ok := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
@@ -87,8 +93,7 @@ func (r *Resolver) Repo(id int64) (access.RepoRecord, bool) {
 		var vis string
 		var owner sql.NullInt64
 		var archived int64
-		serr := inner.QueryRowContext(tx.ctx,
-			`SELECT id, owner_user_id, org_id, visibility, archived FROM repos WHERE id = ? AND deleted_at IS NULL`, id).Scan(
+		serr := inner.QueryRowContext(tx.ctx, query, id).Scan(
 			&out.ID, &owner, &out.OrgID, &vis, &archived)
 		if serr != nil {
 			return nil

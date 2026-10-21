@@ -46,14 +46,21 @@ func openResolverStore(t *testing.T) (*Store, int64, int64, int64) {
 	return s, ada.ID, live, gone
 }
 
-func TestStoreResolverResolvesDeletedRepo(t *testing.T) {
+func TestStoreResolverHidesDeletedRepo(t *testing.T) {
 	s, _, live, gone := openResolverStore(t)
 	res := s.Resolver()
 	if _, ok := res.Repo(live); !ok {
 		t.Fatalf("live repo %d is invisible", live)
 	}
-	if _, ok := res.Repo(gone); !ok {
-		t.Fatalf("soft-deleted repo %d must resolve by id; callers filter deletion", gone)
+	if _, ok := res.Repo(gone); ok {
+		t.Fatalf("soft-deleted repo %d is visible", gone)
+	}
+	sr, ok := res.(*Resolver)
+	if !ok {
+		t.Fatalf("store resolver has unexpected type %T", res)
+	}
+	if _, ok := sr.RepoIncludingDeleted(gone); !ok {
+		t.Fatalf("soft-deleted repo %d must resolve deleted-aware", gone)
 	}
 }
 

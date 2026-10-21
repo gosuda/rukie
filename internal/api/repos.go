@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/ruk"
@@ -1069,6 +1070,40 @@ func deleteRepoHandler(d Deps) func(context.Context, op.Principal, RepoDeleteIn)
 	}
 }
 
+type deletedAwareResolver struct {
+	access.Resolver
+	deleted func(int64) (access.RepoRecord, bool)
+}
+
+func (w deletedAwareResolver) Repo(id int64) (access.RepoRecord, bool) {
+	if rec, ok := w.Resolver.Repo(id); ok {
+		return rec, true
+	}
+	return w.deleted(id)
+}
+func (d Deps) checkDeletedRepoAccess(r requester, row store.RepoRow, action string) error {
+	if d.Store == nil {
+		return op.Wrap(op.CodeInternal, errors.New("store is not configured"), "repository access failed")
+	}
+	resolver := d.Store.Resolver()
+	deleted := func(int64) (access.RepoRecord, bool) { return access.RepoRecord{}, false }
+	if sr, ok := resolver.(*store.Resolver); ok {
+		deleted = sr.RepoIncludingDeleted
+	}
+	wrapped := deletedAwareResolver{Resolver: resolver, deleted: deleted}
+	resource := access.Resource{Kind: access.KindRepo, RepoID: row.ID}
+	decision := access.Check(wrapped, r.caller, action, resource)
+	if !decision.Allow {
+		if decision.NotFound {
+			return op.Errorf(op.CodeNotFound, "repository was not found")
+		}
+		return op.Errorf(op.CodeForbidden, "repository access was refused")
+	}
+	if !r.tokenAllows(row.ID) {
+		return op.Errorf(op.CodeNotFound, "repository was not found")
+	}
+	return nil
+}
 func restoreRepoHandler(d Deps) func(context.Context, op.Principal, RepoRestoreIn) (RepoRestoreOut, error) {
 	return func(ctx context.Context, p op.Principal, in RepoRestoreIn) (RepoRestoreOut, error) {
 		st, serr := requireStore(d)
@@ -1089,7 +1124,7 @@ func restoreRepoHandler(d Deps) func(context.Context, op.Principal, RepoRestoreI
 		if !canSeeDeleted(rq, rc.row) {
 			return RepoRestoreOut{}, op.Errorf(op.CodeNotFound, "repository was not found")
 		}
-		if derr := d.checkRepoAccess(rq, rc.row, "repo.delete", ""); derr != nil {
+		if derr := d.checkDeletedRepoAccess(rq, rc.row, "repo.delete"); derr != nil {
 			return RepoRestoreOut{}, derr
 		}
 		now := d.now()
