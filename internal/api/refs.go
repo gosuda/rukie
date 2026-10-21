@@ -284,7 +284,7 @@ func branchCreateHandler(d Deps) func(context.Context, op.Principal, BranchCreat
 		if cerr != nil {
 			return BranchCreateOut{}, cerr
 		}
-		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", ""); derr != nil {
+		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", headsPrefix+in.Body.Name); derr != nil {
 			return BranchCreateOut{}, derr
 		}
 		if rc.row.Archived {
@@ -333,7 +333,7 @@ func branchUpdateHandler(d Deps) func(context.Context, op.Principal, BranchUpdat
 		if cerr != nil {
 			return BranchUpdateOut{}, cerr
 		}
-		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", ""); derr != nil {
+		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", headsPrefix+in.Branch); derr != nil {
 			return BranchUpdateOut{}, derr
 		}
 		if rc.row.Archived {
@@ -384,7 +384,7 @@ func branchDeleteHandler(d Deps) func(context.Context, op.Principal, BranchDelet
 		if cerr != nil {
 			return BranchDeleteOut{}, cerr
 		}
-		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", ""); derr != nil {
+		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", headsPrefix+in.Branch); derr != nil {
 			return BranchDeleteOut{}, derr
 		}
 		if rc.row.Archived {
@@ -515,7 +515,7 @@ func tagCreateHandler(d Deps) func(context.Context, op.Principal, TagCreateIn) (
 		if cerr != nil {
 			return TagCreateOut{}, cerr
 		}
-		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", ""); derr != nil {
+		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", tagsPrefix+in.Body.Name); derr != nil {
 			return TagCreateOut{}, derr
 		}
 		if rc.row.Archived {
@@ -585,7 +585,7 @@ func tagDeleteHandler(d Deps) func(context.Context, op.Principal, TagDeleteIn) (
 		if cerr != nil {
 			return TagDeleteOut{}, cerr
 		}
-		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", ""); derr != nil {
+		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", tagsPrefix+in.Tag); derr != nil {
 			return TagDeleteOut{}, derr
 		}
 		if rc.row.Archived {
