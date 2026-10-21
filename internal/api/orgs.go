@@ -20,6 +20,7 @@ type OrgJSON struct {
 	Website     string `json:"website,omitempty"`
 	Name        string `json:"name"`
 	Visibility  string `json:"visibility"`
+	ID          int64  `json:"-"`
 	Role        string `json:"role,omitempty"`
 	CreatedAt   int64  `json:"created_at"`
 	UpdatedAt   int64  `json:"updated_at"`
@@ -29,7 +30,7 @@ func orgJSON(row store.OrgRow, role string) OrgJSON {
 	return OrgJSON{
 		Name: row.Name, DisplayName: row.DisplayName, Description: row.Description,
 		Website: row.Website, Visibility: row.Visibility,
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, Role: role,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, Role: role, ID: row.ID,
 	}
 }
 
@@ -584,25 +585,33 @@ func getOrgHandler(d Deps) func(context.Context, op.Principal, OrgGetIn) (OrgGet
 			role = orgRoleOf(d, row.ID, rq.userID)
 		}
 		out := OrgGetOut{Org: orgJSON(row, role)}
+		var repos []store.RepoRow
+		var teams []store.TeamRow
 		serr = st.Read(ctx, func(tx *store.ReadTx) error {
-			repos, lerr := tx.ListOrgRepos(row.ID, 100)
+			listedRepos, lerr := tx.ListOrgRepos(row.ID, 100)
 			if lerr != nil {
 				return lerr
 			}
-			for _, repo := range repos {
-				out.OrgRepos = append(out.OrgRepos, repoJSON(row.Name, repo))
-			}
-			teams, terr := tx.ListTeams(row.ID, "", 100)
+			repos = listedRepos
+			listedTeams, terr := tx.ListTeams(row.ID, "", 100)
 			if terr != nil {
 				return terr
 			}
-			for _, team := range teams {
-				out.Teams = append(out.Teams, teamJSON(team))
-			}
+			teams = listedTeams
 			return nil
 		})
 		if serr != nil {
 			return OrgGetOut{}, op.Wrap(op.CodeInternal, serr, "organization detail failed")
+		}
+		for _, repo := range repos {
+			if d.checkRepoAccess(rq, repo, "repo.view", "") == nil {
+				out.OrgRepos = append(out.OrgRepos, repoJSON(row.Name, repo))
+			}
+		}
+		for _, team := range teams {
+			if teamAccess(d, rq, row.ID, team.ID, "team.view") == nil {
+				out.Teams = append(out.Teams, teamJSON(team))
+			}
 		}
 		return out, nil
 	}
@@ -1592,7 +1601,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only. The creator joins the owners team, which holds admin on every org repository.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeValidation, op.CodeConflict},
 		Location:    func(out OrgCreateOut) string { return "/" + out.Org.Name },
-		ETag:        func(out OrgCreateOut) string { return fmt.Sprintf("org-%s-%d", out.Org.Name, out.Org.UpdatedAt) },
+		ETag:        func(out OrgCreateOut) string { return fmt.Sprintf("org-%d-%d", out.Org.ID, out.Org.UpdatedAt) },
 		Handler:     createOrgHandler(deps),
 	}); err != nil {
 		return err
@@ -1603,7 +1612,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Public organizations render for anyone. Private organizations render for members and 404 otherwise.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeForbidden},
 		ETag: func(out OrgGetOut) string {
-			return fmt.Sprintf("org-%s-%d", out.Org.Name, out.Org.UpdatedAt)
+			return fmt.Sprintf("org-%d-%d", out.Org.ID, out.Org.UpdatedAt)
 		},
 		Handler: getOrgHandler(deps),
 	}); err != nil {
@@ -1646,7 +1655,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only, organization owners. Requires a current If-Match entity tag.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
-		ETag:        func(out OrgUpdateOut) string { return fmt.Sprintf("org-%s-%d", out.Org.Name, out.Org.UpdatedAt) },
+		ETag:        func(out OrgUpdateOut) string { return fmt.Sprintf("org-%d-%d", out.Org.ID, out.Org.UpdatedAt) },
 		Location:    func(out OrgUpdateOut) string { return "/" + out.Org.Name + "/-/settings" },
 		Handler:     updateOrgHandler(deps),
 	}); err != nil {
@@ -1658,7 +1667,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only, organization owners. The old name keeps resolving until another organization takes it.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
-		ETag:        func(out OrgRenameOut) string { return fmt.Sprintf("org-%s-%d", out.Org.Name, out.Org.UpdatedAt) },
+		ETag:        func(out OrgRenameOut) string { return fmt.Sprintf("org-%d-%d", out.Org.ID, out.Org.UpdatedAt) },
 		Location:    func(out OrgRenameOut) string { return "/" + out.Org.Name + "/-/settings" },
 		Handler:     renameOrgHandler(deps),
 	}); err != nil {
