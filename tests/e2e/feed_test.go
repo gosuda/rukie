@@ -638,6 +638,16 @@ func TestFaultKillNine(t *testing.T) {
 		restartDaemon(t, s)
 		repo := openFeedRepo(t, s, "ada", "hello")
 		rctx := e2eCtx(t)
+		daemonMain := ""
+		if dlist, derr := ruk.RefsList(rctx, s.client, repo, ruk.RefsListArgs{Prefix: "refs/heads/main"}); derr == nil {
+			for _, ref := range dlist.Refs.Items {
+				if ref.Name == "refs/heads/main" {
+					daemonMain = ref.Target.Hex()
+				}
+			}
+		} else {
+			t.Fatalf("daemon refs.list: %v", derr)
+		}
 		follower := events.OpenFollower(s.st, repoID, repo, s.client, time.Now)
 		if err := follower.PollOnce(rctx); err != nil {
 			t.Fatalf("follower poll after kill: %v", err)
@@ -655,6 +665,12 @@ func TestFaultKillNine(t *testing.T) {
 			t.Fatalf("reconcile after kill: %v", err)
 		}
 		tips := feedTips(t, s, repoID)
+		if daemonMain == oid && tips["refs/heads/main"] != oid {
+			t.Fatalf("landed push missed: daemon has %s but stored tips lack it", oid)
+		}
+		if daemonMain != "" && daemonMain != oid {
+			t.Fatalf("daemon main = %q, want %q or absent", daemonMain, oid)
+		}
 		switch tips["refs/heads/main"] {
 		case oid:
 			if n != 0 {
