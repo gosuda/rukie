@@ -33,6 +33,7 @@ type trackFake struct {
 	t        *testing.T
 	opens    chan uint64
 	replies  chan wire.HookReply
+	cancels  chan struct{}
 	streams  chan struct{}
 	closes   chan struct{}
 	hook     *wire.HookCall
@@ -88,6 +89,13 @@ func (f *trackFake) serve(t *testing.T, conn net.Conn) {
 		kind, stream, payload := readFrameSoft(conn)
 		if kind == 0 {
 			return
+		}
+		if kind == 8 {
+			select {
+			case f.cancels <- struct{}{}:
+			default:
+			}
+			continue
 		}
 		if kind != 1 {
 			continue
@@ -156,6 +164,13 @@ func (f *trackFake) drainRound(t *testing.T, conn net.Conn, stream uint64) {
 		kind, _, _ := readFrameSoft(conn)
 		if kind == 0 {
 			return
+		}
+		if kind == 8 {
+			select {
+			case f.cancels <- struct{}{}:
+			default:
+			}
+			continue
 		}
 		if kind == 4 {
 			break
@@ -250,6 +265,7 @@ func newDenyHarness(t *testing.T, hook *wire.HookCall, delay time.Duration, visi
 		t:       t,
 		opens:   make(chan uint64, 64),
 		replies: make(chan wire.HookReply, 16),
+		cancels: make(chan struct{}, 16),
 		streams: make(chan struct{}, 64),
 		closes:  make(chan struct{}, 64),
 		hook:    hook,
@@ -417,19 +433,21 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 		_ = resp.Body.Close()
 		done <- nil
 	}()
-	if _, err := pw.Write([]byte("0000")); err != nil {
-		t.Fatalf("write: %v", err)
+	for range 3 {
+		if _, err := pw.Write(bytes.Repeat([]byte("a"), 16)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for h.opens() == 0 && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if h.opens() == 0 {
+			t.Fatal("daemon never opened the push stream")
+		}
+		time.Sleep(150 * time.Millisecond)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for h.opens() == 0 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if h.opens() == 0 {
-		t.Fatal("daemon never opened the push stream")
-	}
-	time.Sleep(200 * time.Millisecond)
 	cancel()
-// refused_by: merge_ladder_exhausted · collision: none (1 contested hunk(s), neither side deleted the other's lines)
+	_ = pw.Close()
 	derr, ok := waitFor(t, done, 15*time.Second)
 	if !ok {
 		t.Fatal("disconnected POST never returned")
@@ -437,8 +455,6 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 	if derr != nil {
 		t.Logf("disconnected POST ended: %v", derr)
 	}
-
-	_ = pw.Close()
 	if _, ok := waitFor(t, h.fake.closes, 10*time.Second); !ok {
 		t.Fatal("daemon stream never closed after client disconnect")
 	}
