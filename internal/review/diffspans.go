@@ -6,11 +6,11 @@ import (
 )
 
 // SpansFromPatch derives unchanged spans per path from unified diff patches.
-// Each patch maps a file path to its unified diff text. Changed ranges come
-// from hunk headers; spans cover the gaps before, between, and (never
-// past the last hunk, whose tail length is unknown) after them. Renamed
-// paths map under their new name only; the old name keeps no spans, so
-// comments anchored there fall to the fallback bucket by definition.
+// Each patch maps a file path to its unified diff text. Context lines map
+// old to new one to one; added and removed lines break spans. Lines between
+// hunks are unchanged by definition and join the spans. Renamed paths map
+// under their new name only; the old name keeps no spans, so comments
+// anchored there fall to the fallback bucket by definition.
 func SpansFromPatch(patches map[string]string) map[string][]Span {
 	out := map[string][]Span{}
 	for path, patch := range patches {
@@ -23,42 +23,72 @@ func SpansFromPatch(patches map[string]string) map[string][]Span {
 }
 
 func spansFromUnified(patch string) []Span {
-	type hunk struct {
-		oldStart, oldCount, newStart, newCount int64
-	}
-	var hunks []hunk
-	for line := range strings.SplitSeq(patch, "\n") {
-		rest, ok := strings.CutPrefix(line, "@@ -")
-		if !ok {
-			continue
-		}
-		oldPart, newPart, ok := strings.Cut(rest, " +")
-		if !ok {
-			continue
-		}
-		if head, _, found := strings.Cut(newPart, " @@"); found {
-			newPart = head
-		}
-		oldStart, oldCount := parseHunkRange(oldPart)
-		newStart, newCount := parseHunkRange(newPart)
-		if oldStart <= 0 || newStart <= 0 {
-			continue
-		}
-		hunks = append(hunks, hunk{oldStart, oldCount, newStart, newCount})
-	}
 	var spans []Span
 	var oldCursor, newCursor int64 = 1, 1
-	for _, h := range hunks {
-		if h.oldStart > oldCursor {
+	var spanOld, spanNew int64
+	open := false
+	closeSpan := func() {
+		if open && oldCursor > spanOld {
 			spans = append(spans, Span{
-				OldStart: uint32(oldCursor),
-				NewStart: uint32(newCursor),
-				Lines:    uint32(h.oldStart - oldCursor),
+				OldStart: uint32(spanOld),
+				NewStart: uint32(spanNew),
+				Lines:    uint32(oldCursor - spanOld),
 			})
 		}
-		oldCursor = h.oldStart + h.oldCount
-		newCursor = h.newStart + h.newCount
+		open = false
 	}
+	for line := range strings.SplitSeq(patch, "\n") {
+		if rest, ok := strings.CutPrefix(line, "@@ -"); ok {
+			oldPart, newPart, ok := strings.Cut(rest, " +")
+			if !ok {
+				continue
+			}
+			if head, _, found := strings.Cut(newPart, " @@"); found {
+				newPart = head
+			}
+			oldStart, _ := parseHunkRange(oldPart)
+			newStart, _ := parseHunkRange(newPart)
+			if oldStart > oldCursor || newStart > newCursor {
+				closeSpan()
+				length := oldStart - oldCursor
+				if newStart-newCursor < length {
+					length = newStart - newCursor
+				}
+				if length > 0 {
+					spans = append(spans, Span{
+						OldStart: uint32(oldCursor),
+						NewStart: uint32(newCursor),
+						Lines:    uint32(length),
+					})
+				}
+			}
+			oldCursor = oldStart
+			newCursor = newStart
+			continue
+		}
+		if line == "" {
+			closeSpan()
+			continue
+		}
+		switch line[0] {
+		case ' ':
+			if !open {
+				spanOld, spanNew = oldCursor, newCursor
+				open = true
+			}
+			oldCursor++
+			newCursor++
+		case '-':
+			closeSpan()
+			oldCursor++
+		case '+':
+			closeSpan()
+			newCursor++
+		default:
+			closeSpan()
+		}
+	}
+	closeSpan()
 	return spans
 }
 
@@ -72,7 +102,7 @@ func parseHunkRange(raw string) (int64, int64) {
 		return start, 1
 	}
 	count, _ := strconv.ParseInt(strings.TrimSpace(countPart), 10, 64)
-	if start <= 0 || count < 0 {
+	if start < 0 || count < 0 {
 		return 0, 0
 	}
 	return start, count

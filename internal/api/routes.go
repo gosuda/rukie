@@ -96,7 +96,7 @@ func Routes() []Route {
 		{Pattern: "GET /{owner}/{repo}/land/plans/{plan}", Op: "land.plan.get"},
 		{Pattern: "POST /{owner}/{repo}/land/plans/{plan}/runs", Op: "land.run.create"},
 		{Pattern: "GET /{owner}/{repo}/land/plans/{plan}/runs", Op: "land.run.list"},
-		{Pattern: "POST /admin/land/runs", Op: "admin.land.run.create"},
+		{Pattern: "POST /admin/land/runs", Op: "admin.land.run"},
 		{Pattern: "GET /{owner}/{repo}/settings/protected", Op: "repo.policy.list"},
 		{Pattern: "POST /{owner}/{repo}/settings/protected", Op: "repo.policy.set"},
 		{Pattern: "GET /{owner}/{repo}/views", Op: "view.list"},

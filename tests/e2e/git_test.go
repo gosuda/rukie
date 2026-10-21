@@ -905,27 +905,6 @@ func TestGitIngestLimitsRefuseTightPush(t *testing.T) {
 	})
 }
 
-func TestRefsForRejectedUntilReview(t *testing.T) {
-	s := newStack(t, nil)
-	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
-	s.addRepo(t, "ada", "hello", "private")
-	work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
-	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
-	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
-	defer cancel()
-	out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/for/main")
-	if err == nil {
-		t.Fatalf("refs/for push succeeded without review\n%s", out)
-	}
-	if !strings.Contains(out, "change review is not available") {
-		t.Fatalf("push refusal lacks the pinned reason:\n%s", out)
-	}
-	refs := s.lsRemote(t, pushURL)
-	if refs["refs/for/main"] != "" {
-		t.Fatalf("refs/for/main landed as a real ref: %q", refs["refs/for/main"])
-	}
-}
-
 func TestGitServiceUnknownServiceRefused(t *testing.T) {
 	s := newStack(t, nil)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")

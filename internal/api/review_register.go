@@ -222,7 +222,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		return err
 	}
 	if err := op.Register(t, op.Op[AdminLandRunCreateIn, AdminLandRunCreateOut]{
-		Name: "admin.land.run.create", Kind: op.KindMutation, Method: http.MethodPost, Path: "/admin/land/runs",
+		Name: "admin.land.run", Kind: op.KindMutation, Method: http.MethodPost, Path: "/admin/land/runs",
 		Scope: op.ScopeAdminWrite, Summary: "Execute a land plan as site admin",
 		Description: "Waives the bookmark requirements with a non-empty reason. Audit-logged with the waived requirements.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden},
@@ -345,7 +345,7 @@ func RegisterReviewViews(v *op.Views) {
 	op.PageView(v, "land.plan.list", writeLandPlans)
 	op.PageView(v, "land.run.create", writeLandPlan)
 	op.PageView(v, "land.run.list", writeLandPlan)
-	op.PageView(v, "admin.land.run.create", writeLandPlan)
+	op.PageView(v, "admin.land.run", writeLandPlan)
 	op.PageView(v, "repo.policy.list", writePolicy)
 	op.PageView(v, "repo.policy.set", writePolicy)
 	op.PageView(v, "view.list", writeViews)

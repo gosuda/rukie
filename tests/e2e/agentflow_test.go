@@ -286,6 +286,82 @@ func TestAgentFlow(t *testing.T) {
 		}
 		waitRefUpdated(t, s, "refs/heads/side", 2*time.Second)
 	})
+
+	t.Run("change", func(t *testing.T) {
+		s := newStack(t, nil)
+		h := mountAPI(t, s)
+		ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+		session := apiLogin(t, h, "ada", "long-test-password-01")
+		token := apiToken(t, h, session, "repo:create repo:read repo:write intents:read")
+		if status, decoded := apiCall(t, h, "POST", "/new/repo", token, `{"owner":"ada","name":"hello","visibility":"private"}`); status != http.StatusCreated {
+			t.Fatalf("repo.create = %d: %v", status, decoded)
+		}
+		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/for/main"); err != nil {
+			t.Fatalf("refs/for push: %v\n%s", err, out)
+		}
+		key := "main~#1"
+		if status, decoded := apiCall(t, h, "GET", "/ada/hello/changes/"+key, token, ""); status != http.StatusOK {
+			t.Fatalf("change.get = %d: %v", status, decoded)
+		}
+		if status, _ := apiCall(t, h, "POST", "/ada/hello/changes/"+key+"/comments", token, `{"path":"README.md","line":1,"body":"nit"}`); status != http.StatusCreated {
+			t.Fatalf("comment.create = %d", status)
+		}
+		second, _ := s.localRepo(t, map[string]string{"README.md": "hello\nsecond\n"})
+		if out, err := gitRun(ctx, t, second, "push", pushURL, "HEAD:refs/for/main"); err != nil {
+			t.Fatalf("rewrite push: %v\n%s", err, out)
+		}
+		status, listed := apiCall(t, h, "GET", "/ada/hello/changes/"+key+"/comments?unmatched=true", token, "")
+		if status != http.StatusOK {
+			t.Fatalf("comment.list = %d: %v", status, listed)
+		}
+		raw, _ := listed["comments"].([]any)
+		if len(raw) != 1 {
+			t.Fatalf("comments = %v, want the remapped row", listed)
+		}
+		row, _ := raw[0].(map[string]any)
+		if row["unmatched"] == true {
+			t.Fatalf("comment fell to the fallback bucket: %v", row)
+		}
+		if row["line"] != float64(1) {
+			t.Fatalf("comment line = %v, want 1", row["line"])
+		}
+	})
+
+	t.Run("land", func(t *testing.T) {
+		s := newStack(t, nil)
+		h := mountAPI(t, s)
+		ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+		session := apiLogin(t, h, "ada", "long-test-password-01")
+		token := apiToken(t, h, session, "repo:create repo:read repo:write intents:read")
+		if status, decoded := apiCall(t, h, "POST", "/new/repo", token, `{"owner":"ada","name":"hello","visibility":"private"}`); status != http.StatusCreated {
+			t.Fatalf("repo.create = %d: %v", status, decoded)
+		}
+		_ = ada
+		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		pushURL := s.repoURL("ada", "hello", "ada", strings.TrimPrefix(token, "Bearer "))
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/for/main"); err != nil {
+			t.Fatalf("refs/for push: %v\n%s", err, out)
+		}
+		key := "main~#1"
+		planStatus, plan := apiCall(t, h, "POST", "/ada/hello/land/plans", token, `{"target_ref":"refs/heads/main","change":"`+key+`"}`)
+		if planStatus != http.StatusCreated {
+			t.Fatalf("land.plan.create = %d: %v", planStatus, plan)
+		}
+		planID, _ := plan["id"].(string)
+		if planID == "" {
+			t.Fatalf("plan id missing: %v", plan)
+		}
+		runStatus, run := apiCall(t, h, "POST", "/ada/hello/land/plans/"+planID+"/runs", token, `{}`)
+		if runStatus != http.StatusConflict {
+			t.Fatalf("land.run.create = %d, want 409 requirements-unmet: %v", runStatus, run)
+		}
+	})
 }
 
 func TestAdminMethodsRefusedForNonAdminPeer(t *testing.T) {

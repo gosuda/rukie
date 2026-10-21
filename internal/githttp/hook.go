@@ -205,9 +205,9 @@ func firstChangeLine(err error) string {
 // best-effort: a nil map moves every prior comment to the fallback bucket
 // without failing the push.
 func (s *Server) changeSpans(ctx context.Context, repoID, authorID int64, branch, topic, newHead string) map[string][]review.Span {
-	key := branch + "\x00" + topic
+	key := branch + "~" + topic
 	if topic == "" {
-		key = branch + "\x00#" + strconv.FormatInt(authorID, 10)
+		key = branch + "~#" + strconv.FormatInt(authorID, 10)
 	}
 	var oldHead string
 	_ = s.store.Read(ctx, func(tx *store.ReadTx) error {

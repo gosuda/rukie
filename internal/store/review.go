@@ -558,6 +558,9 @@ func (tx *WriteTx) InsertIntent(now time.Time, row IntentRow) (IntentRow, error)
 	if row.PublicID == "" {
 		row.PublicID = string(NewID(now))
 	}
+	if row.Contract == "" {
+		row.Contract = "{}"
+	}
 	var maxNum sql.NullInt64
 	if qerr := inner.QueryRowContext(tx.ctx,
 		`SELECT max(number) FROM intents WHERE repo_id = ?`, row.RepoID).Scan(&maxNum); qerr != nil {
@@ -742,6 +745,9 @@ func (tx *WriteTx) InsertView(now time.Time, row ViewRow) (ViewRow, error) {
 	}
 	if row.PublicID == "" {
 		row.PublicID = string(NewID(now))
+	}
+	if row.Predicates == "" {
+		row.Predicates = "{}"
 	}
 	ms := msOf(now)
 	res, ierr := inner.ExecContext(tx.ctx, `INSERT INTO views
