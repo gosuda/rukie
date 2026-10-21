@@ -74,14 +74,14 @@ func TestReviewCommentCreateAndList(t *testing.T) {
 	head := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	rseedChange(t, e, repoID, admin.ID, "main~1", head)
 	token := rtoken(t, e, admin, "repo:read", "repo:write")
-	created := rdo(t, e, "POST", "/ada/hello/changes/main~%231/comments", token,
+	created := rdo(t, e, "POST", "/ada/hello/changes/main~1/comments", token,
 		`{"path":"a.txt","line":3,"body":"nit"}`)
 	if created.Code != http.StatusCreated && created.Code != http.StatusOK {
 		t.Fatalf("comment create = %d: %s", created.Code, created.Body.String())
 	}
-	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/comments", token, `{"body":""}`), 422, "validation")
-	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/comments", token, `{"line":3,"body":"x"}`), 422, "validation")
-	listed := rdo(t, e, "GET", "/ada/hello/changes/main~%231/comments", token, "")
+	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~1/comments", token, `{"body":""}`), 422, "validation")
+	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~1/comments", token, `{"line":3,"body":"x"}`), 422, "validation")
+	listed := rdo(t, e, "GET", "/ada/hello/changes/main~1/comments", token, "")
 	if listed.Code != http.StatusOK {
 		t.Fatalf("comment list = %d: %s", listed.Code, listed.Body.String())
 	}
@@ -100,12 +100,12 @@ func TestNoSelfApproval(t *testing.T) {
 	head := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	rseedChange(t, e, repoID, admin.ID, "main~1", head)
 	adaToken := rtoken(t, e, admin, "repo:read", "repo:write")
-	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/reviews", adaToken,
+	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~1/reviews", adaToken,
 		`{"verdict":"approve"}`), 403, "forbidden")
 	malloryToken := rtoken(t, e, mallory, "repo:read", "repo:write")
-	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/reviews", malloryToken,
+	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~1/reviews", malloryToken,
 		`{"verdict":"approve"}`), 503, "unavailable")
-	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/reviews", malloryToken,
+	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~1/reviews", malloryToken,
 		`{"verdict":"smash"}`), 422, "validation")
 }
 
@@ -117,12 +117,12 @@ func TestChangeStateAbandonClosesComments(t *testing.T) {
 	head := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	rseedChange(t, e, repoID, admin.ID, "main~1", head)
 	token := rtoken(t, e, admin, "repo:read", "repo:write")
-	moved := rdo(t, e, "POST", "/ada/hello/changes/main~%231/state", token, `{"state":"abandoned"}`)
+	moved := rdo(t, e, "POST", "/ada/hello/changes/main~1/state", token, `{"state":"abandoned"}`)
 	if moved.Code != http.StatusOK && moved.Code != http.StatusCreated {
 		t.Fatalf("state set = %d: %s", moved.Code, moved.Body.String())
 	}
-	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/state", token, `{"state":"landed"}`), 422, "validation")
-	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/comments", token, `{"body":"late"}`), 409, "conflict")
+	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~1/state", token, `{"state":"landed"}`), 422, "validation")
+	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~1/comments", token, `{"body":"late"}`), 409, "conflict")
 }
 
 func TestLandRunRequiresDaemon(t *testing.T) {
