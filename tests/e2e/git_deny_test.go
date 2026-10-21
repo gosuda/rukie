@@ -453,6 +453,7 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 	cancel()
+// refused_by: merge_ladder_exhausted · collision: none (1 contested hunk(s), neither side deleted the other's lines)
 	derr, ok := waitFor(t, done, 15*time.Second)
 	if !ok {
 		t.Fatal("disconnected POST never returned")
