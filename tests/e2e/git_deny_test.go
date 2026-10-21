@@ -35,6 +35,7 @@ type trackFake struct {
 	replies  chan wire.HookReply
 	cancels  chan struct{}
 	streams  chan struct{}
+	closes   chan struct{}
 	hook     *wire.HookCall
 	delay    time.Duration
 	exitCode int32
@@ -114,6 +115,12 @@ func (f *trackFake) serve(t *testing.T, conn net.Conn) {
 		accepted := fmt.Sprintf(`{"invocation_id":%q,"stream_id":%d,"stdin_credit":1048576}`, inv, stream)
 		writeRawFrame(t, conn, 2, stream, []byte(accepted))
 		f.drainRound(t, conn, stream)
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+		_, _, _ = readFrameSoft(conn)
+		select {
+		case f.closes <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -255,6 +262,7 @@ func newDenyHarness(t *testing.T, hook *wire.HookCall, delay time.Duration, visi
 		replies: make(chan wire.HookReply, 16),
 		cancels: make(chan struct{}, 16),
 		streams: make(chan struct{}, 64),
+		closes:  make(chan struct{}, 64),
 		hook:    hook,
 		delay:   delay,
 	}
@@ -424,7 +432,14 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 	if _, err := pw.Write([]byte("0000")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for h.opens() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if h.opens() == 0 {
+		t.Fatal("daemon never opened the push stream")
+	}
+	time.Sleep(200 * time.Millisecond)
 	cancel()
 	_ = pw.Close()
 	select {
@@ -439,6 +454,11 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 	case <-h.fake.cancels:
 	case <-time.After(10 * time.Second):
 		t.Fatal("daemon saw no cancel after client disconnect")
+	}
+	select {
+	case <-h.fake.closes:
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon stream never closed after client disconnect")
 	}
 }
 

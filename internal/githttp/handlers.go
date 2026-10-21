@@ -254,7 +254,7 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 	}
 	maxStdin := s.bodyCap()
 	if r.ContentLength >= 0 && uint64(r.ContentLength) > maxStdin {
-		writeText(w, http.StatusRequestEntityTooLarge, "request body is too large")
+		writeText(w, http.StatusRequestEntityTooLarge, "request body is too large [precheck]")
 		return
 	}
 	var body io.Reader = http.MaxBytesReader(w, r.Body, maxBodyBytes(maxStdin))
@@ -302,12 +302,21 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 	w.Header().Set("Cache-Control", "no-cache")
 	out := &flushWriter{w: w}
 	report, stderr, err := ruk.RunCommand(ctx, client, ruk.Command{Open: open, Stdin: counted, Stdout: out, Hook: handle, HookBudget: s.hookTimeout})
+	if os.Getenv("RUKIE_DEBUG_413") != "" {
+		if rerr, ok := errors.AsType[*ruk.Error](err); ok && rerr.Code == wire.CodeLimit {
+			f, _ := os.OpenFile("/tmp/413.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if f != nil {
+				_, _ = fmt.Fprintf(f, "limit path=%s len=%d daemon=%q stderr=%q\n", rt.owner+"/"+rt.repo, r.ContentLength, rerr.Message, firstLine(stderr))
+				_ = f.Close()
+			}
+		}
+	}
 	if counted.overflow {
-		out.fail(http.StatusRequestEntityTooLarge, "request body is too large")
+		out.fail(http.StatusRequestEntityTooLarge, "request body is too large [counted]")
 		return
 	}
 	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-		out.fail(http.StatusRequestEntityTooLarge, "request body is too large")
+		out.fail(http.StatusRequestEntityTooLarge, "request body is too large [maxbytes]")
 		return
 	}
 	if err != nil {
@@ -350,7 +359,7 @@ func mapCommandError(err error) (int, string) {
 		case wire.CodeForbidden:
 			return http.StatusForbidden, "access is required"
 		case wire.CodeLimit:
-			return http.StatusRequestEntityTooLarge, "request body is too large"
+			return http.StatusRequestEntityTooLarge, "request body is too large [daemon]"
 		case wire.CodeInvalid:
 			return http.StatusBadRequest, "invalid git service"
 		case wire.CodeStale:
