@@ -132,6 +132,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Comment on a change",
 		Description: "Anchor a comment to the current head at a path and line, or to the whole change.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden, op.CodeConflict},
+		Location:    func(CommentCreateOut) string { return "" },
 		Handler:     commentCreateHandler(deps),
 	}); err != nil {
 		return err
@@ -142,6 +143,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Description: "Approve, block, or comment. Model reviews never satisfy a human-approval requirement. " +
 			"Self-approval is refused.",
 		Problems: []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden, op.CodeConflict},
+		Location: func(ReviewCreateOut) string { return "" },
 		Handler:  reviewCreateHandler(deps),
 	}); err != nil {
 		return err
@@ -151,6 +153,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Open or abandon a change",
 		Description: "Landed changes never reopen.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden, op.CodeConflict},
+		Location:    func(ChangeStateOut) string { return "" },
 		Handler:     changeStateHandler(deps),
 	}); err != nil {
 		return err
@@ -172,6 +175,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Prepare a land plan",
 		Description: "Snapshot the candidate, the base, and the evaluated gaps. Requirements unmet later fail the run.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden, op.CodeConflict},
+		Location:    func(LandPlanCreateOut) string { return "" },
 		Handler:     landPlanCreateHandler(deps),
 	}); err != nil {
 		return err
@@ -205,6 +209,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Execute a land plan",
 		Description: "Unmet requirements fail conflict with the gap list. A second execution after drift fails stale.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden, op.CodeConflict, op.CodeStale},
+		Location:    func(LandRunCreateOut) string { return "" },
 		Handler:     landRunCreateHandler(deps),
 	}); err != nil {
 		return err
@@ -226,6 +231,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeAdminWrite, Summary: "Execute a land plan as site admin",
 		Description: "Waives the bookmark requirements with a non-empty reason. Audit-logged with the waived requirements.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden},
+		Location:    func(AdminLandRunCreateOut) string { return "" },
 		Handler:     adminLandRunCreateHandler(deps),
 	}); err != nil {
 		return err
@@ -247,6 +253,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Set the bookmark policy",
 		Description: "Replace one bookmark rule and bump the policy generation. Bypass admin is rejected in v1.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden},
+		Location:    func(PolicySetOut) string { return "" },
 		Handler:     policySetHandler(deps),
 	}); err != nil {
 		return err
@@ -268,6 +275,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeIntentsWrite, Summary: "Save a view",
 		Description: "Name a closed-predicate query. Unknown predicate keys are rejected.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden},
+		Location:    func(ViewCreateOut) string { return "" },
 		Handler:     viewCreateHandler(deps),
 	}); err != nil {
 		return err
@@ -289,6 +297,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeIntentsWrite, Summary: "Update a saved view",
 		Description: "Pin one more immutable version. Only the view owner edits.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeForbidden},
+		Location:    func(ViewUpdateOut) string { return "" },
 		Handler:     viewUpdateHandler(deps),
 	}); err != nil {
 		return err
@@ -298,6 +307,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeIntentsWrite, Summary: "Delete a saved view",
 		Description: "Remove a saved view and its versions. Only the view owner deletes.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeForbidden},
+		Location:    func(ViewDeleteOut) string { return "" },
 		Handler:     viewDeleteHandler(deps),
 	}); err != nil {
 		return err
@@ -307,6 +317,7 @@ func RegisterReview(t *op.Table, deps Deps) error {
 		Scope: op.ScopeIntentsWrite, Summary: "Share a saved view",
 		Description: "Flip the sharing of a saved view. Only the view owner shares.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeForbidden},
+		Location:    func(ViewVisibilityOut) string { return "" },
 		Handler:     viewVisibilityHandler(deps),
 	}); err != nil {
 		return err
@@ -335,26 +346,48 @@ func RegisterReviewViews(v *op.Views) {
 	op.PageView(v, "change.blame.get", writeChangeBlame)
 	op.PageView(v, "change.stack.list", writeChangeStack)
 	op.PageView(v, "branch.change.list", writeBranchChanges)
-	op.PageView(v, "change.comment.list", writeChange)
-	op.PageView(v, "change.comment.create", writeChange)
-	op.PageView(v, "change.review.create", writeChange)
-	op.PageView(v, "change.state.set", writeChange)
-	op.PageView(v, "proof.list", writeChange)
-	op.PageView(v, "land.plan.create", writeLandPlans)
+	op.PageView(v, "change.comment.list", writeComments)
+	op.PageView(v, "proof.list", writeProofs)
 	op.PageView(v, "land.plan.get", writeLandPlan)
 	op.PageView(v, "land.plan.list", writeLandPlans)
-	op.PageView(v, "land.run.create", writeLandPlan)
-	op.PageView(v, "land.run.list", writeLandPlan)
-	op.PageView(v, "admin.land.run", writeLandPlan)
+	op.PageView(v, "land.run.list", writeLandRuns)
 	op.PageView(v, "repo.policy.list", writePolicy)
-	op.PageView(v, "repo.policy.set", writePolicy)
 	op.PageView(v, "view.list", writeViews)
-	op.PageView(v, "view.create", writeViews)
 	op.PageView(v, "view.get", writeView)
-	op.PageView(v, "view.update", writeView)
-	op.PageView(v, "view.delete", writeViews)
-	op.PageView(v, "view.visibility.set", writeView)
 	op.PageView(v, "view.result.list", writeViewResults)
+	v.Form("change.comment.create", func(w io.Writer, c op.ViewCtx) error {
+		return writeChange(w, c, ChangeGetOut{})
+	})
+	v.Form("change.review.create", func(w io.Writer, c op.ViewCtx) error {
+		return writeChange(w, c, ChangeGetOut{})
+	})
+	v.Form("change.state.set", func(w io.Writer, c op.ViewCtx) error {
+		return writeChange(w, c, ChangeGetOut{})
+	})
+	v.Form("land.plan.create", func(w io.Writer, c op.ViewCtx) error {
+		return writeLandPlans(w, c, LandPlanListOut{})
+	})
+	v.Form("land.run.create", func(w io.Writer, c op.ViewCtx) error {
+		return writeLandPlan(w, c, LandPlanGetOut{})
+	})
+	v.Form("admin.land.run", func(w io.Writer, c op.ViewCtx) error {
+		return writeLandPlan(w, c, LandPlanGetOut{})
+	})
+	v.Form("repo.policy.set", func(w io.Writer, c op.ViewCtx) error {
+		return writePolicy(w, c, PolicyGetOut{})
+	})
+	v.Form("view.create", func(w io.Writer, c op.ViewCtx) error {
+		return writeViews(w, c, ViewListOut{})
+	})
+	v.Form("view.update", func(w io.Writer, c op.ViewCtx) error {
+		return writeView(w, c, ViewGetOut{})
+	})
+	v.Form("view.delete", func(w io.Writer, c op.ViewCtx) error {
+		return writeViews(w, c, ViewListOut{})
+	})
+	v.Form("view.visibility.set", func(w io.Writer, c op.ViewCtx) error {
+		return writeView(w, c, ViewGetOut{})
+	})
 }
 
 func writeCompare(w io.Writer, c op.ViewCtx, out CompareGetOut) error {
@@ -442,6 +475,40 @@ func writeChangeBlame(w io.Writer, c op.ViewCtx, out ChangeBlameOut) error {
 	return err
 }
 
+func writeComments(w io.Writer, c op.ViewCtx, out CommentListOut) error {
+	var b strings.Builder
+	b.WriteString(heading("Comments at " + out.Head))
+	b.WriteString(errorList(c.Errors))
+	b.WriteString("<ul>\n")
+	for _, comment := range out.Comments {
+		line := ""
+		if comment.Line != nil {
+			line = strconv.FormatInt(*comment.Line, 10)
+		}
+		path := ""
+		if comment.Path != nil {
+			path = *comment.Path
+		}
+		b.WriteString("<li>" + esc(path) + " " + esc(line) + " " + esc(comment.Body) + "</li>\n")
+	}
+	b.WriteString("</ul>\n")
+	_, err := io.WriteString(w, pageShell("Comments", b.String()))
+	return err
+}
+
+func writeProofs(w io.Writer, c op.ViewCtx, out ProofListOut) error {
+	var b strings.Builder
+	b.WriteString(heading("Proofs at " + out.Head))
+	b.WriteString(errorList(c.Errors))
+	b.WriteString("<ul>\n")
+	for _, proof := range out.Proofs {
+		b.WriteString("<li>" + esc(proof.Kind) + " " + esc(proof.Result) + "</li>\n")
+	}
+	b.WriteString("</ul>\n")
+	_, err := io.WriteString(w, pageShell("Proofs", b.String()))
+	return err
+}
+
 func writeChangeStack(w io.Writer, c op.ViewCtx, out ChangeStackOut) error {
 	var b strings.Builder
 	b.WriteString(heading("Stack on " + out.Target))
@@ -478,6 +545,19 @@ func writeLandPlans(w io.Writer, c op.ViewCtx, out LandPlanListOut) error {
 	}
 	b.WriteString("</ul>\n")
 	_, err := io.WriteString(w, pageShell("Land plans", b.String()))
+	return err
+}
+
+func writeLandRuns(w io.Writer, c op.ViewCtx, out LandRunListOut) error {
+	var b strings.Builder
+	b.WriteString(heading("Land runs"))
+	b.WriteString(errorList(c.Errors))
+	b.WriteString("<ul>\n")
+	for _, run := range out.Runs {
+		b.WriteString("<li>" + esc(run.ID) + " " + esc(run.State) + "</li>\n")
+	}
+	b.WriteString("</ul>\n")
+	_, err := io.WriteString(w, pageShell("Land runs", b.String()))
 	return err
 }
 

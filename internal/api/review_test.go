@@ -34,9 +34,9 @@ func rgrant(t *testing.T, e *repoEnv, repoID, userID int64, role string) {
 
 func TestDefaultPolicyIsData(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "pw-long-01")
+	rbootstrap(t, e, "ada", "long-test-password-01")
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
-	cookie := rlogin(t, e, "ada", "pw-long-01")
+	cookie := rlogin(t, e, "ada", "long-test-password-01")
 	rec := rdo(t, e, "POST", "/new/repo", cookie, `{"owner":"ada","name":"hello","visibility":"private"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("repo.create = %d: %s", rec.Code, rec.Body.String())
@@ -57,7 +57,7 @@ func TestDefaultPolicyIsData(t *testing.T) {
 
 func TestReviewChangeListEmpty(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "pw-long-01")
+	rbootstrap(t, e, "ada", "long-test-password-01")
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	rseedRepo(t, e, admin.ID, "hello", "private")
 	token := rtoken(t, e, admin, "repo:read", "repo:write")
@@ -72,7 +72,7 @@ func TestReviewChangeListEmpty(t *testing.T) {
 
 func TestReviewCommentCreateAndList(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "pw-long-01")
+	rbootstrap(t, e, "ada", "long-test-password-01")
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	repoID := rseedRepo(t, e, admin.ID, "hello", "private")
 	head := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -96,7 +96,7 @@ func TestReviewCommentCreateAndList(t *testing.T) {
 
 func TestNoSelfApproval(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "pw-long-01")
+	rbootstrap(t, e, "ada", "long-test-password-01")
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	mallory := ruser(t, e, admin.ID, "mallory")
 	repoID := rseedRepo(t, e, admin.ID, "hello", "private")
@@ -115,14 +115,14 @@ func TestNoSelfApproval(t *testing.T) {
 
 func TestChangeStateAbandonClosesComments(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "pw-long-01")
+	rbootstrap(t, e, "ada", "long-test-password-01")
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	repoID := rseedRepo(t, e, admin.ID, "hello", "private")
 	head := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	rseedChange(t, e, repoID, admin.ID, "main~#1", head)
 	token := rtoken(t, e, admin, "repo:read", "repo:write")
 	moved := rdo(t, e, "POST", "/ada/hello/changes/main~%231/state", token, `{"state":"abandoned"}`)
-	if moved.Code != http.StatusOK {
+	if moved.Code != http.StatusOK && moved.Code != http.StatusCreated {
 		t.Fatalf("state set = %d: %s", moved.Code, moved.Body.String())
 	}
 	rassertProblem(t, rdo(t, e, "POST", "/ada/hello/changes/main~%231/state", token, `{"state":"landed"}`), 422, "validation")
@@ -131,7 +131,7 @@ func TestChangeStateAbandonClosesComments(t *testing.T) {
 
 func TestLandRunRequiresDaemon(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "pw-long-01")
+	rbootstrap(t, e, "ada", "long-test-password-01")
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	repoID := rseedRepo(t, e, admin.ID, "hello", "private")
 	head := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -160,7 +160,7 @@ func TestLandRunRequiresDaemon(t *testing.T) {
 
 func TestViewPredicateGate(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "pw-long-01")
+	rbootstrap(t, e, "ada", "long-test-password-01")
 	admin, _ := e.svc.GetUser(t.Context(), "ada")
 	rseedRepo(t, e, admin.ID, "hello", "private")
 	token := rtoken(t, e, admin, "repo:read", "repo:write", "intents:read", "intents:write")

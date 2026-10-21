@@ -757,12 +757,8 @@ func reviewCreateHandler(d Deps) func(context.Context, op.Principal, ReviewCreat
 		if !rq.authed || rq.user.ID == 0 {
 			return ReviewCreateOut{}, op.Errorf(op.CodeUnauthorized, "authentication is required")
 		}
-		verdict := review.Verdict{Kind: kind, Model: in.Body.Model}
-		daemon, oerr := d.openDaemonRepo(ctx, rc.row)
-		if oerr != nil {
-			return ReviewCreateOut{}, oerr
-		}
 		out := ReviewCreateOut{Pending: true}
+		var headOid string
 		werr := d.Store.Write(ctx, func(tx *store.WriteTx) error {
 			row, gerr := tx.GetChangeByKey(rc.row.ID, in.Change)
 			if gerr != nil {
@@ -771,12 +767,15 @@ func reviewCreateHandler(d Deps) func(context.Context, op.Principal, ReviewCreat
 			if row.State != "open" {
 				return op.Errorf(op.CodeConflict, "change %s is %s", in.Change, row.State)
 			}
-			if kind == "review/approve" && !review.EligibleApprover(verdict, rq.user.ID, row.AuthorUserID) {
+			if kind == "review/approve" && rq.user.ID == row.AuthorUserID {
 				return op.Errorf(op.CodeForbidden, "self-approval by the change author is refused")
 			}
 			body := in.Body.Verdict
+			if in.Body.Model {
+				body = "model " + body
+			}
 			if in.Body.Body != "" {
-				body = in.Body.Verdict + ": " + in.Body.Body
+				body = body + ": " + in.Body.Body
 			}
 			saved, ierr := tx.InsertComment(d.now(), store.CommentRow{
 				ChangeID: row.ID, HeadOid: row.HeadOid, Body: body, AuthorUserID: rq.user.ID,
@@ -785,23 +784,25 @@ func reviewCreateHandler(d Deps) func(context.Context, op.Principal, ReviewCreat
 				return ierr
 			}
 			out.Comment = commentJSON(saved)
-			args := map[string]any{
-				"subject": row.HeadOid,
-				"kind":    kind,
-			}
-			var reply map[string]any
-			if aerr := review.PendingAttestAdd(ctx, reviewCaller{d}, daemon, args, &reply); aerr != nil {
-				return aerr
-			}
-			out.Pending = false
+			headOid = row.HeadOid
 			return nil
 		})
 		if werr != nil {
-			if rerr, ok := werr.(*ruk.Error); ok {
-				return ReviewCreateOut{}, mapRukError(rerr)
-			}
 			return ReviewCreateOut{}, storeToOp(werr, "change was not found")
 		}
+		daemon, oerr := d.openDaemonRepo(ctx, rc.row)
+		if oerr != nil {
+			return ReviewCreateOut{}, oerr
+		}
+		args := map[string]any{
+			"subject": headOid,
+			"kind":    kind,
+		}
+		var reply map[string]any
+		if aerr := review.PendingAttestAdd(ctx, reviewCaller{d}, daemon, args, &reply); aerr != nil {
+			return ReviewCreateOut{}, mapRukError(aerr)
+		}
+		out.Pending = false
 		return out, nil
 	}
 }

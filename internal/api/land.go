@@ -750,9 +750,10 @@ type ViewUpdateOut struct {
 
 // ViewDeleteIn carries one view delete request.
 type ViewDeleteIn struct {
-	Owner string `path:"owner"`
-	Repo  string `path:"repo"`
-	View  string `path:"view"`
+	IdempotencyKey string `header:"Idempotency-Key"`
+	Owner          string `path:"owner"`
+	Repo           string `path:"repo"`
+	View           string `path:"view"`
 }
 
 // ViewDeleteOut carries the delete receipt.
@@ -767,10 +768,11 @@ type ViewVisibilityBody struct {
 
 // ViewVisibilityIn carries one view visibility request.
 type ViewVisibilityIn struct {
-	Owner string `path:"owner"`
-	Repo  string `path:"repo"`
-	View  string `path:"view"`
-	Body  ViewVisibilityBody
+	IdempotencyKey string `header:"Idempotency-Key"`
+	Owner          string `path:"owner"`
+	Repo           string `path:"repo"`
+	View           string `path:"view"`
+	Body           ViewVisibilityBody
 }
 
 // ViewVisibilityOut carries the updated view.
@@ -818,8 +820,7 @@ func checkViewPredicates(raw string) error {
 		if viewPredicateKeys[key] {
 			continue
 		}
-		prefix, _, _ := strings.Cut(key, ".")
-		if key == "revset" || prefix == "facet" || prefix == "gap" {
+		if key == "revset" || strings.HasPrefix(key, "facet") || strings.HasPrefix(key, "gap") {
 			continue
 		}
 		return op.Errorf(op.CodeValidation, "predicate %q is not served", key)
