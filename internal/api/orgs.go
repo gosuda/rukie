@@ -20,10 +20,10 @@ type OrgJSON struct {
 	Website     string `json:"website,omitempty"`
 	Name        string `json:"name"`
 	Visibility  string `json:"visibility"`
-	ID          int64  `json:"-"`
 	Role        string `json:"role,omitempty"`
 	CreatedAt   int64  `json:"created_at"`
 	UpdatedAt   int64  `json:"updated_at"`
+	ID          int64  `json:"-"`
 }
 
 func orgJSON(row store.OrgRow, role string) OrgJSON {
@@ -65,11 +65,11 @@ func matchTeamETag(ifMatch string, row store.TeamRow) error {
 type TeamJSON struct {
 	Description  string `json:"description,omitempty"`
 	Name         string `json:"name"`
-	ID           int64  `json:"-"`
 	Permission   string `json:"permission"`
 	RepoScope    string `json:"repo_scope"`
 	CreatedAt    int64  `json:"created_at"`
 	UpdatedAt    int64  `json:"updated_at"`
+	ID           int64  `json:"-"`
 	CanCreateRep bool   `json:"can_create_repo"`
 }
 
