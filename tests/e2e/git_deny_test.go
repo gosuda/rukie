@@ -87,7 +87,6 @@ func (f *trackFake) serve(t *testing.T, conn net.Conn) {
 	}
 	for {
 		kind, stream, payload := readFrameSoft(conn)
-		fakeLog("serve kind=%d stream=%d", kind, stream)
 		if kind == 0 {
 			return
 		}
@@ -139,18 +138,6 @@ func (f *trackFake) serveTyped(t *testing.T, conn net.Conn, stream uint64, paylo
 	writeRawFrame(t, conn, 10, stream, []byte(`{"code":"","outcome":"completed","completed_at":0,"status":0}`))
 }
 
-func fakeLog(format string, args ...any) {
-	if os.Getenv("RUKIE_DEBUG_FAKE") == "" {
-		return
-	}
-	f, err := os.OpenFile("/tmp/fake.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = fmt.Fprintf(f, "%d "+format+"\n", append([]any{time.Now().UnixMilli()}, args...)...)
-	_ = f.Close()
-}
-
 func readFrameSoft(conn net.Conn) (byte, uint64, []byte) {
 	var hdr [13]byte
 	if _, err := io.ReadFull(conn, hdr[:]); err != nil {
@@ -171,7 +158,6 @@ func (f *trackFake) drainRound(t *testing.T, conn net.Conn, stream uint64) {
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	for {
 		kind, _, _ := readFrameSoft(conn)
-		fakeLog("drain kind=%d", kind)
 		if kind == 0 {
 			return
 		}
