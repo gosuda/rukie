@@ -25,6 +25,7 @@ import (
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/rukproc"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 type sshStack struct {
@@ -156,12 +157,18 @@ func newSSHStackWith(t *testing.T, idle, keepalive time.Duration) *sshStack {
 		t.Fatalf("host pub: %v", err)
 	}
 	hostLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostSSHPub)))
+	st, err := store.Open(t.Context(), store.Options{Path: sqlite})
+	if err != nil {
+		t.Fatalf("store open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	srv, err := New(Config{
 		Auth:              svc,
 		Limiter:           access.NewLimiter(),
 		Client:            client,
 		RepoRoot:          roots,
 		Limits:            wire.DefaultGitLimits(),
+		Store:             st,
 		HostKeys:          []ssh.Signer{hostSigner},
 		Clock:             time.Now,
 		IdleTimeout:       idle,
