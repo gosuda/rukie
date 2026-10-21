@@ -210,7 +210,8 @@ type denyHarness struct {
 	url     string
 	fake    *trackFake
 	svc     *auth.Service
-	db      *sql.DB
+	st      *store.Store
+	dbPath  string
 	ada     userRec
 	repoID  int64
 }
@@ -244,11 +245,18 @@ func newDenyHarness(t *testing.T, hook *wire.HookCall, delay time.Duration, visi
 		t.Fatalf("token: %v", err)
 	}
 	ada := userRec{user: admin, token: secret.Secret}
-	now := time.Now().UnixMilli()
 	var repoID int64
-	row := svc.DB().QueryRowContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, created_at, updated_at) VALUES (?, 0, ?, ?, ?, ?) RETURNING id`,
-		admin.ID, "hello", visibility, now, now)
-	if serr := row.Scan(&repoID); serr != nil {
+	if serr := st.Write(ctx, func(tx *store.WriteTx) error {
+		var ierr error
+		repoID, ierr = tx.InsertRepo(time.Now(), store.RepoInsert{
+			OwnerUserID:   sql.NullInt64{Int64: admin.ID, Valid: true},
+			Name:          "hello",
+			Visibility:    visibility,
+			DefaultBranch: "main",
+			RukPath:       "ada/hello.git",
+		})
+		return ierr
+	}); serr != nil {
 		t.Fatalf("insert repo: %v", serr)
 	}
 	socket := filepath.Join(dir, "count.sock")
@@ -295,18 +303,14 @@ func newDenyHarness(t *testing.T, hook *wire.HookCall, delay time.Duration, visi
 	}
 	server := httptest.NewServer(git)
 	t.Cleanup(server.Close)
-	return &denyHarness{t: t, handler: git, server: server, url: server.URL, fake: fake, svc: svc, db: svc.DB(), ada: ada, repoID: repoID}
+	return &denyHarness{t: t, handler: git, server: server, url: server.URL, fake: fake, svc: svc, st: st, dbPath: sqlite, ada: ada, repoID: repoID}
 }
 
 func (h *denyHarness) addUser(t *testing.T, name string, scopes ...string) userRec {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	var adminID int64
-	if err := h.db.QueryRowContext(ctx, `SELECT id FROM users LIMIT 1`).Scan(&adminID); err != nil {
-		t.Fatalf("admin: %v", err)
-	}
-	user, err := h.svc.CreateUser(ctx, adminID, auth.CreateUserInput{
+	user, err := h.svc.CreateUser(ctx, h.ada.user.ID, auth.CreateUserInput{
 		Name: name, Email: name + "@example.test", Password: "long-test-password-01",
 	}, "127.0.0.1")
 	if err != nil {
@@ -327,8 +331,22 @@ func (h *denyHarness) grant(t *testing.T, userID, repoID int64, role string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO repo_grants (repo_id, user_id, role) VALUES (?, ?, ?)`, repoID, userID, role); err != nil {
+	if err := h.st.Write(ctx, func(tx *store.WriteTx) error {
+		return tx.PutGrant(repoID, userID, role)
+	}); err != nil {
 		t.Fatalf("grant: %v", err)
+	}
+}
+
+func insertDanglingTokenRepo(t *testing.T, dbPath, tokenHash string, repoID int64) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open dangling db: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+	if _, err := raw.Exec(`INSERT INTO token_repos (token_hash, repo_id) VALUES (?, ?)`, tokenHash, repoID); err != nil {
+		t.Fatalf("token repos: %v", err)
 	}
 }
 
@@ -343,13 +361,21 @@ func TestGitDenialsOpenNoStream(t *testing.T) {
 	h.grant(t, excluded.user.ID, h.repoID, "read")
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
+	tokens, err := h.st.ListTokensByUser(ctx, excluded.user.ID)
+	if err != nil {
+		t.Fatalf("list tokens: %v", err)
+	}
 	var hash string
-	if err := h.db.QueryRowContext(ctx, `SELECT token_hash FROM scoped_tokens WHERE user_id = ? AND name = 'e2e'`, excluded.user.ID).Scan(&hash); err != nil {
-		t.Fatalf("token hash: %v", err)
+	for _, rec := range tokens {
+		if rec.Name == "e2e" {
+			hash = rec.Hash
+			break
+		}
 	}
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO token_repos (token_hash, repo_id) VALUES (?, ?)`, hash, h.repoID+99999); err != nil {
-		t.Fatalf("token repos: %v", err)
+	if hash == "" {
+		t.Fatal("e2e token missing for excluded user")
 	}
+	insertDanglingTokenRepo(t, h.dbPath, hash, h.repoID+99999)
 	infoURL := h.url + "/ada/hello.git/info/refs?service=git-upload-pack"
 	if status, _, _ := httpGet(t, infoURL, "", ""); status != http.StatusUnauthorized {
 		t.Fatalf("anonymous status = %d, want 401", status)

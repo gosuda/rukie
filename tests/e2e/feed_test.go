@@ -201,16 +201,50 @@ func TestPushProducesSpoolThenOutboxThenRemoves(t *testing.T) {
 	oid := pushMain(t, s, "ada", "hello", map[string]string{"README.md": "hello\n"})
 	ctx := e2eCtx(t)
 	var invocation string
-	var enqueued int64
-	rerr := s.db.QueryRowContext(ctx, `SELECT invocation_id, enqueued FROM pending_pushes WHERE repo_id = ?`, repoID).Scan(&invocation, &enqueued)
-	if rerr != nil {
-		t.Fatalf("pending row: %v", rerr)
+	var pending store.PendingPush
+	if err := s.st.Read(ctx, func(tx *store.ReadTx) error {
+		rows, rerr := tx.Outbox().After("feedprobe", 1000)
+		if rerr != nil {
+			return rerr
+		}
+		for _, row := range rows {
+			if row.Kind != "push.received" {
+				continue
+			}
+			var body struct {
+				Invocation string `json:"invocation"`
+				Repo       int64  `json:"repo"`
+			}
+			if jerr := jsonv1.Unmarshal([]byte(row.Body), &body); jerr != nil {
+				continue
+			}
+			if body.Repo == repoID {
+				invocation = body.Invocation
+				break
+			}
+		}
+		if invocation == "" {
+			return fmt.Errorf("no push.received for repo %d", repoID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("pending row: %v", err)
 	}
 	if !strings.HasPrefix(invocation, "push-") {
 		t.Fatalf("invocation = %q, want the push request id", invocation)
 	}
-	if enqueued != 1 {
+	if err := s.st.Write(ctx, func(tx *store.WriteTx) error {
+		var gerr error
+		pending, gerr = tx.GetPendingPush(invocation)
+		return gerr
+	}); err != nil {
+		t.Fatalf("pending row: %v", err)
+	}
+	if pending.Enqueued != 1 {
 		t.Fatal("post-receive left the push pending")
+	}
+	if pending.RepoID != repoID {
+		t.Fatalf("pending repo = %d, want %d", pending.RepoID, repoID)
 	}
 	for _, id := range []string{"hook-delivery:" + invocation, "mirror-run:" + invocation, "ci-plan:" + invocation} {
 		var job store.Job
@@ -229,12 +263,7 @@ func TestPushProducesSpoolThenOutboxThenRemoves(t *testing.T) {
 			t.Fatalf("job %s = %+v", id, job)
 		}
 	}
-	var received int
-	rerr = s.db.QueryRowContext(ctx, `SELECT count(*) FROM outbox WHERE kind = 'push.received'`).Scan(&received)
-	if rerr != nil {
-		t.Fatalf("push.received count: %v", rerr)
-	}
-	if received != 1 {
+	if received := pushReceivedCount(t, s); received != 1 {
 		t.Fatalf("push.received rows = %d, want 1", received)
 	}
 	if n := refUpdatedCount(t, s); n != 0 {

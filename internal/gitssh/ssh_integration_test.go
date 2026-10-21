@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -24,11 +25,13 @@ import (
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/rukproc"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 type sshStack struct {
 	t        *testing.T
 	auth     *auth.Service
+	st       *store.Store
 	client   *ruk.Client
 	child    *rukproc.Child
 	srv      *Server
@@ -152,7 +155,7 @@ func newSSHStackWith(t *testing.T, idle, keepalive time.Duration) *sshStack {
 	t.Cleanup(func() { _ = srv.Close() })
 	go func() { _ = srv.Serve(t.Context(), ln) }()
 	s := &sshStack{
-		t: t, auth: svc, client: client, child: child, srv: srv,
+		t: t, auth: svc, st: st, client: client, child: child, srv: srv,
 		addr: ln.Addr().String(), dir: dir, roots: roots,
 		keys: map[string]sshClientKey{}, hostLine: hostLine,
 	}
@@ -215,9 +218,17 @@ func (s *sshStack) addRepo(t *testing.T, owner auth.User, name, visibility strin
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	now := time.Now().UnixMilli()
-	_, err := s.auth.DB().ExecContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, created_at, updated_at) VALUES (?, 0, ?, ?, ?, ?)`,
-		owner.ID, name, visibility, now, now)
+	now := time.Now()
+	err := s.st.Write(ctx, func(tx *store.WriteTx) error {
+		_, ierr := tx.InsertRepo(now, store.RepoInsert{
+			OwnerUserID:   sql.NullInt64{Int64: owner.ID, Valid: true},
+			Name:          name,
+			Visibility:    visibility,
+			DefaultBranch: "main",
+			RukPath:       owner.Name + "/" + name + ".git",
+		})
+		return ierr
+	})
 	if err != nil {
 		t.Fatalf("insert repo: %v", err)
 	}
@@ -375,10 +386,9 @@ func TestSSHUnknownKeyGenericDenied(t *testing.T) {
 	if strings.Contains(out, "unknown user") || strings.Contains(out, "no such") {
 		t.Fatalf("denial leaks enumeration: %q", out)
 	}
-	var count int64
-	err = s.auth.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE action = 'ssh.unknown_key' AND target_type = 'ssh_key' AND target_id = ?`, fingerprint).Scan(&count)
-	if err != nil || count != 1 {
-		t.Fatalf("audit rows = %d, %v", count, err)
+	count, cerr := s.st.CountAuditEvents(ctx, "ssh.unknown_key", "ssh_key", fingerprint)
+	if cerr != nil || count != 1 {
+		t.Fatalf("audit rows = %d, %v", count, cerr)
 	}
 }
 

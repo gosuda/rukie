@@ -17,6 +17,7 @@ import (
 
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/ruk/wire"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 func capturePush(t *testing.T, s *stack, ada userRec, work, ref string) []byte {
@@ -322,16 +323,14 @@ func TestGitAuthCaseInsensitiveAndHint(t *testing.T) {
 	seedCtx, seedCancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer seedCancel()
 	seedNow := time.Now().UnixMilli()
-	res, err := s.db.ExecContext(seedCtx, `INSERT INTO users
-		(name, lower_name, email, full_name, password_hash, password_algo, password_changed_at, is_admin, created_at, updated_at)
-		VALUES ('Mallory', 'mallory', 'mallory@example.test', '', 'x', 'argon2id-v19', ?, 0, ?, ?)`, seedNow, seedNow, seedNow)
-	if err != nil {
-		t.Fatalf("seed mixed-case user: %v", err)
+	mallory, merr := s.st.InsertAuthUser(seedCtx, store.AuthUserCreate{
+		Name: "Mallory", Lower: "mallory", Email: "mallory@example.test",
+		Hash: "x", Algo: "argon2id-v19", Now: seedNow,
+	})
+	if merr != nil {
+		t.Fatalf("seed mixed-case user: %v", merr)
 	}
-	malloryID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("mixed-case user id: %v", err)
-	}
+	malloryID := mallory.ID
 	malloryScopes, err := auth.ParseScopeSet([]string{"repo:read", "repo:write"})
 	if err != nil {
 		t.Fatalf("scopes: %v", err)

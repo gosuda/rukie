@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -186,14 +187,26 @@ func apiToken(t *testing.T, h *apiHarness, session, scopes string) string {
 
 func repoRowCount(t *testing.T, s *stack, owner, name string) int {
 	t.Helper()
-	var count int
+	rec, ok := s.users[owner]
+	if !ok {
+		t.Fatalf("unknown user %s", owner)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM repos WHERE name = ?`, name).Scan(&count)
-	if err != nil {
+	var count int
+	if err := s.st.Read(ctx, func(tx *store.ReadTx) error {
+		_, ferr := tx.FindRepo(rec.user.ID, 0, name)
+		if ferr != nil {
+			return ferr
+		}
+		count = 1
+		return nil
+	}); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return 0
+		}
 		t.Fatalf("count: %v", err)
 	}
-	_ = owner
 	return count
 }
 
@@ -338,18 +351,25 @@ func seedF1Repo(t *testing.T, s *stack, owner, name, visibility string) int64 {
 	if !ok {
 		t.Fatalf("unknown user %s", owner)
 	}
-	now := time.Now().UnixMilli()
 	var repoID int64
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	err := s.db.QueryRowContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, topics, default_branch, ruk_path, created_at, updated_at) VALUES (?, 0, ?, ?, '[]', 'main', ?, ?, ?) RETURNING id`,
-		rec.user.ID, name, visibility, owner+"/"+name+".git", now, now).Scan(&repoID)
-	if err != nil {
+	now := time.Now()
+	if err := s.st.Write(ctx, func(tx *store.WriteTx) error {
+		var ierr error
+		repoID, ierr = tx.InsertRepo(now, store.RepoInsert{
+			OwnerUserID:   sql.NullInt64{Int64: rec.user.ID, Valid: true},
+			Name:          name,
+			Visibility:    visibility,
+			DefaultBranch: "main",
+			RukPath:       owner + "/" + name + ".git",
+		})
+		if ierr != nil {
+			return ierr
+		}
+		return tx.PutBookmarkRule(repoID, "main", "Open", now)
+	}); err != nil {
 		t.Fatalf("insert repo: %v", err)
-	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO bookmark_rules (repo_id, pattern, mode, bypass_admin, created_at) VALUES (?, ?, 'Open', 0, ?)`,
-		repoID, "main", now); err != nil {
-		t.Fatalf("insert rule: %v", err)
 	}
 	repoDir := filepath.Join(s.roots, owner, name+".git")
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)

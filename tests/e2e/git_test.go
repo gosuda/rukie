@@ -42,7 +42,6 @@ type stack struct {
 	t       *testing.T
 	server  *httptest.Server
 	auth    *auth.Service
-	db      *sql.DB
 	st      *store.Store
 	client  *ruk.Client
 	child   *rukproc.Child
@@ -122,10 +121,9 @@ func newStackSetup(t *testing.T, limits *wire.GitLimits, extraConfig string, htt
 	if err != nil {
 		t.Fatalf("daemon start: %v\n%s", err, logs.String())
 	}
-	s := &stack{t: t, dir: dir, roots: roots, socket: socket, auth: svc, db: svc.DB(), st: st, child: child, users: map[string]userRec{}}
+	s := &stack{t: t, dir: dir, roots: roots, socket: socket, auth: svc, st: st, child: child, users: map[string]userRec{}}
 	t.Cleanup(func() {
 		_ = child.Kill()
-		_ = svc.Close()
 		_ = st.Close(context.Background())
 	})
 	deadline := time.Now().Add(10 * time.Second)
@@ -236,10 +234,18 @@ func (s *stack) addRepo(t *testing.T, owner, name, visibility string) int64 {
 	if !ok {
 		t.Fatalf("unknown user %s", owner)
 	}
-	now := time.Now().UnixMilli()
 	var repoID int64
-	err := s.db.QueryRowContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, created_at, updated_at) VALUES (?, 0, ?, ?, ?, ?) RETURNING id`,
-		rec.user.ID, name, visibility, now, now).Scan(&repoID)
+	err := s.st.Write(ctx, func(tx *store.WriteTx) error {
+		var ierr error
+		repoID, ierr = tx.InsertRepo(time.Now(), store.RepoInsert{
+			OwnerUserID:   sql.NullInt64{Int64: rec.user.ID, Valid: true},
+			Name:          name,
+			Visibility:    visibility,
+			DefaultBranch: "main",
+			RukPath:       owner + "/" + name + ".git",
+		})
+		return ierr
+	})
 	if err != nil {
 		t.Fatalf("insert repo: %v", err)
 	}
@@ -252,16 +258,32 @@ func (s *stack) addRepo(t *testing.T, owner, name, visibility string) int64 {
 	return repoID
 }
 
-func (s *stack) addRule(t *testing.T, repoID int64, pattern, mode string, bypass bool) {
+func (s *stack) addRule(t *testing.T, repoID int64, pattern, mode string) {
+	t.Helper()
+	s.putRule(t, repoID, pattern, mode, false)
+}
+
+func (s *stack) addRuleWithBypass(t *testing.T, repoID int64, pattern, mode string) {
+	t.Helper()
+	s.putRule(t, repoID, pattern, mode, true)
+}
+
+func (s *stack) putRule(t *testing.T, repoID int64, pattern, mode string, withBypass bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	bypassInt := 0
-	if bypass {
-		bypassInt = 1
+	now := time.Now()
+	var err error
+	if withBypass {
+		err = s.st.Write(ctx, func(tx *store.WriteTx) error {
+			return tx.PutBookmarkRuleWithBypass(repoID, pattern, mode, now)
+		})
+	} else {
+		err = s.st.Write(ctx, func(tx *store.WriteTx) error {
+			return tx.PutBookmarkRule(repoID, pattern, mode, now)
+		})
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO bookmark_rules (repo_id, pattern, mode, bypass_admin, created_at) VALUES (?, ?, ?, ?, ?)`,
-		repoID, pattern, mode, bypassInt, time.Now().UnixMilli()); err != nil {
+	if err != nil {
 		t.Fatalf("insert rule: %v", err)
 	}
 }
@@ -566,7 +588,9 @@ func (s *stack) addGrant(t *testing.T, repoID, userID int64, role string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO repo_grants (repo_id, user_id, role) VALUES (?, ?, ?)`, repoID, userID, role); err != nil {
+	if err := s.st.Write(ctx, func(tx *store.WriteTx) error {
+		return tx.PutGrant(repoID, userID, role)
+	}); err != nil {
 		t.Fatalf("insert grant: %v", err)
 	}
 }
@@ -595,7 +619,7 @@ func TestGitLandOnlyDirectPushDenied(t *testing.T) {
 	s := newStack(t, nil)
 	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
 	repoID := s.addRepo(t, "ada", "hello", "private")
-	s.addRule(t, repoID, "refs/heads/main", "LandOnly", false)
+	s.addRule(t, repoID, "refs/heads/main", "LandOnly")
 	work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
 	pushURL := s.repoURL("ada", "hello", "ada", ada.token)
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
@@ -640,8 +664,16 @@ func TestGitAuthorizesBeforeOpeningStream(t *testing.T) {
 	if merr := os.MkdirAll(repoGit, 0o755); merr != nil {
 		t.Fatalf("mkdir: %v", merr)
 	}
-	now := time.Now().UnixMilli()
-	if _, ierr := svc.DB().ExecContext(ctx, `INSERT INTO repos (owner_user_id, org_id, name, visibility, created_at, updated_at) VALUES (?, 0, ?, ?, ?, ?)`, admin.ID, "hello", "private", now, now); ierr != nil {
+	if ierr := st.Write(ctx, func(tx *store.WriteTx) error {
+		_, ierr := tx.InsertRepo(time.Now(), store.RepoInsert{
+			OwnerUserID:   sql.NullInt64{Int64: admin.ID, Valid: true},
+			Name:          "hello",
+			Visibility:    "private",
+			DefaultBranch: "main",
+			RukPath:       "ada/hello.git",
+		})
+		return ierr
+	}); ierr != nil {
 		t.Fatalf("insert repo: %v", ierr)
 	}
 	socket := filepath.Join(dir, "count.sock")
