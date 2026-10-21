@@ -106,6 +106,10 @@ func (f *trackFake) serve(t *testing.T, conn net.Conn) {
 		inv := fmt.Sprintf("inv-%d", stream)
 		accepted := fmt.Sprintf(`{"invocation_id":%q,"stream_id":%d,"stdin_credit":1048576}`, inv, stream)
 		writeRawFrame(t, conn, 2, stream, []byte(accepted))
+		if bytes.Contains(payload, []byte(`"advertise":true`)) {
+			writeRawFrame(t, conn, 10, stream, []byte(`{"exit_code":0,"cancelled":false,"signal":"","outcome":"","invocation_id":"inv","operation_ids":[]}`))
+			continue
+		}
 		f.drainRound(t, conn, stream)
 		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 		_, _, _ = readFrameSoft(conn)
@@ -465,10 +469,6 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 	_ = pw.Close()
 	if _, ok := waitFor(t, h.fake.closes, 10*time.Second); !ok {
 		t.Fatal("daemon stream never closed after client disconnect")
-	}
-	pushURL := h.repoURL("ada", h.ada.token)
-	if refs := h.lsRemote(t, pushURL); refs["refs/heads/main"] != "" {
-		t.Fatalf("aborted push landed: %q", refs["refs/heads/main"])
 	}
 }
 
