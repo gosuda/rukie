@@ -451,7 +451,20 @@ func (s *Service) DeleteSelf(ctx context.Context, userID int64, ifMatch, ip stri
 	if u.IsAdmin && u.IsActive && s.CountActiveAdmins(ctx) <= 1 {
 		return errors.New("cannot delete the last active admin")
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+	err = s.execTx(ctx, func(tx *sql.Tx) error {
+		var sole int64
+		if qerr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_members m
+			JOIN teams t ON t.id = m.team_id
+			WHERE t.lower_name = 'owners' AND m.user_id = ?
+			AND (SELECT COUNT(*) FROM team_members m2 WHERE m2.team_id = m.team_id) <= 1`, userID).Scan(&sole); qerr != nil {
+			return qerr
+		}
+		if sole > 0 {
+			return errors.New("cannot delete the last org owner")
+		}
+		_, derr := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+		return derr
+	})
 	if err != nil {
 		return err
 	}

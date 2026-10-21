@@ -426,3 +426,44 @@ func TestLoginKeepsSessionsAcrossUserAgents(t *testing.T) {
 		t.Fatalf("second browser session missing: %v", err)
 	}
 }
+func TestDeleteSelfRefusesSoleOrgOwner(t *testing.T) {
+	svc, _ := openTestService(t)
+	ctx := t.Context()
+	pw := randomPassword(t, 16)
+	u := mustCreate(t, svc, "soleowner", pw, false)
+	now := time.Now().UnixMilli()
+	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO orgs (name, lower_name, created_at, updated_at) VALUES ('acme', 'acme', ?, ?)`, now, now); err != nil {
+		t.Fatalf("org: %v", err)
+	}
+	var orgID int64
+	if err := svc.DB().QueryRowContext(ctx, `SELECT id FROM orgs WHERE lower_name = 'acme'`).Scan(&orgID); err != nil {
+		t.Fatalf("org id: %v", err)
+	}
+	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO teams (org_id, name, lower_name, permission, created_at, updated_at) VALUES (?, 'Owners', 'owners', 'admin', ?, ?)`, orgID, now, now); err != nil {
+		t.Fatalf("owners team: %v", err)
+	}
+	var teamID int64
+	if err := svc.DB().QueryRowContext(ctx, `SELECT id FROM teams WHERE org_id = ? AND lower_name = 'owners'`, orgID).Scan(&teamID); err != nil {
+		t.Fatalf("team id: %v", err)
+	}
+	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO team_members (team_id, user_id) VALUES (?, ?)`, teamID, u.ID); err != nil {
+		t.Fatalf("membership: %v", err)
+	}
+	match, err := svc.ETagFor(u.ID)
+	if err != nil {
+		t.Fatalf("etag: %v", err)
+	}
+	if err := svc.DeleteSelf(ctx, u.ID, match, "127.0.0.1"); err == nil || !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("sole owner delete err = %v, want owner refusal", err)
+	}
+	peer := mustCreate(t, svc, "coowner", randomPassword(t, 16), false)
+	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO team_members (team_id, user_id) VALUES (?, ?)`, teamID, peer.ID); err != nil {
+		t.Fatalf("second membership: %v", err)
+	}
+	if err := svc.DeleteSelf(ctx, u.ID, match, "127.0.0.1"); err != nil {
+		t.Fatalf("non-sole owner delete: %v", err)
+	}
+	if _, err := svc.GetUserByID(ctx, u.ID); err == nil {
+		t.Fatal("user row survived self-delete")
+	}
+}
