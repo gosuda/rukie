@@ -195,6 +195,26 @@ func shortRefName(full, prefix string) (string, bool) {
 	return short, true
 }
 
+func pageRefs(entries []ruk.RefEntry, prefix string, limit int, daemonNext string) ([]ruk.RefEntry, string) {
+	if limit <= 0 {
+		return nil, ""
+	}
+	shown := make([]ruk.RefEntry, 0, min(limit, len(entries)))
+	for _, entry := range entries {
+		if _, ok := shortRefName(entry.Name, prefix); !ok {
+			continue
+		}
+		if len(shown) == limit {
+			return shown, shown[len(shown)-1].Name
+		}
+		shown = append(shown, entry)
+	}
+	if len(shown) == limit {
+		return shown, daemonNext
+	}
+	return shown, ""
+}
+
 func branchListHandler(d Deps) func(context.Context, op.Principal, BranchListIn) (BranchListOut, error) {
 	return func(ctx context.Context, p op.Principal, in BranchListIn) (BranchListOut, error) {
 		rq, rerr := d.requester(ctx, p)
@@ -221,26 +241,13 @@ func branchListHandler(d Deps) func(context.Context, op.Principal, BranchListIn)
 		if lerr != nil {
 			return BranchListOut{}, lerr
 		}
+		entries, next = pageRefs(entries, headsPrefix, limit, next)
 		out := BranchListOut{Branches: []BranchJSON{}}
 		for _, entry := range entries {
-			short, ok := shortRefName(entry.Name, headsPrefix)
-			if !ok {
-				continue
-			}
-			if len(out.Branches) >= limit {
-				out.Next = entry.Name
-				break
-			}
+			short, _ := shortRefName(entry.Name, headsPrefix)
 			out.Branches = append(out.Branches, BranchJSON{Name: short, Target: branchRefTarget(entry.Target)})
 		}
-		if len(entries) <= limit {
-			out.Next = next
-			if len(out.Branches) == limit && next != "" {
-				out.Next = next
-			} else if len(out.Branches) < limit {
-				out.Next = ""
-			}
-		}
+		out.Next = next
 		return out, nil
 	}
 }
@@ -449,25 +456,13 @@ func tagListHandler(d Deps) func(context.Context, op.Principal, TagListIn) (TagL
 		if lerr != nil {
 			return TagListOut{}, lerr
 		}
+		entries, next = pageRefs(entries, tagsPrefix, limit, next)
 		out := TagListOut{Tags: []TagJSON{}}
 		for _, entry := range entries {
-			short, ok := shortRefName(entry.Name, tagsPrefix)
-			if !ok {
-				continue
-			}
-			if len(out.Tags) >= limit {
-				out.Next = entry.Name
-				break
-			}
+			short, _ := shortRefName(entry.Name, tagsPrefix)
 			out.Tags = append(out.Tags, TagJSON{Name: short, Target: branchRefTarget(entry.Target)})
 		}
-		if len(entries) <= limit {
-			if len(out.Tags) < limit {
-				out.Next = ""
-			} else {
-				out.Next = next
-			}
-		}
+		out.Next = next
 		return out, nil
 	}
 }
