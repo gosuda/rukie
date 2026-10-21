@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test vuln check goals build-web
+.PHONY: fmt vet lint test vuln check goals build-web web-assets
 
 build-web:
 	cd web && pnpm install --frozen-lockfile
@@ -20,7 +20,14 @@ test:
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
-check: vet lint test vuln
+check: web-assets vet lint test vuln
+
+web-assets:
+	@if [ -d web/node_modules ]; then \
+		$(MAKE) build-web; \
+	else \
+		test -s internal/web/assets/app.js || { echo "web bundle missing and web/node_modules absent: run make build-web"; exit 1; }; \
+	fi
 	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)"
 	go run ./tools/commentcheck
 	go mod tidy -diff
