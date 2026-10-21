@@ -49,8 +49,17 @@ func TestRenderDaemonConfigKeepsExplicitUIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderDaemonConfig: %v", err)
 	}
-	if strings.Contains(text, "993") {
-		t.Fatalf("fallback uid leaked into explicit allowed_uids:\n%s", text)
+	doc := map[string]any{}
+	if _, uerr := toml.Decode(text, &doc); uerr != nil {
+		t.Fatalf("rendered daemon TOML does not parse: %v\n%s", uerr, text)
+	}
+	uids, ok := doc["allowed_uids"].([]any)
+	if !ok || len(uids) != 2 || uids[0] != int64(1001) || uids[1] != int64(1002) {
+		t.Fatalf("allowed_uids = %v, want [1001 1002]", doc["allowed_uids"])
+	}
+	admins, ok := doc["admin_uids"].([]any)
+	if !ok || len(admins) != 1 || admins[0] != int64(993) {
+		t.Fatalf("admin_uids = %v, want the fallback supervisor uid", doc["admin_uids"])
 	}
 }
 

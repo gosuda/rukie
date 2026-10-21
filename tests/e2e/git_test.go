@@ -81,7 +81,17 @@ func newStackWithHTTPCap(t *testing.T, limits *wire.GitLimits, httpCap uint64) *
 	return newStackWithConfig(t, limits, "", httpCap)
 }
 
+func newStackNoAdmin(t *testing.T, limits *wire.GitLimits) *stack {
+	t.Helper()
+	return newStackSetup(t, limits, "", 0, "")
+}
+
 func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string, httpCap uint64) *stack {
+	t.Helper()
+	return newStackSetup(t, limits, extraConfig, httpCap, fmt.Sprintf("admin_uids = [%d]\n", os.Getuid()))
+}
+
+func newStackSetup(t *testing.T, limits *wire.GitLimits, extraConfig string, httpCap uint64, adminLine string) *stack {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
@@ -100,11 +110,11 @@ func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string
 		t.Fatalf("auth open: %v", err)
 	}
 	socket := filepath.Join(dir, "ruk.sock")
-	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\nframe_timeout_ms = 5000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n%s",
-		socket, roots, os.Getuid(), extraConfig)
+	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 5000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n%s",
+		socket, roots, os.Getuid(), adminLine, extraConfig)
 	if strings.Contains(extraConfig, "retention_interval_ms") {
-		config = fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\nframe_timeout_ms = 5000\nhook_timeout_ms = 5000\n%s",
-			socket, roots, os.Getuid(), extraConfig)
+		config = fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 5000\nhook_timeout_ms = 5000\n%s",
+			socket, roots, os.Getuid(), adminLine, extraConfig)
 	}
 	configPath := filepath.Join(dir, "daemon.toml")
 	if werr := os.WriteFile(configPath, []byte(config), 0o600); werr != nil {

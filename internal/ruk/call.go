@@ -165,7 +165,7 @@ func callDecoded[Resp any](ctx context.Context, c *Client, repo Repo, op string,
 func attemptCall[Resp any](ctx context.Context, c *Client, repo Repo, op string, method wire.Method, requestID string, args []byte, autoRetry bool) (Resp, Outcome, string, int64, bool, error) {
 	var zero Resp
 	kind := method.Kind()
-	sessionful := kind != wire.MethodAnonymous && kind != wire.MethodBootstrap
+	sessionful := kind != wire.MethodAnonymous && kind != wire.MethodBootstrap && kind != wire.MethodAdmin
 	var sessionID *string
 	if sessionful {
 		if autoRetry {

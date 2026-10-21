@@ -327,7 +327,7 @@ func createRepoHandler(d Deps) func(context.Context, op.Principal, RepoCreateIn)
 		initArgs := map[string]any{
 			"root":           d.RepoRoot,
 			"path":           daemonPath,
-			"default_branch": defaultBranch,
+			"default_branch": "refs/heads/" + defaultBranch,
 		}
 		var initReply repoInitReply
 		ierr := d.callRuk(ctx, ruk.Repo{}, wire.MethodRepoInit, initArgs, &initReply)

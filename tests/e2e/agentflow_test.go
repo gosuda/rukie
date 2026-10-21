@@ -282,7 +282,7 @@ func TestAgentFlow(t *testing.T) {
 }
 
 func TestAdminMethodsRefusedForNonAdminPeer(t *testing.T) {
-	s := newStack(t, nil)
+	s := newStackNoAdmin(t, nil)
 	h := mountAPI(t, s)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")
 	s.addRepo(t, "ada", "seed", "private")
@@ -315,7 +315,7 @@ func TestAdminMethodsRefusedForNonAdminPeer(t *testing.T) {
 }
 
 func TestRepoCreateRukFirst(t *testing.T) {
-	s := newStack(t, nil)
+	s := newStackNoAdmin(t, nil)
 	h := mountAPI(t, s)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")
 	session := apiLogin(t, h, "ada", "long-test-password-01")
