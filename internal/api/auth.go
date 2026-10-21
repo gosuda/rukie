@@ -220,7 +220,7 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 		Name: "auth.token.list", Kind: op.KindRead, Method: http.MethodGet, Path: "/settings/tokens",
 		Scope: op.ScopeRepoRead, Summary: "List scoped agent tokens",
 		Description: "Requires a fresh session. Shows token prefixes, scopes, and expiry.",
-		Problems:    []op.Code{op.CodeUnauthorized},
+		Problems:    []op.Code{op.CodeUnauthorized, op.CodeNotFound},
 		ETag: func(out TokenListOut) string {
 			h := 0
 			for _, tok := range out.Tokens {
@@ -245,6 +245,16 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 				})
 			}
 			if in.Reveal != "" {
+				owned := false
+				for _, tok := range tokens {
+					if tok.PublicPrefix == in.Reveal {
+						owned = true
+						break
+					}
+				}
+				if !owned {
+					return TokenListOut{}, op.Errorf(op.CodeNotFound, "unknown token")
+				}
 				if secret, ok := deps.Reveals.Take(in.Reveal); ok {
 					out.Reveal = in.Reveal
 					out.Secret = secret

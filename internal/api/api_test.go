@@ -317,6 +317,15 @@ func TestFreshGatesTokenCreate(t *testing.T) {
 	if secret == "" || prefix == "" || !strings.HasPrefix(secret, "rk_") {
 		t.Fatalf("token body = %v", body)
 	}
+	bobPassword := randomPW(t)
+	rec = doJSON(t, e, "POST", "/admin/users", cookie, `{"name":"bob","password":"`+bobPassword+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create second user = %d: %s", rec.Code, rec.Body.String())
+	}
+	bobCookie := loginCookie(t, e, "bob", bobPassword)
+	if foreign := doJSON(t, e, "GET", "/settings/tokens?reveal="+prefix, bobCookie, ""); foreign.Code != http.StatusNotFound {
+		t.Fatalf("foreign reveal = %d, want %d: %s", foreign.Code, http.StatusNotFound, foreign.Body.String())
+	}
 	rec = doJSON(t, e, "GET", "/settings/tokens?reveal="+prefix, cookie, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reveal = %d", rec.Code)
@@ -339,7 +348,7 @@ func TestFreshGatesTokenCreate(t *testing.T) {
 	if rec2.Code != http.StatusForbidden {
 		t.Fatalf("token mint by token = %d", rec2.Code)
 	}
-	req = httptest.NewRequest("POST", "/admin/users", strings.NewReader(`{"name":"bob","password":"`+randomPW(t)+`"}`))
+	req = httptest.NewRequest("POST", "/admin/users", strings.NewReader(`{"name":"eve","password":"`+randomPW(t)+`"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", bearer)

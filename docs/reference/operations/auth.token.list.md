@@ -21,4 +21,4 @@ Requires a fresh session. Shows token prefixes, scopes, and expiry.
 
 ## Errors
 
-`unauthorized`, plus the framework problems.
+`not-found`, `unauthorized`, plus the framework problems.
