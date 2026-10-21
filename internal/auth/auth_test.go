@@ -406,3 +406,23 @@ func TestCreateUserRandomIsAdmin(t *testing.T) {
 		t.Fatal("random non-admin user gained admin")
 	}
 }
+func TestLoginKeepsSessionsAcrossUserAgents(t *testing.T) {
+	svc, _ := openTestService(t)
+	ctx := t.Context()
+	pw := randomPassword(t, 16)
+	u := mustCreate(t, svc, "multiua", pw, false)
+	first, err := svc.Login(ctx, LoginInput{Username: u.Name, Password: pw, IP: "127.0.0.1", UserAgent: "browser-a"})
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+	second, err := svc.Login(ctx, LoginInput{Username: u.Name, Password: pw, IP: "127.0.0.1", UserAgent: "browser-b"})
+	if err != nil {
+		t.Fatalf("second login: %v", err)
+	}
+	if _, _, err := svc.LookupSession(ctx, first.Secret); err != nil {
+		t.Fatalf("first browser session wiped: %v", err)
+	}
+	if _, _, err := svc.LookupSession(ctx, second.Secret); err != nil {
+		t.Fatalf("second browser session missing: %v", err)
+	}
+}

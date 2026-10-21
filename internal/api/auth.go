@@ -156,7 +156,7 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 			return "/settings"
 		},
 		Handler: func(ctx context.Context, _ op.Principal, in LoginIn) (LoginOut, error) {
-			res, err := deps.Service.Login(ctx, auth.LoginInput{Username: in.Body.Username, Password: in.Body.Password})
+			res, err := deps.Service.Login(ctx, auth.LoginInput{Username: in.Body.Username, Password: in.Body.Password, IP: op.ClientIP(ctx), UserAgent: op.UserAgent(ctx)})
 			if err != nil {
 				if rl := loginRateLimited(ctx, deps, in.Body.Username); rl != nil {
 					return LoginOut{}, rl

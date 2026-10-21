@@ -370,6 +370,15 @@ func ClientIP(ctx context.Context) string {
 	return ""
 }
 
+type userAgentKey struct{}
+
+func UserAgent(ctx context.Context) string {
+	if ua, ok := ctx.Value(userAgentKey{}).(string); ok {
+		return ua
+	}
+	return ""
+}
+
 func CursorKey(ctx context.Context) []byte {
 	if st := stateFrom(ctx); st != nil && st.srv != nil {
 		return cursorSubkey(st.srv.cfg.CSRFKey)
@@ -951,6 +960,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st.requestID = newRequestID(r)
 	ctx := context.WithValue(r.Context(), stateKey{}, st)
 	ctx = context.WithValue(ctx, clientIPKey{}, clientIP(r))
+	ctx = context.WithValue(ctx, userAgentKey{}, r.UserAgent())
 	r = r.WithContext(ctx)
 	decision := "allow"
 	matches, methods := s.lookup(st.path)
