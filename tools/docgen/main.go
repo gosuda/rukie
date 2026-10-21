@@ -86,13 +86,7 @@ func buildDocTable(dbPath string) (*op.Table, *op.Document, error) {
 	defer func() {
 		_ = st.Close(context.Background())
 	}()
-	svc, err := auth.Open(dbPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("buildDocTable: %w", err)
-	}
-	defer func() {
-		_ = svc.Close()
-	}()
+	svc := auth.New(st)
 	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	docs := &api.DocStore{}

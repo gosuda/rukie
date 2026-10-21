@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"database/sql"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -55,30 +54,6 @@ func sshBin(t *testing.T) string {
 	return bin
 }
 
-func sshTestDB(t *testing.T, path string) {
-	t.Helper()
-	raw, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_journal_mode=WAL&_synchronous=FULL&_foreign_keys=on&_busy_timeout=5000")
-	if err != nil {
-		t.Fatalf("sql open: %v", err)
-	}
-	entries, err := os.ReadDir("../store/migrations")
-	if err != nil {
-		t.Fatalf("migrations dir: %v", err)
-	}
-	for _, e := range entries {
-		body, err := os.ReadFile(filepath.Join("../store/migrations", e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		if _, err := raw.Exec(string(body)); err != nil {
-			t.Fatalf("apply %s: %v", e.Name(), err)
-		}
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatalf("sql close: %v", err)
-	}
-}
-
 func sshDaemonLogs(t *testing.T, dir, roots string) (*rukproc.Child, string, *bytes.Buffer) {
 	t.Helper()
 	socket := filepath.Join(dir, "ruk.sock")
@@ -120,12 +95,12 @@ func newSSHStackWith(t *testing.T, idle, keepalive time.Duration) *sshStack {
 		t.Fatalf("roots: %v", err)
 	}
 	sqlite := filepath.Join(dir, "rukie.sqlite")
-	sshTestDB(t, sqlite)
-	svc, err := auth.Open(sqlite)
+	st, err := store.Open(t.Context(), store.Options{Path: sqlite})
 	if err != nil {
-		t.Fatalf("auth open: %v", err)
+		t.Fatalf("store open: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() })
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	svc := auth.New(st)
 	child, socket, logs := sshDaemonLogs(t, dir, roots)
 	t.Cleanup(func() {
 		if t.Failed() {

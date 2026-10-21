@@ -34,15 +34,11 @@ func buildEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatalf("store open: %v", err)
 	}
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
+	svc := auth.New(st)
 	t.Cleanup(func() {
-		_ = svc.Close()
 		_ = st.Close(context.Background())
 	})
-	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache()}
+	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	if regErr := api.RegisterAuth(table, deps); regErr != nil {
 		t.Fatalf("register auth: %v", regErr)
@@ -521,7 +517,7 @@ func adminETagFor(t *testing.T, e *testEnv, name string) string {
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
-	tag, err := e.svc.ETagFor(u.ID)
+	tag, err := e.svc.ETagFor(t.Context(), u.ID)
 	if err != nil {
 		t.Fatalf("etag: %v", err)
 	}

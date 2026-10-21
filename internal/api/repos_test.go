@@ -39,12 +39,8 @@ func buildRepoEnv(t *testing.T) *repoEnv {
 	if err != nil {
 		t.Fatalf("store open: %v", err)
 	}
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
+	svc := auth.New(st)
 	t.Cleanup(func() {
-		_ = svc.Close()
 		_ = st.Close(context.Background())
 	})
 	deps := api.Deps{

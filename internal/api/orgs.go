@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -108,7 +107,11 @@ func resolveOrgByName(ctx context.Context, d Deps, name string) (store.OrgRow, e
 }
 
 func siteAccess(d Deps, rq requester, action string) error {
-	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
+	st, serr := requireStore(d)
+	if serr != nil {
+		return serr
+	}
+	resolver := st.Resolver()
 	decision := access.Check(resolver, rq.caller, action, access.Resource{Kind: access.KindSite})
 	if !decision.Allow {
 		if decision.Reason == "session-required" {
@@ -123,7 +126,11 @@ func siteAccess(d Deps, rq requester, action string) error {
 }
 
 func orgAccess(d Deps, rq requester, orgID int64, action string) error {
-	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
+	st, serr := requireStore(d)
+	if serr != nil {
+		return serr
+	}
+	resolver := st.Resolver()
 	decision := access.Check(resolver, rq.caller, action, access.Resource{Kind: access.KindOrg, OrgID: orgID})
 	if !decision.Allow {
 		if decision.NotFound {
@@ -144,7 +151,11 @@ func teamAccess(d Deps, rq requester, orgID, teamID int64, action string) error 
 	if teamID == 0 {
 		return orgAccess(d, rq, orgID, action)
 	}
-	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
+	st, serr := requireStore(d)
+	if serr != nil {
+		return serr
+	}
+	resolver := st.Resolver()
 	decision := access.Check(resolver, rq.caller, action, access.Resource{Kind: access.KindTeam, OrgID: orgID, TeamID: teamID})
 	if !decision.Allow {
 		if decision.NotFound {
@@ -477,7 +488,10 @@ func checkVisibilityValue(visibility string) error {
 }
 
 func orgRoleOf(d Deps, orgID, userID int64) string {
-	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
+	if d.Store == nil {
+		return ""
+	}
+	resolver := d.Store.Resolver()
 	if resolver.IsOrgOwner(orgID, userID) {
 		return "owner"
 	}
@@ -2241,12 +2255,23 @@ func tokenRepoSelector(ctx context.Context, d Deps, p op.Principal, ids []int64)
 }
 
 func rejectTakenOrgName(ctx context.Context, d Deps, name string) error {
+	st, serr := requireStore(d)
+	if serr != nil {
+		return serr
+	}
 	var taken bool
-	rerr := d.Service.DB().QueryRowContext(ctx,
-		`SELECT 1 FROM orgs WHERE lower_name = ?`, strings.ToLower(strings.TrimSpace(name))).Scan(new(int))
-	if rerr == nil {
-		taken = true
-	} else if !errors.Is(rerr, sql.ErrNoRows) {
+	rerr := st.Read(ctx, func(tx *store.ReadTx) error {
+		_, ferr := tx.FindOrgByName(strings.ToLower(strings.TrimSpace(name)))
+		if ferr == nil {
+			taken = true
+			return nil
+		}
+		if errors.Is(ferr, store.ErrNotFound) {
+			return nil
+		}
+		return ferr
+	})
+	if rerr != nil {
 		return op.Wrap(op.CodeInternal, rerr, "organization lookup failed")
 	}
 	if taken {

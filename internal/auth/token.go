@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/base64"
 	"errors"
 	"regexp"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gosuda/rukie/internal/op"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 const tokenPrefix = "rk_"
@@ -78,7 +78,7 @@ func ScopesAll() op.Scopes {
 }
 
 func ParseScopeSet(names []string) (op.Scopes, error) {
-	var out op.Scopes
+	out := op.Scopes(0)
 	seen := map[op.Scope]bool{}
 	for _, n := range names {
 		s, ok := op.ParseScope(strings.TrimSpace(n))
@@ -138,6 +138,26 @@ type CreateTokenInput struct {
 	PublicOnly bool
 }
 
+func tokenFromStore(rec store.TokenRecord) Token {
+	tok := Token{
+		Hash:         rec.Hash,
+		PublicPrefix: rec.PublicPrefix,
+		UserID:       rec.UserID,
+		Name:         rec.Name,
+		ExpiresAt:    rec.ExpiresAt,
+		CreatedAt:    rec.CreatedAt,
+		LastUsedAt:   rec.LastUsedAt,
+		RevokedAt:    rec.RevokedAt,
+		PublicOnly:   rec.PublicOnly,
+	}
+	for n := range strings.FieldsSeq(rec.Scopes) {
+		if scope, ok := op.ParseScope(n); ok {
+			tok.Scopes = tok.Scopes.Add(scope)
+		}
+	}
+	return tok
+}
+
 func (s *Service) CreateToken(ctx context.Context, in CreateTokenInput) (TokenSecret, error) {
 	ttl := in.TTL
 	if ttl <= 0 {
@@ -164,30 +184,21 @@ func (s *Service) CreateToken(ctx context.Context, in CreateTokenInput) (TokenSe
 		ExpiresAt:    now + ttl.Milliseconds(),
 		CreatedAt:    now,
 	}
-	publicOnlyInt := 0
-	if in.PublicOnly {
-		publicOnlyInt = 1
-	}
 	scopesRaw := strings.Join(ScopeNames(tok.Scopes), " ")
-	err = s.execTx(ctx, func(tx *sql.Tx) error {
-		if _, ierr := tx.ExecContext(ctx, `INSERT INTO scoped_tokens
-			(token_hash, public_prefix, user_id, name, scopes, expires_at, created_at, created_ip, public_only)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			tok.Hash, tok.PublicPrefix, in.UserID, in.Name, scopesRaw,
-			tok.ExpiresAt, now, in.IP, publicOnlyInt); ierr != nil {
-			return ierr
-		}
-		for _, repoID := range in.Repos {
-			if _, ierr := tx.ExecContext(ctx,
-				`INSERT INTO token_repos (token_hash, repo_id) VALUES (?, ?)`,
-				tok.Hash, repoID); ierr != nil {
-				return ierr
-			}
-		}
-		return nil
+	serr := s.store.CreateToken(ctx, store.TokenCreate{
+		Hash:       tok.Hash,
+		Prefix:     tok.PublicPrefix,
+		Name:       in.Name,
+		Scopes:     scopesRaw,
+		IP:         in.IP,
+		UserID:     in.UserID,
+		ExpiresAt:  tok.ExpiresAt,
+		CreatedAt:  now,
+		PublicOnly: in.PublicOnly,
+		RepoIDs:    in.Repos,
 	})
-	if err != nil {
-		return TokenSecret{}, err
+	if serr != nil {
+		return TokenSecret{}, serr
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: in.UserID, Action: "token.create", Target: "token:" + tok.PublicPrefix, IP: in.IP, Result: "ok"})
 	return TokenSecret{Token: tok, Secret: secret}, nil
@@ -200,88 +211,44 @@ func (s *Service) LookupToken(ctx context.Context, secret, ip string) (Token, Us
 		return Token{}, User{}, ErrTokenInvalid
 	}
 	hash := hashBearer(secret)
-	var tok Token
-	var scopesRaw string
-	var lastUsed, revoked sql.NullInt64
-	var lastIP sql.NullString
-	var publicOnly int64
-	now := millis(s.clock())
-	err := s.db.QueryRowContext(ctx, `SELECT token_hash, public_prefix, user_id, name, scopes,
-		expires_at, created_at, last_used_at, last_used_ip, revoked_at, public_only
-		FROM scoped_tokens WHERE token_hash = ?`, hash).Scan(
-		&tok.Hash, &tok.PublicPrefix, &tok.UserID, &tok.Name, &scopesRaw,
-		&tok.ExpiresAt, &tok.CreatedAt, &lastUsed, &lastIP, &revoked, &publicOnly)
+	rec, err := s.store.GetTokenByHash(ctx, hash)
 	if err != nil {
 		return Token{}, User{}, ErrTokenInvalid
 	}
-	if revoked.Valid {
+	tok := tokenFromStore(rec)
+	now := millis(s.clock())
+	if tok.RevokedAt != 0 {
 		return Token{}, User{}, ErrTokenInvalid
 	}
 	if now >= tok.ExpiresAt {
 		s.recordAudit(ctx, AuditEvent{Actor: tok.UserID, Action: "token.expired", Target: "token:" + tok.PublicPrefix, IP: ip, Result: "deny"})
 		return Token{}, User{}, ErrTokenInvalid
 	}
-	for n := range strings.FieldsSeq(scopesRaw) {
-		if scope, ok := op.ParseScope(n); ok {
-			tok.Scopes = tok.Scopes.Add(scope)
-		}
-	}
-	tok.PublicOnly = publicOnly != 0
-	if lastUsed.Valid {
-		tok.LastUsedAt = lastUsed.Int64
-	}
-	if revoked.Valid {
-		tok.RevokedAt = revoked.Int64
-	}
-	var u User
-	err = s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, tok.UserID).Scan(
-		&u.ID, &u.Name, &u.LowerName, &u.Email, &u.FullName,
-		&u.PasswordAlgo, boolInt(&u.MustChangePassword), boolInt(&u.TOTPEnabled), boolInt(&u.OIDCOnly),
-		boolInt(&u.IsAdmin), boolInt(&u.IsActive),
-		&u.FailedLoginCount, nullInt(&u.LockedUntil), &u.PasswordChangedAt, &u.CreatedAt, &u.UpdatedAt)
-	if err != nil || !u.IsActive {
+	au, uerr := s.store.GetAuthUserByID(ctx, tok.UserID)
+	if uerr != nil {
 		return Token{}, User{}, ErrTokenInvalid
 	}
-	if !lastUsed.Valid || now-lastUsed.Int64 >= tokenUseTrackGranularity.Milliseconds() {
-		_, _ = s.db.ExecContext(ctx, `UPDATE scoped_tokens SET last_used_at = ?, last_used_ip = ? WHERE token_hash = ?`, now, ip, hash)
+	u, _ := authUserFromStore(au)
+	if !u.IsActive {
+		return Token{}, User{}, ErrTokenInvalid
+	}
+	if rec.LastUsedAt == 0 || now-rec.LastUsedAt >= tokenUseTrackGranularity.Milliseconds() {
+		_ = s.store.TouchToken(ctx, hash, now, ip)
 		tok.LastUsedAt = now
 	}
 	return tok, u, nil
 }
 
 func (s *Service) ListTokens(ctx context.Context, userID int64) ([]Token, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT token_hash, public_prefix, user_id, name, scopes,
-		expires_at, created_at, last_used_at, revoked_at, public_only
-		FROM scoped_tokens WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`, userID)
+	recs, err := s.store.ListTokensByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	var out []Token
-	for rows.Next() {
-		var tok Token
-		var scopesRaw string
-		var lastUsed, revoked sql.NullInt64
-		var publicOnly int64
-		if err := rows.Scan(&tok.Hash, &tok.PublicPrefix, &tok.UserID, &tok.Name, &scopesRaw,
-			&tok.ExpiresAt, &tok.CreatedAt, &lastUsed, &revoked, &publicOnly); err != nil {
-			return nil, err
-		}
-		for n := range strings.FieldsSeq(scopesRaw) {
-			if scope, ok := op.ParseScope(n); ok {
-				tok.Scopes = tok.Scopes.Add(scope)
-			}
-		}
-		if lastUsed.Valid {
-			tok.LastUsedAt = lastUsed.Int64
-		}
-		if revoked.Valid {
-			tok.RevokedAt = revoked.Int64
-		}
-		tok.PublicOnly = publicOnly != 0
-		out = append(out, tok)
+	out := make([]Token, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, tokenFromStore(rec))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Service) RevokeTokenByPrefix(ctx context.Context, userID int64, prefix, ip string) (bool, error) {
@@ -302,59 +269,41 @@ func (s *Service) RevokeTokenByPrefix(ctx context.Context, userID int64, prefix,
 		return false, nil
 	}
 	now := millis(s.clock())
-	_, err = s.db.ExecContext(ctx, `UPDATE scoped_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`, now, match)
-	if err != nil {
-		return false, err
+	if rerr := s.store.RevokeTokenByHash(ctx, match, now); rerr != nil {
+		return false, rerr
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: userID, Action: "token.revoke", Target: "token:" + match[:12], IP: ip, Result: "ok"})
 	return true, nil
 }
 
 func (s *Service) RevokeOwnToken(ctx context.Context, rowid int64, prefix, ip string) error {
-	var hash, storedPrefix string
-	var userID int64
-	err := s.db.QueryRowContext(ctx, `SELECT token_hash, public_prefix, user_id FROM scoped_tokens WHERE rowid = ?`, rowid).Scan(&hash, &storedPrefix, &userID)
+	rec, err := s.store.GetTokenByRowID(ctx, rowid)
 	if err != nil {
 		return ErrTokenInvalid
 	}
-	if prefix != "" && storedPrefix != prefix {
-		if len(prefix) > len(hash) || hash[:len(prefix)] != prefix {
+	if prefix != "" && rec.PublicPrefix != prefix {
+		if len(prefix) > len(rec.Hash) || rec.Hash[:len(prefix)] != prefix {
 			return ErrTokenInvalid
 		}
 	}
 	now := millis(s.clock())
-	_, err = s.db.ExecContext(ctx, `UPDATE scoped_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`, now, hash)
-	if err != nil {
-		return err
+	if rerr := s.store.RevokeTokenByHash(ctx, rec.Hash, now); rerr != nil {
+		return rerr
 	}
-	s.recordAudit(ctx, AuditEvent{Actor: userID, Action: "token.revoke", Target: "token:" + storedPrefix, IP: ip, Result: "ok"})
+	s.recordAudit(ctx, AuditEvent{Actor: rec.UserID, Action: "token.revoke", Target: "token:" + rec.PublicPrefix, IP: ip, Result: "ok"})
 	return nil
 }
 
 func (s *Service) RevokeUserTokens(ctx context.Context, userID int64, reason string) (int64, error) {
 	now := millis(s.clock())
-	res, err := s.db.ExecContext(ctx, `UPDATE scoped_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, userID)
+	n, err := s.store.RevokeUserTokens(ctx, userID, now)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
 	s.recordAudit(ctx, AuditEvent{Actor: userID, Action: reason, Result: "ok"})
 	return n, nil
 }
 
 func (s *Service) TokenRepos(ctx context.Context, hash string) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT repo_id FROM token_repos WHERE token_hash = ?`, hash)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
+	return s.store.ListTokenRepos(ctx, hash)
 }

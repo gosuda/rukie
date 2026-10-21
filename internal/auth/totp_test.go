@@ -159,7 +159,7 @@ func TestTOTPLockoutKillsPending(t *testing.T) {
 	if _, lerr := svc.Login(t.Context(), LoginInput{Username: u.Name, Password: "wrong-password", IP: "127.0.0.1"}); lerr == nil {
 		t.Fatal("fifth bad login accepted")
 	}
-	fresh, _, err := svc.userByName(t.Context(), svc.db, u.LowerName)
+	fresh, _, err := svc.authUserByName(t.Context(), u.LowerName)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestTOTPFailuresFeedLockout(t *testing.T) {
 	if _, verr := svc.VerifyTOTP(t.Context(), VerifyTOTPInput{SessionSecret: pending, Code: "000000", IP: "127.0.0.1"}); verr == nil {
 		t.Fatal("fifth bad code accepted")
 	}
-	fresh, _, err := svc.userByName(t.Context(), svc.db, u.LowerName)
+	fresh, _, err := svc.authUserByName(t.Context(), u.LowerName)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}

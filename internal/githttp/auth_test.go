@@ -3,36 +3,55 @@ package githttp
 import (
 	"database/sql"
 	"testing"
+	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/gosuda/rukie/internal/store"
 )
 
-func openLookupDB(t *testing.T) *sql.DB {
+func openLookupStore(t *testing.T) (*store.Store, int64) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/lookup.sqlite")
+	ctx := t.Context()
+	st, err := store.Open(ctx, store.Options{Path: t.TempDir() + "/lookup.sqlite"})
 	if err != nil {
-		t.Fatalf("open lookup db: %v", err)
+		t.Fatalf("store open: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	stmts := []string{
-		`CREATE TABLE users (id INTEGER PRIMARY KEY, lower_name TEXT NOT NULL)`,
-		`CREATE TABLE repos (id INTEGER PRIMARY KEY, owner_user_id INTEGER NULL, org_id INTEGER NOT NULL DEFAULT 0, visibility TEXT NOT NULL, name TEXT NOT NULL, deleted_at INTEGER NULL)`,
-		`INSERT INTO users (id, lower_name) VALUES (1, 'ada')`,
-		`INSERT INTO repos (id, owner_user_id, org_id, visibility, name, deleted_at) VALUES (11, 1, 0, 'private', 'hello', NULL)`,
-		`INSERT INTO repos (id, owner_user_id, org_id, visibility, name, deleted_at) VALUES (12, 1, 0, 'private', 'gone', 1735689600000)`,
+	t.Cleanup(func() { _ = st.Close(ctx) })
+	ada, err := st.InsertAuthUser(ctx, store.AuthUserCreate{
+		Name: "ada", Lower: "ada", Email: "ada@example.test",
+		Hash: "test-hash", Algo: "argon2id-v19", Now: 1,
+	})
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
 	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("seed lookup db: %v", err)
+	var live int64
+	if werr := st.Write(ctx, func(tx *store.WriteTx) error {
+		liveID, ierr := tx.InsertRepo(time.Unix(1, 0), store.RepoInsert{
+			Name: "hello", Visibility: "private", DefaultBranch: "main",
+			OwnerUserID: sql.NullInt64{Int64: ada.ID, Valid: true},
+		})
+		if ierr != nil {
+			return ierr
 		}
+		live = liveID
+		goneID, ierr := tx.InsertRepo(time.Unix(1, 0), store.RepoInsert{
+			Name: "gone", Visibility: "private", DefaultBranch: "main",
+			OwnerUserID: sql.NullInt64{Int64: ada.ID, Valid: true},
+		})
+		if ierr != nil {
+			return ierr
+		}
+		return tx.SoftDeleteRepo(goneID, time.Unix(2, 0), time.Unix(3, 0))
+	}); werr != nil {
+		t.Fatalf("seed repos: %v", werr)
 	}
-	return db
+	return st, live
 }
 
 func TestLookupRepoHidesSoftDeleted(t *testing.T) {
-	s := &Server{db: openLookupDB(t)}
-	if id, ok := s.lookupRepo(t.Context(), "ada", "hello"); !ok || id != 11 {
-		t.Fatalf("live repo lookup = %d, %v, want 11, true", id, ok)
+	st, live := openLookupStore(t)
+	s := &Server{store: st}
+	if id, ok := s.lookupRepo(t.Context(), "ada", "hello"); !ok || id != live {
+		t.Fatalf("live repo lookup = %d, %v, want %d, true", id, ok, live)
 	}
 	if id, ok := s.lookupRepo(t.Context(), "ada", "gone"); ok || id != 0 {
 		t.Fatalf("soft-deleted repo lookup = %d, %v, want 0, false", id, ok)

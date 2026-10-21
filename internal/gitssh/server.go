@@ -3,7 +3,6 @@ package gitssh
 import (
 	"cmp"
 	"context"
-	"database/sql"
 	"fmt"
 	"net"
 	"sync"
@@ -50,12 +49,11 @@ type Config struct {
 
 // Server speaks git-upload-pack and git-receive-pack over SSH exec.
 type Server struct {
-	db        *sql.DB
 	limiter   *access.Limiter
 	client    *ruk.Client
 	feed      *events.HookSink
 	git       *githttp.Server
-	resolver  *access.SQLResolver
+	resolver  access.Resolver
 	conns     map[net.Conn]struct{}
 	clock     func() time.Time
 	auth      *auth.Service
@@ -142,8 +140,7 @@ func New(cfg Config) (*Server, error) {
 		client:    cfg.Client,
 		feed:      cfg.Feed,
 		git:       git,
-		resolver:  access.NewSQLResolver(cfg.Auth.DB(), nil),
-		db:        cfg.Auth.DB(),
+		resolver:  cfg.Auth.Store().Resolver(),
 		clock:     clock,
 		repoRoot:  cfg.RepoRoot,
 		sock:      cfg.SocketPath,

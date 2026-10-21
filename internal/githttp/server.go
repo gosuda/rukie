@@ -3,7 +3,6 @@ package githttp
 import (
 	"cmp"
 	"context"
-	"database/sql"
 	"errors"
 	"net"
 	"net/http"
@@ -55,8 +54,8 @@ type Server struct {
 	limiter     *access.Limiter
 	client      *ruk.Client
 	feed        *events.HookSink
-	resolver    *access.SQLResolver
-	db          *sql.DB
+	resolver    access.Resolver
+	store       *store.Store
 	clock       func() time.Time
 	barrier     func() (func(), bool)
 	wants       map[string]map[string]string
@@ -151,8 +150,8 @@ func New(cfg Config) (*Server, error) {
 		limiter:     cfg.Limiter,
 		client:      cfg.Client,
 		feed:        cfg.Feed,
-		resolver:    access.NewSQLResolver(cfg.Auth.DB(), access.NewStoreTeams(cfg.Auth.DB(), nil)),
-		db:          cfg.Auth.DB(),
+		resolver:    cfg.Auth.Store().Resolver(),
+		store:       cfg.Auth.Store(),
 		repoRoot:    filepath.Clean(cfg.RepoRoot),
 		socketPath:  cfg.SocketPath,
 		limits:      cfg.Limits,

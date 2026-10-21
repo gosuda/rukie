@@ -6,13 +6,10 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/gosuda/rukie/internal/auth"
 )
 
 type repoFixture struct {
 	store *Store
-	svc   *auth.Service
 	owner int64
 }
 
@@ -24,16 +21,13 @@ func openMigrated(t *testing.T) *repoFixture {
 		t.Fatalf("open migrated: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("open auth: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
-	admin, err := svc.BootstrapAdmin(t.Context(), "owner", "long-test-password-01", "127.0.0.1")
+	admin, err := s.InsertAuthUser(t.Context(), AuthUserCreate{
+		Name: "owner", Lower: "owner", Email: "owner@example.test", Hash: "test-hash", Algo: "argon2id-v19", Now: 1,
+	})
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	return &repoFixture{store: s, svc: svc, owner: admin.ID}
+	return &repoFixture{store: s, owner: admin.ID}
 }
 
 func insertRepo(t *testing.T, s *Store, owner int64, name, visibility string) int64 {
@@ -284,9 +278,9 @@ func TestRepoDuePurgeAndHardDelete(t *testing.T) {
 func TestRepoGrantsAndRedirects(t *testing.T) {
 	fx := openMigrated(t)
 	s := fx.store
-	teammate, err := fx.svc.CreateUser(t.Context(), fx.owner, auth.CreateUserInput{
-		Name: "mate", Email: "mate@example.test", Password: "long-test-password-01",
-	}, "127.0.0.1")
+	teammate, err := fx.store.InsertAuthUser(t.Context(), AuthUserCreate{
+		Name: "mate", Lower: "mate", Email: "mate@example.test", Hash: "test-hash", Algo: "argon2id-v19", Now: 1,
+	})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}

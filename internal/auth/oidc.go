@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/gosuda/rukie/internal/store"
 	"golang.org/x/oauth2"
 )
 
@@ -31,7 +31,6 @@ const (
 
 var oidcVerifierAlphabet = []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
-// OIDCProviderConfig carries one configured OpenID provider.
 type OIDCProviderConfig struct {
 	ID           string
 	Issuer       string
@@ -48,7 +47,6 @@ type oidcRuntime struct {
 	config   OIDCProviderConfig
 }
 
-// StartOIDCLogin mints state, nonce, and PKCE material and returns the provider URL.
 type StartOIDCLoginInput struct {
 	ProviderID string
 	ReturnTo   string
@@ -56,7 +54,6 @@ type StartOIDCLoginInput struct {
 	LinkUserID int64
 }
 
-// OIDCCallbackInput carries the provider redirect back to rukie.
 type OIDCCallbackInput struct {
 	ProviderID    string
 	Code          string
@@ -69,7 +66,6 @@ type OIDCCallbackInput struct {
 	SessionFresh  bool
 }
 
-// OIDCCallbackResult carries the login outcome.
 type OIDCCallbackResult struct {
 	Secret   string
 	ReturnTo string
@@ -90,28 +86,20 @@ var (
 	errOIDCLinkConflict    = errors.New("this identity is linked to a different account")
 )
 
-// ErrTOTPNotEnrolled reports a second-factor attempt with no staged secret.
 var ErrTOTPNotEnrolled = errTOTPNotEnrolled
 
-// ErrOIDCUnknownProvider reports an unconfigured provider id.
 var ErrOIDCUnknownProvider = errOIDCUnknownProvider
 
-// ErrOIDCBadState reports a missing, expired, consumed, or foreign state.
 var ErrOIDCBadState = errOIDCBadState
 
-// ErrOIDCIPBlocked reports an address blocked for state abuse.
 var ErrOIDCIPBlocked = errOIDCIPBlocked
 
-// ErrOIDCBadToken reports a failed code exchange or token verification.
 var ErrOIDCBadToken = errOIDCBadToken
 
-// ErrOIDCEmailLink reports a verified-email collision that needs a manual link.
 var ErrOIDCEmailLink = errOIDCEmailLink
 
-// ErrOIDCSignupDisabled reports a login with signup turned off.
 var ErrOIDCSignupDisabled = errOIDCSignupDisabled
 
-// ErrOIDCLinkConflict reports an identity already linked elsewhere.
 var ErrOIDCLinkConflict = errOIDCLinkConflict
 
 func (s *Service) SetOIDCProviders(ctx context.Context, cfgs []OIDCProviderConfig) error {
@@ -129,11 +117,14 @@ func (s *Service) SetOIDCProviders(ctx context.Context, cfgs []OIDCProviderConfi
 			return err
 		}
 		scopes := append([]string{"openid"}, c.Scopes...)
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO oidc_providers (id, issuer, client_id, scopes, allow_signup)
-			VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET issuer = ?, client_id = ?, scopes = ?, allow_signup = ?`,
-			c.ID, c.Issuer, c.ClientID, strings.Join(scopes, " "), boolToInt(c.AllowSignup),
-			c.Issuer, c.ClientID, strings.Join(scopes, " "), boolToInt(c.AllowSignup)); err != nil {
-			return err
+		if uerr := s.store.UpsertOIDCProvider(ctx, store.OIDCProviderUpsert{
+			ID:          c.ID,
+			Issuer:      c.Issuer,
+			ClientID:    c.ClientID,
+			Scopes:      strings.Join(scopes, " "),
+			AllowSignup: c.AllowSignup,
+		}); uerr != nil {
+			return uerr
 		}
 		runtime[c.ID] = &oidcRuntime{
 			provider: provider,
@@ -160,7 +151,6 @@ func (s *Service) oidcLookup(id string) (*oidcRuntime, bool) {
 	return rt, ok
 }
 
-// StartOIDCLogin stores single-use state and returns the authorization redirect.
 func (s *Service) StartOIDCLogin(ctx context.Context, in StartOIDCLoginInput) (string, string, error) {
 	rt, ok := s.oidcLookup(in.ProviderID)
 	if !ok {
@@ -198,22 +188,20 @@ func (s *Service) StartOIDCLogin(ctx context.Context, in StartOIDCLoginInput) (s
 	if returnTo == "" {
 		returnTo = "/"
 	}
-	err := s.execTx(ctx, func(tx *sql.Tx) error {
-		if _, txErr := tx.ExecContext(ctx, `DELETE FROM oidc_states WHERE expires_at <= ?`, now); txErr != nil {
-			return txErr
-		}
-		var linkArg any
-		if in.LinkUserID != 0 {
-			linkArg = in.LinkUserID
-		}
-		_, txErr := tx.ExecContext(ctx, `INSERT INTO oidc_states
-			(state_sha256, provider_id, nonce, verifier, link_user_id, return_to, browser_sha256, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			hexEncode(sum[:]), in.ProviderID, nonce, string(verifier), linkArg, returnTo, hexEncode(browserSum[:]), now, now+oidcStateTTL.Milliseconds())
-		return txErr
+	serr := s.store.CreateOIDCState(ctx, store.OIDCStateCreate{
+		StateHash:   hexEncode(sum[:]),
+		ProviderID:  in.ProviderID,
+		Nonce:       nonce,
+		Verifier:    string(verifier),
+		ReturnTo:    returnTo,
+		BrowserHash: hexEncode(browserSum[:]),
+		LinkUserID:  in.LinkUserID,
+		HasLink:     in.LinkUserID != 0,
+		Now:         now,
+		ExpiresAt:   now + oidcStateTTL.Milliseconds(),
 	})
-	if err != nil {
-		return "", "", err
+	if serr != nil {
+		return "", "", serr
 	}
 	s.recordAudit(ctx, AuditEvent{Action: "oidc.start", IP: in.IP, Result: "ok"})
 	return rt.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(string(verifier)), oidc.Nonce(nonce)), browser, nil
@@ -248,9 +236,7 @@ func ClearOIDCBrowserCookie() *http.Cookie {
 }
 
 func hexEncode(raw []byte) string {
-	dst := make([]byte, hex.EncodedLen(len(raw)))
-	hex.Encode(dst, raw)
-	return string(dst)
+	return hex.EncodeToString(raw)
 }
 
 type oidcTokenClaims struct {
@@ -261,8 +247,6 @@ type oidcTokenClaims struct {
 	EmailVerified     bool   `json:"email_verified"`
 }
 
-// HandleOIDCCallback consumes single-use state, exchanges the code with PKCE,
-// and logs the linked user in or links the identity to the current session.
 func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) (OIDCCallbackResult, error) {
 	now := millis(s.clock())
 	if blocked, _ := s.oidcIPBlocked(ctx, in.IP, now); blocked {
@@ -273,26 +257,21 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		return OIDCCallbackResult{}, errOIDCUnknownProvider
 	}
 	sum := sha256.Sum256([]byte(in.State))
-	var nonce, verifier, returnTo, browserStored string
-	var linkUserID sql.NullInt64
-	cerr := s.db.QueryRowContext(ctx, `DELETE FROM oidc_states
-		WHERE state_sha256 = ? AND provider_id = ? AND expires_at > ?
-		RETURNING nonce, verifier, link_user_id, return_to, browser_sha256`,
-		hexEncode(sum[:]), in.ProviderID, now).Scan(&nonce, &verifier, &linkUserID, &returnTo, &browserStored)
+	st, cerr := s.store.ConsumeOIDCState(ctx, hexEncode(sum[:]), in.ProviderID, now)
 	if cerr != nil {
 		_ = s.recordOIDCBadState(ctx, in.IP, now)
 		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-state"})
 		return OIDCCallbackResult{}, errOIDCBadState
 	}
 	presented := sha256.Sum256([]byte(in.BrowserSecret))
-	if subtle.ConstantTimeCompare([]byte(hexEncode(presented[:])), []byte(browserStored)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(hexEncode(presented[:])), []byte(st.BrowserHash)) != 1 {
 		_ = s.recordOIDCBadState(ctx, in.IP, now)
 		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-browser"})
 		return OIDCCallbackResult{}, errOIDCBadState
 	}
 	exctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	token, terr := rt.oauth.Exchange(exctx, in.Code, oauth2.VerifierOption(verifier))
+	token, terr := rt.oauth.Exchange(exctx, in.Code, oauth2.VerifierOption(st.Verifier))
 	if terr != nil {
 		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "exchange-failed"})
 		return OIDCCallbackResult{}, errOIDCBadToken
@@ -306,7 +285,7 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-token"})
 		return OIDCCallbackResult{}, errOIDCBadToken
 	}
-	if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(nonce)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(st.Nonce)) != 1 {
 		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-nonce"})
 		return OIDCCallbackResult{}, errOIDCBadToken
 	}
@@ -328,14 +307,14 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		}
 		haveSession = true
 	} else if in.SessionUserID != 0 {
-		current, _, serr = s.userByNameID(ctx, in.SessionUserID)
+		current, _, serr = s.authUserByID(ctx, in.SessionUserID)
 		if serr != nil {
 			return OIDCCallbackResult{}, errInvalidCredentials
 		}
 		haveSession = true
 	}
-	if linkUserID.Valid {
-		if !haveSession || current.ID != linkUserID.Int64 {
+	if st.HasLink {
+		if !haveSession || current.ID != st.LinkUserID {
 			return OIDCCallbackResult{}, errInvalidCredentials
 		}
 		if lerr := s.linkIdentity(ctx, rt.config.Issuer, idToken.Subject, current.ID, now); lerr != nil {
@@ -343,7 +322,7 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		}
 		s.recordAudit(ctx, AuditEvent{Actor: current.ID, Action: "oidc.link",
 			Target: "user:" + current.Name, IP: in.IP, UserAgent: in.UserAgent, Result: "ok"})
-		return OIDCCallbackResult{User: current, Linked: true, ReturnTo: safeReturnTo(returnTo)}, nil
+		return OIDCCallbackResult{User: current, Linked: true, ReturnTo: safeReturnTo(st.ReturnTo)}, nil
 	}
 	linked, err := s.userByOIDCLink(ctx, rt.config.Issuer, idToken.Subject)
 	if err == nil {
@@ -354,7 +333,7 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		if lerr != nil {
 			return OIDCCallbackResult{}, lerr
 		}
-		res.ReturnTo = safeReturnTo(returnTo)
+		res.ReturnTo = safeReturnTo(st.ReturnTo)
 		return res, nil
 	}
 	if haveSession {
@@ -370,10 +349,10 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		}
 		s.recordAudit(ctx, AuditEvent{Actor: current.ID, Action: "oidc.link",
 			Target: "user:" + current.Name, IP: in.IP, UserAgent: in.UserAgent, Result: "ok"})
-		return OIDCCallbackResult{User: current, Linked: true, ReturnTo: safeReturnTo(returnTo)}, nil
+		return OIDCCallbackResult{User: current, Linked: true, ReturnTo: safeReturnTo(st.ReturnTo)}, nil
 	}
 	if claims.EmailVerified && claims.Email != "" {
-		if _, uerr := s.userByEmail(ctx, claims.Email); uerr == nil {
+		if _, _, uerr := s.authUserByEmail(ctx, claims.Email); uerr == nil {
 			return OIDCCallbackResult{}, errOIDCEmailLink
 		}
 	}
@@ -388,7 +367,7 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 	if lerr != nil {
 		return OIDCCallbackResult{}, lerr
 	}
-	res.ReturnTo = safeReturnTo(returnTo)
+	res.ReturnTo = safeReturnTo(st.ReturnTo)
 	return res, nil
 }
 
@@ -416,52 +395,23 @@ func safeReturnTo(target string) string {
 }
 
 func (s *Service) linkIdentity(ctx context.Context, issuer, subject string, userID, now int64) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO oidc_links (issuer, subject, user_id, linked_at)
-		VALUES (?, ?, ?, ?)`, issuer, subject, userID, now)
+	owner, err := s.store.LinkOIDCIdentity(ctx, issuer, subject, userID, now)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			existing, lerr := s.userByOIDCLink(ctx, issuer, subject)
-			if lerr != nil || existing.ID != userID {
-				return errOIDCLinkConflict
-			}
-			return nil
-		}
 		return err
+	}
+	if owner != userID {
+		return errOIDCLinkConflict
 	}
 	return nil
 }
 
 func (s *Service) userByOIDCLink(ctx context.Context, issuer, subject string) (User, error) {
-	var userID int64
-	if err := s.db.QueryRowContext(ctx, `SELECT user_id FROM oidc_links WHERE issuer = ? AND subject = ?`,
-		issuer, subject).Scan(&userID); err != nil {
-		return User{}, err
-	}
-	u, _, err := s.userByNameID(ctx, userID)
-	return u, err
-}
-
-func (s *Service) userByEmail(ctx context.Context, email string) (User, error) {
-	var u User
-	var hash string
-	var mustChange, totp, oidcOnly, admin, active int64
-	var locked sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT `+userColumns+`, password_hash FROM users WHERE email = ? LIMIT 1`,
-		email).Scan(&u.ID, &u.Name, &u.LowerName, &u.Email, &u.FullName,
-		&u.PasswordAlgo, &mustChange, &totp, &oidcOnly, &admin, &active,
-		&u.FailedLoginCount, &locked, &u.PasswordChangedAt, &u.CreatedAt, &u.UpdatedAt, &hash)
+	userID, err := s.store.LookupOIDCLink(ctx, issuer, subject)
 	if err != nil {
 		return User{}, err
 	}
-	u.MustChangePassword = mustChange != 0
-	u.TOTPEnabled = totp != 0
-	u.OIDCOnly = oidcOnly != 0
-	u.IsAdmin = admin != 0
-	u.IsActive = active != 0
-	if locked.Valid {
-		u.LockedUntil = locked.Int64
-	}
-	return u, nil
+	u, _, err := s.authUserByID(ctx, userID)
+	return u, err
 }
 
 func (s *Service) createOIDCUser(ctx context.Context, issuer, subject string, claims oidcTokenClaims, now int64) (User, error) {
@@ -485,31 +435,21 @@ func (s *Service) createOIDCUser(ctx context.Context, issuer, subject string, cl
 	if len(fullName) > 255 {
 		fullName = fullName[:255]
 	}
-	var u User
-	err = s.execTx(ctx, func(tx *sql.Tx) error {
-		res, txErr := tx.ExecContext(ctx, `INSERT INTO users
-			(name, lower_name, email, full_name, password_hash, password_algo, password_changed_at, oidc_only, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, 'argon2id-v19', ?, 1, ?, ?)`,
-			name, strings.ToLower(name), email, fullName, hash, now, now, now)
-		if txErr != nil {
-			return txErr
-		}
-		id, txErr := res.LastInsertId()
-		if txErr != nil {
-			return txErr
-		}
-		if _, txErr := tx.ExecContext(ctx, `INSERT INTO oidc_links (issuer, subject, user_id, linked_at)
-			VALUES (?, ?, ?, ?)`, issuer, subject, id, now); txErr != nil {
-			return txErr
-		}
-		u = User{ID: id, Name: name, LowerName: strings.ToLower(name), Email: email,
-			FullName: fullName, PasswordAlgo: argonAlgo, OIDCOnly: true, IsActive: true,
-			PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now}
-		return nil
+	au, cerr := s.store.CreateOIDCUser(ctx, store.OIDCUserCreate{
+		Name:     name,
+		Lower:    strings.ToLower(name),
+		Email:    email,
+		FullName: fullName,
+		Hash:     hash,
+		Algo:     argonAlgo,
+		Issuer:   issuer,
+		Subject:  subject,
+		Now:      now,
 	})
-	if err != nil {
-		return User{}, err
+	if cerr != nil {
+		return User{}, cerr
 	}
+	u, _ := authUserFromStore(au)
 	s.recordAudit(ctx, AuditEvent{Actor: u.ID, Action: "oidc.callback", Target: "user:" + u.Name, Result: "ok"})
 	return u, nil
 }
@@ -574,13 +514,11 @@ func (s *Service) freeOIDCUsername(ctx context.Context, issuer, subject string, 
 			if ReservedName(name) {
 				continue
 			}
-			var taken int
-			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE lower_name = ?`,
-				strings.ToLower(name)).Scan(&taken); err != nil {
-				return "", err
-			}
-			if taken == 0 {
-				return name, nil
+			if _, uerr := s.store.GetAuthUserByName(ctx, strings.ToLower(name)); uerr != nil {
+				if errors.Is(uerr, store.ErrNotFound) {
+					return name, nil
+				}
+				return "", uerr
 			}
 		}
 	}
@@ -588,47 +526,31 @@ func (s *Service) freeOIDCUsername(ctx context.Context, issuer, subject string, 
 }
 
 func (s *Service) recordOIDCBadState(ctx context.Context, ip string, now int64) error {
-	return s.execTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO login_attempts (username_lower, ip, at, success, reason)
-			VALUES ('-', ?, ?, 0, 'oidc-bad-state')`, ip, now); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM login_attempts
-			WHERE reason = 'oidc-bad-state' AND at < ?`, now-oidcBlockTTL.Milliseconds()); err != nil {
-			return err
-		}
-		var recent int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM login_attempts
-			WHERE ip = ? AND reason = 'oidc-bad-state' AND success = 0 AND at >= ?`,
-			ip, now-oidcBadStateWindow.Milliseconds()).Scan(&recent); err != nil {
-			return err
-		}
-		if recent >= oidcBadStateLimit {
-			_, err := tx.ExecContext(ctx, `INSERT INTO oidc_ip_blocks (ip, blocked_until, created_at)
-				VALUES (?, ?, ?) ON CONFLICT(ip) DO UPDATE SET blocked_until = ?, created_at = ?`,
-				ip, now+oidcBlockTTL.Milliseconds(), now, now+oidcBlockTTL.Milliseconds(), now)
-			return err
-		}
-		return nil
+	return s.store.RecordOIDCBadState(ctx, store.OIDCBadStateRecord{
+		IP:           ip,
+		Now:          now,
+		WindowStart:  now - oidcBadStateWindow.Milliseconds(),
+		PruneBefore:  now - oidcBlockTTL.Milliseconds(),
+		Limit:        oidcBadStateLimit,
+		BlockedUntil: now + oidcBlockTTL.Milliseconds(),
 	})
 }
 
 func (s *Service) oidcIPBlocked(ctx context.Context, ip string, now int64) (bool, error) {
-	var until int64
-	if err := s.db.QueryRowContext(ctx, `SELECT blocked_until FROM oidc_ip_blocks WHERE ip = ?`, ip).Scan(&until); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	until, err := s.store.GetOIDCIPBlock(ctx, ip)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			return false, nil
 		}
 		return false, err
 	}
 	if until <= now {
-		_, _ = s.db.ExecContext(ctx, `DELETE FROM oidc_ip_blocks WHERE ip = ?`, ip)
+		_ = s.store.ClearOIDCIPBlock(ctx, ip)
 		return false, nil
 	}
 	return true, nil
 }
 
-// OIDCProviders lists configured provider ids for settings pages.
 func (s *Service) OIDCProviders() []string {
 	s.oidcMu.Lock()
 	defer s.oidcMu.Unlock()
@@ -639,20 +561,6 @@ func (s *Service) OIDCProviders() []string {
 	return out
 }
 
-// OIDCLinkedProviders lists issuers linked to a user.
 func (s *Service) OIDCLinkedProviders(ctx context.Context, userID int64) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT issuer FROM oidc_links WHERE user_id = ?`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var out []string
-	for rows.Next() {
-		var issuer string
-		if err := rows.Scan(&issuer); err != nil {
-			return nil, err
-		}
-		out = append(out, issuer)
-	}
-	return out, rows.Err()
+	return s.store.ListOIDCIssuers(ctx, userID)
 }

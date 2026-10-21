@@ -184,11 +184,7 @@ func liveStack(t *testing.T, bin string) *liveHarness {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	svc, err := auth.Open(sqlite)
-	if err != nil {
-		t.Fatalf("auth: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
+	svc := auth.New(st)
 	admin, err := svc.BootstrapAdmin(ctx, "ada", "long-test-password-01", "127.0.0.1")
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)

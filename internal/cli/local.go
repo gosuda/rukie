@@ -33,12 +33,7 @@ func dispatchLocal(ctx context.Context, std IO, inv *op.Invocation, configPath s
 		return 1
 	}
 	defer func() { _ = st.Close(ctx) }()
-	svc, err := auth.Open(cfg.Store.SQLite.Path)
-	if err != nil {
-		emit(std.Stderr, "rukie:", err.Error())
-		return 1
-	}
-	defer func() { _ = svc.Close() }()
+	svc := auth.New(st)
 	sealKey, serr := sysops.LoadSecretKey(cfg.SecretKeyFile)
 	if serr != nil {
 		emit(std.Stderr, "rukie:", serr.Error())
@@ -49,7 +44,7 @@ func dispatchLocal(ctx context.Context, std IO, inv *op.Invocation, configPath s
 	if code != 0 {
 		return code
 	}
-	local, err := assemble(api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache()}, auth.NewAuthenticator(svc))
+	local, err := assemble(api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}, auth.NewAuthenticator(svc))
 	if err != nil {
 		emit(std.Stderr, "rukie:", err.Error())
 		return 1

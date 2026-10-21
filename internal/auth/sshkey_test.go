@@ -1,55 +1,30 @@
 package auth
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
-	"database/sql"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gosuda/rukie/internal/store"
 	"golang.org/x/crypto/ssh"
 )
-
-func applyMigrationFiles(t *testing.T, db *sql.DB) {
-	t.Helper()
-	entries, err := os.ReadDir("../store/migrations")
-	if err != nil {
-		t.Fatalf("migrations dir: %v", err)
-	}
-	for _, e := range entries {
-		raw, err := os.ReadFile(filepath.Join("../store/migrations", e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		if _, err := db.Exec(string(raw)); err != nil {
-			t.Fatalf("apply %s: %v", e.Name(), err)
-		}
-	}
-}
 
 func openSSHKeyTestService(t *testing.T) *Service {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "sshkeys.sqlite")
-	raw, openErr := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_journal_mode=WAL&_synchronous=FULL&_foreign_keys=on&_busy_timeout=5000")
-	if openErr != nil {
-		t.Fatalf("sql open: %v", openErr)
-	}
-	applyMigrationFiles(t, raw)
-	if closeErr := raw.Close(); closeErr != nil {
-		t.Fatalf("sql close: %v", closeErr)
-	}
-	svc, err := Open(path)
+	st, err := store.Open(t.Context(), store.Options{Path: path})
 	if err != nil {
-		t.Fatalf("auth open: %v", err)
+		t.Fatalf("store open: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() })
-	return svc
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	return New(st)
 }
 
 func mustUser(t *testing.T, svc *Service, name string, admin bool) User {
@@ -278,7 +253,7 @@ func TestLookupSSHKeyUnknownAndInactive(t *testing.T) {
 	if _, _, lookupErr := svc.LookupSSHKey(t.Context(), "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); lookupErr == nil {
 		t.Fatal("unknown fingerprint resolved")
 	}
-	tag, err := svc.ETagFor(user.ID)
+	tag, err := svc.ETagFor(t.Context(), user.ID)
 	if err != nil {
 		t.Fatalf("etag: %v", err)
 	}
@@ -320,8 +295,7 @@ func TestAuditSSHUnknownKeyRow(t *testing.T) {
 	svc := openSSHKeyTestService(t)
 	fp := "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	svc.AuditSSHUnknownKey(t.Context(), fp, "127.0.0.1")
-	var count int64
-	err := svc.DB().QueryRowContext(t.Context(), `SELECT COUNT(*) FROM audit_events WHERE action = 'ssh.unknown_key' AND target_type = 'ssh_key' AND target_id = ?`, fp).Scan(&count)
+	count, err := svc.store.CountAuditEvents(t.Context(), "ssh.unknown_key", "ssh_key", fp)
 	if err != nil || count != 1 {
 		t.Fatalf("audit rows = %d, %v", count, err)
 	}

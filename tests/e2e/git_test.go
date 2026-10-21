@@ -105,10 +105,7 @@ func newStackSetup(t *testing.T, limits *wire.GitLimits, extraConfig string, htt
 	if err != nil {
 		t.Fatalf("store open: %v", err)
 	}
-	svc, err := auth.Open(sqlite)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
+	svc := auth.New(st)
 	socket := filepath.Join(dir, "ruk.sock")
 	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 5000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n%s",
 		socket, roots, os.Getuid(), adminLine, extraConfig)
@@ -625,11 +622,7 @@ func TestGitAuthorizesBeforeOpeningStream(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	defer func() { _ = st.Close(context.Background()) }()
-	svc, err := auth.Open(sqlite)
-	if err != nil {
-		t.Fatalf("auth: %v", err)
-	}
-	defer func() { _ = svc.Close() }()
+	svc := auth.New(st)
 	admin, err := svc.BootstrapAdmin(ctx, "ada", "long-test-password-01", "127.0.0.1")
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)

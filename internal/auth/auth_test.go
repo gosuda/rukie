@@ -21,12 +21,8 @@ func openTestService(t *testing.T) (*Service, func(time.Time)) {
 	if err != nil {
 		t.Fatalf("store open: %v", err)
 	}
-	svc, err := Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
+	svc := New(st)
 	t.Cleanup(func() {
-		_ = svc.Close()
 		_ = st.Close(context.Background())
 	})
 	current := time.Now()
@@ -171,7 +167,7 @@ func TestPasswordLockout(t *testing.T) {
 		t.Fatal("windowed bad login accepted")
 	}
 	setClock(start)
-	wu, _, _ := svc.userByName(ctx, svc.db, "window")
+	wu, _, _ := svc.authUserByName(ctx, "window")
 	if wu.LockedUntil != 0 {
 		t.Fatalf("aged failures locked: %d", wu.LockedUntil)
 	}
@@ -183,7 +179,7 @@ func TestPasswordLockout(t *testing.T) {
 			t.Fatalf("bad login %d accepted", i+1)
 		}
 	}
-	u, _, err := svc.userByName(ctx, svc.db, "ada")
+	u, _, err := svc.authUserByName(ctx, "ada")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
@@ -203,7 +199,7 @@ func TestPasswordLockout(t *testing.T) {
 	} else if err.Error() != "Invalid username or password." {
 		t.Fatalf("locked error = %q", err.Error())
 	}
-	u2, _, _ := svc.userByName(ctx, svc.db, "ada")
+	u2, _, _ := svc.authUserByName(ctx, "ada")
 	if u2.LockedUntil <= u.LockedUntil {
 		t.Fatalf("lock did not double: %d -> %d", u.LockedUntil, u2.LockedUntil)
 	}
@@ -215,10 +211,10 @@ func TestPasswordLockout(t *testing.T) {
 		t.Fatalf("login after lock expiry: %v", err)
 	}
 	for range 30 {
-		latest, _, _ := svc.userByName(ctx, svc.db, "ada")
+		latest, _, _ := svc.authUserByName(ctx, "ada")
 		svc.applyLockout(ctx, latest, millis(svc.clock()))
 	}
-	u3, _, _ := svc.userByName(ctx, svc.db, "ada")
+	u3, _, _ := svc.authUserByName(ctx, "ada")
 	if u3.LockedUntil-millis(svc.clock()) > 24*60*60*1000 {
 		t.Fatalf("lock exceeds 24h cap: %d", u3.LockedUntil)
 	}
@@ -431,25 +427,19 @@ func TestDeleteSelfRefusesSoleOrgOwner(t *testing.T) {
 	ctx := t.Context()
 	pw := randomPassword(t, 16)
 	u := mustCreate(t, svc, "soleowner", pw, false)
-	now := time.Now().UnixMilli()
-	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO orgs (name, lower_name, created_at, updated_at) VALUES ('acme', 'acme', ?, ?)`, now, now); err != nil {
-		t.Fatalf("org: %v", err)
-	}
 	var orgID int64
-	if err := svc.DB().QueryRowContext(ctx, `SELECT id FROM orgs WHERE lower_name = 'acme'`).Scan(&orgID); err != nil {
-		t.Fatalf("org id: %v", err)
+	serr := svc.store.Write(ctx, func(tx *store.WriteTx) error {
+		org, ierr := tx.InsertOrg(time.Now(), store.OrgInsert{Name: "acme", Visibility: "private"})
+		if ierr != nil {
+			return ierr
+		}
+		orgID = org.ID
+		return tx.AddOwnersMember(orgID, u.ID)
+	})
+	if serr != nil {
+		t.Fatalf("org setup: %v", serr)
 	}
-	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO teams (org_id, name, lower_name, permission, created_at, updated_at) VALUES (?, 'Owners', 'owners', 'admin', ?, ?)`, orgID, now, now); err != nil {
-		t.Fatalf("owners team: %v", err)
-	}
-	var teamID int64
-	if err := svc.DB().QueryRowContext(ctx, `SELECT id FROM teams WHERE org_id = ? AND lower_name = 'owners'`, orgID).Scan(&teamID); err != nil {
-		t.Fatalf("team id: %v", err)
-	}
-	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO team_members (team_id, user_id) VALUES (?, ?)`, teamID, u.ID); err != nil {
-		t.Fatalf("membership: %v", err)
-	}
-	match, err := svc.ETagFor(u.ID)
+	match, err := svc.ETagFor(ctx, u.ID)
 	if err != nil {
 		t.Fatalf("etag: %v", err)
 	}
@@ -457,8 +447,11 @@ func TestDeleteSelfRefusesSoleOrgOwner(t *testing.T) {
 		t.Fatalf("sole owner delete err = %v, want owner refusal", err)
 	}
 	peer := mustCreate(t, svc, "coowner", randomPassword(t, 16), false)
-	if _, err := svc.DB().ExecContext(ctx, `INSERT INTO team_members (team_id, user_id) VALUES (?, ?)`, teamID, peer.ID); err != nil {
-		t.Fatalf("second membership: %v", err)
+	serr = svc.store.Write(ctx, func(tx *store.WriteTx) error {
+		return tx.AddOwnersMember(orgID, peer.ID)
+	})
+	if serr != nil {
+		t.Fatalf("second membership: %v", serr)
 	}
 	if err := svc.DeleteSelf(ctx, u.ID, match, "127.0.0.1"); err != nil {
 		t.Fatalf("non-sole owner delete: %v", err)

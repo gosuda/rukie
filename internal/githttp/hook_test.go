@@ -8,7 +8,7 @@ import (
 
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/ruk/wire"
-	_ "modernc.org/sqlite"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 func TestRecordPushAttemptStashesWant(t *testing.T) {
@@ -34,29 +34,36 @@ func TestRecordPushAttemptStashesWant(t *testing.T) {
 	}
 }
 
-func openJudgeDB(t *testing.T, archived int64) *sql.DB {
+func openJudgeStore(t *testing.T, archived bool) (int64, *store.Store) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/judge.sqlite")
+	ctx := t.Context()
+	st, err := store.Open(ctx, store.Options{Path: t.TempDir() + "/judge.sqlite"})
 	if err != nil {
-		t.Fatalf("open judge db: %v", err)
+		t.Fatalf("store open: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	stmts := []string{
-		`CREATE TABLE users (id INTEGER PRIMARY KEY, is_active INTEGER NOT NULL DEFAULT 1)`,
-		`CREATE TABLE repos (id INTEGER PRIMARY KEY, owner_user_id INTEGER NULL, org_id INTEGER NOT NULL DEFAULT 0, visibility TEXT NOT NULL, name TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NULL)`,
-		`CREATE TABLE repo_grants (repo_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL)`,
-		`CREATE TABLE bookmark_rules (id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL, pattern TEXT NOT NULL, mode TEXT NOT NULL, bypass_admin INTEGER NOT NULL DEFAULT 0, push_allow TEXT NOT NULL DEFAULT '[]', land_allow TEXT NOT NULL DEFAULT '[]', required TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 1)`,
-		`INSERT INTO users (id, is_active) VALUES (1, 1)`,
+	t.Cleanup(func() { _ = st.Close(ctx) })
+	ada, err := st.InsertAuthUser(ctx, store.AuthUserCreate{
+		Name: "ada", Lower: "ada", Email: "ada@example.test",
+		Hash: "test-hash", Algo: "argon2id-v19", Now: 1,
+	})
+	if err != nil {
+		t.Fatalf("insert user: %v", err)
 	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("seed judge db: %v", err)
+	var repoID int64
+	if werr := st.Write(ctx, func(tx *store.WriteTx) error {
+		id, ierr := tx.InsertRepo(time.Unix(1, 0), store.RepoInsert{
+			Name: "hello", Visibility: "private", DefaultBranch: "main",
+			OwnerUserID: sql.NullInt64{Int64: ada.ID, Valid: true},
+		})
+		if ierr != nil {
+			return ierr
 		}
+		repoID = id
+		return tx.UpdateRepo(id, time.Unix(1, 0), store.RepoUpdate{Archived: &archived})
+	}); werr != nil {
+		t.Fatalf("seed judge repo: %v", werr)
 	}
-	if _, err := db.Exec(`INSERT INTO repos (id, owner_user_id, org_id, visibility, name, archived, deleted_at) VALUES (7, 1, 0, 'private', 'hello', ?, NULL)`, archived); err != nil {
-		t.Fatalf("seed judge repo: %v", err)
-	}
-	return db
+	return repoID, st
 }
 
 func judgeCaller() access.Caller {
@@ -73,15 +80,17 @@ func judgeCommand() wire.HookCommand {
 }
 
 func TestJudgeAcceptsLiveRepoPush(t *testing.T) {
-	s := &Server{resolver: access.NewSQLResolver(openJudgeDB(t, 0), nil)}
-	if verdict := s.judge(judgeCaller(), 7, wire.HookPreReceive, judgeCommand()); verdict.Kind != wire.HookAccept {
+	repoID, st := openJudgeStore(t, false)
+	s := &Server{resolver: st.Resolver()}
+	if verdict := s.judge(judgeCaller(), repoID, wire.HookPreReceive, judgeCommand()); verdict.Kind != wire.HookAccept {
 		t.Fatalf("live push verdict = %+v, want accept", verdict)
 	}
 }
 
 func TestJudgeRejectsArchivedRepoPush(t *testing.T) {
-	s := &Server{resolver: access.NewSQLResolver(openJudgeDB(t, 1), nil)}
-	if verdict := s.judge(judgeCaller(), 7, wire.HookPreReceive, judgeCommand()); verdict.Kind == wire.HookAccept {
+	repoID, st := openJudgeStore(t, true)
+	s := &Server{resolver: st.Resolver()}
+	if verdict := s.judge(judgeCaller(), repoID, wire.HookPreReceive, judgeCommand()); verdict.Kind == wire.HookAccept {
 		t.Fatalf("archived push verdict = %+v, want reject", verdict)
 	}
 }

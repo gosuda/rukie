@@ -3,9 +3,6 @@ package store
 import (
 	"testing"
 	"time"
-
-	"github.com/gosuda/rukie/internal/auth"
-	"github.com/gosuda/rukie/internal/op"
 )
 
 func TestStoreAuthBoundary(t *testing.T) {
@@ -16,12 +13,10 @@ func TestStoreAuthBoundary(t *testing.T) {
 		t.Fatalf("store open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close(ctx) })
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
-	admin, err := svc.BootstrapAdmin(ctx, "owner", "long-test-password-01", "127.0.0.1")
+	admin, err := s.InsertAuthUser(ctx, AuthUserCreate{
+		Name: "owner", Lower: "owner", Email: "owner@example.test",
+		Hash: "test-hash", Algo: "argon2id-v19", Now: 1, Admin: true,
+	})
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -39,25 +34,24 @@ func TestStoreAuthBoundary(t *testing.T) {
 	if byID.Name != admin.Name {
 		t.Fatalf("lookup by id name mismatch")
 	}
-	secret, err := svc.CreateToken(ctx, auth.CreateTokenInput{
-		Name:       "t",
-		UserID:     admin.ID,
-		Scopes:     op.Scopes(0).Add(op.ScopeRepoRead).Add(op.ScopeRepoWrite),
-		TTL:        time.Hour,
-		PublicOnly: true,
-		Repos:      []int64{42},
-	})
-	if err != nil {
-		t.Fatalf("create token: %v", err)
+	now := time.Now().UnixMilli()
+	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if cerr := s.CreateToken(ctx, TokenCreate{
+		Hash: hash, Prefix: hash[:12], UserID: admin.ID, Name: "t",
+		Scopes:    "repo:read repo:write",
+		ExpiresAt: now + int64(time.Hour/time.Millisecond), CreatedAt: now,
+		PublicOnly: true, RepoIDs: []int64{42},
+	}); cerr != nil {
+		t.Fatalf("create token: %v", cerr)
 	}
-	repos, err := s.ListTokenRepos(ctx, secret.Token.Hash)
+	repos, err := s.ListTokenRepos(ctx, hash)
 	if err != nil {
 		t.Fatalf("list token repos: %v", err)
 	}
 	if len(repos) != 1 || repos[0] != 42 {
 		t.Fatalf("token repos mismatch: %v", repos)
 	}
-	tok, err := s.LookupScopedTokenByHash(ctx, secret.Token.Hash)
+	tok, err := s.LookupScopedTokenByHash(ctx, hash)
 	if err != nil {
 		t.Fatalf("lookup token by hash: %v", err)
 	}

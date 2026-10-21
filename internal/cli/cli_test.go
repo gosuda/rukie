@@ -40,11 +40,7 @@ func buildCLIServer(t *testing.T) (*op.Server, *auth.Service, string) {
 		t.Fatalf("store open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
+	svc := auth.New(st)
 	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	docs := &api.DocStore{}

@@ -28,11 +28,7 @@ func buildSplitEnv(t *testing.T) *splitEnv {
 	if err != nil {
 		t.Fatalf("store open: %v", err)
 	}
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
+	svc := auth.New(st)
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
@@ -163,11 +159,7 @@ func TestSplitReservedSegmentsCoverMountedLiterals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store open: %v", err)
 	}
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
-	defer func() { _ = svc.Close() }()
+	svc := auth.New(st)
 	defer func() { _ = st.Close(context.Background()) }()
 	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()

@@ -18,32 +18,6 @@ func (s *Store) Resolver() access.Resolver {
 	return &Resolver{s: s}
 }
 
-func (r *Resolver) Repo(id int64) (access.RepoRecord, bool) {
-	var out access.RepoRecord
-	ok := false
-	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
-		inner, lerr := tx.live()
-		if lerr != nil {
-			return lerr
-		}
-		var vis string
-		var owner sql.NullInt64
-		serr := inner.QueryRowContext(tx.ctx,
-			`SELECT id, owner_user_id, org_id, visibility FROM repos WHERE id = ?`, id).Scan(
-			&out.ID, &owner, &out.OrgID, &vis)
-		if serr != nil {
-			return nil
-		}
-		if owner.Valid {
-			out.OwnerUserID = owner.Int64
-		}
-		out.Visibility = access.Visibility(vis)
-		ok = true
-		return nil
-	})
-	return out, ok
-}
-
 func (r *Resolver) DirectRole(repoID, userID int64) (access.Role, bool) {
 	var role access.Role
 	found := false
@@ -101,6 +75,33 @@ AND (t.repo_scope = 'all' OR EXISTS
 		return nil
 	})
 	return best, found
+}
+func (r *Resolver) Repo(id int64) (access.RepoRecord, bool) {
+	var out access.RepoRecord
+	ok := false
+	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
+		inner, lerr := tx.live()
+		if lerr != nil {
+			return lerr
+		}
+		var vis string
+		var owner sql.NullInt64
+		var archived int64
+		serr := inner.QueryRowContext(tx.ctx,
+			`SELECT id, owner_user_id, org_id, visibility, archived FROM repos WHERE id = ? AND deleted_at IS NULL`, id).Scan(
+			&out.ID, &owner, &out.OrgID, &vis, &archived)
+		if serr != nil {
+			return nil
+		}
+		if owner.Valid {
+			out.OwnerUserID = owner.Int64
+		}
+		out.Archived = archived != 0
+		out.Visibility = access.Visibility(vis)
+		ok = true
+		return nil
+	})
+	return out, ok
 }
 
 type accessAllowJSON struct {

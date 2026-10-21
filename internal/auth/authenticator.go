@@ -21,14 +21,14 @@ func (a Authenticator) Bearer(ctx context.Context, secret string) (op.Principal,
 	if err != nil {
 		return op.Principal{}, err
 	}
-	var rowid int64
-	if err := a.svc.db.QueryRowContext(ctx, `SELECT rowid FROM scoped_tokens WHERE token_hash = ?`, tok.Hash).Scan(&rowid); err != nil || rowid <= 0 {
+	rec, rerr := a.svc.store.GetTokenByHash(ctx, tok.Hash)
+	if rerr != nil || rec.RowID <= 0 {
 		return op.Principal{}, ErrTokenInvalid
 	}
 	return op.Principal{
 		UserID:  u.ID,
 		Kind:    op.PrincipalHuman,
-		TokenID: rowid,
+		TokenID: rec.RowID,
 		Grants:  tok.Scopes,
 	}, nil
 }

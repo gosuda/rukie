@@ -17,11 +17,7 @@ func TestRestrictedSessionCannotReadPrivate(t *testing.T) {
 		t.Fatalf("store open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(ctx) })
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
+	svc := auth.New(st)
 	admin, err := svc.BootstrapAdmin(ctx, "owner", "long-test-password-01", "127.0.0.1")
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)

@@ -111,14 +111,7 @@ func runBootstrap(argv []string) int {
 	defer func() {
 		_ = st.Close(ctx)
 	}()
-	svc, err := auth.Open(cfg.Store.SQLite.Path)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
-		return 1
-	}
-	defer func() {
-		_ = svc.Close()
-	}()
+	svc := auth.New(st)
 	u, err := svc.BootstrapAdmin(ctx, *username, password, "")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bootstrap:", err.Error())
@@ -606,11 +599,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
-	authSvc, err := auth.Open(cfg.Store.SQLite.Path)
-	if err != nil {
-		cleanup()
-		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
-	}
+	authSvc := auth.New(st)
 	key, kerr := sysops.LoadSecretKey(cfg.SecretKeyFile)
 	if kerr != nil {
 		cleanup()
@@ -637,11 +626,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		}
 	}
 	cleanup = func() {
-		_ = authSvc.Close()
 		_ = st.Close(context.Background())
 	}
 	limiter := access.NewLimiter()
-	authDeps := api.Deps{Service: authSvc, Limiter: limiter, Reveals: auth.NewRevealCache()}
+	authDeps := api.Deps{Service: authSvc, Limiter: limiter, Reveals: auth.NewRevealCache(), Store: st}
 	if regErr := api.RegisterAuth(table, authDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)

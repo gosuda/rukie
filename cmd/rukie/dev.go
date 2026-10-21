@@ -212,27 +212,20 @@ func seedDevData(ctx context.Context, dir string) (int64, string, string, error)
 	if err != nil {
 		return 0, "", "", fmt.Errorf("seedDevData: %w", err)
 	}
-	svc, err := auth.Open(dbPath)
-	if err != nil {
-		_ = st.Close(context.Background())
-		return 0, "", "", fmt.Errorf("seedDevData: %w", err)
-	}
+	svc := auth.New(st)
 	userID, password, token, seedErr := seedDevUser(ctx, svc)
 	if seedErr != nil {
-		_ = svc.Close()
 		_ = st.Close(context.Background())
 		return 0, "", "", seedErr
 	}
 	skipped, herr := seedDevHello(ctx, dir, st, userID)
 	if herr != nil {
-		_ = svc.Close()
 		_ = st.Close(context.Background())
 		return 0, "", "", herr
 	}
 	if skipped {
 		_, _ = fmt.Fprintln(os.Stderr, "dev: hello repo skipped: ruk binary is not available")
 	}
-	_ = svc.Close()
 	_ = st.Close(context.Background())
 	for _, extra := range devSeedExtras {
 		if err := extra(ctx, dir); err != nil {

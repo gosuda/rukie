@@ -11,6 +11,7 @@ import (
 
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/cli"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 func devTestIO() (cli.IO, *bytes.Buffer, *bytes.Buffer) {
@@ -85,13 +86,14 @@ func TestDevSeedPrintsCredentials(t *testing.T) {
 	if first == second {
 		t.Fatal("reseed must rotate the printed token")
 	}
-	svc, err := auth.Open(filepath.Join(dir, "meta.sqlite"))
+	st, err := store.Open(ctx, store.Options{Path: filepath.Join(dir, "meta.sqlite")})
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("store open: %v", err)
 	}
 	defer func() {
-		_ = svc.Close()
+		_ = st.Close(context.Background())
 	}()
+	svc := auth.New(st)
 	if _, err := svc.GetUser(ctx, "dev"); err != nil {
 		t.Fatalf("dev user missing after two seeds: %v", err)
 	}

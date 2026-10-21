@@ -538,6 +538,25 @@ func (s *Store) RecordAudit(ctx context.Context, r AuditRecord) error {
 	})
 }
 
+func (s *Store) CountAuditEvents(ctx context.Context, action, targetType, targetID string) (int64, error) {
+	var n int64
+	err := s.Read(ctx, func(tx *ReadTx) error {
+		inner, lerr := tx.live()
+		if lerr != nil {
+			return lerr
+		}
+		if serr := inner.QueryRowContext(tx.ctx, `SELECT COUNT(*) FROM audit_events
+			WHERE action = ? AND target_type = ? AND target_id = ?`, action, targetType, targetID).Scan(&n); serr != nil {
+			return fmt.Errorf("CountAuditEvents: %w", serr)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 func (s *Store) RecordLoginAttempt(ctx context.Context, lower, ip string, at int64, success bool, reason string) error {
 	flag := 0
 	if success {

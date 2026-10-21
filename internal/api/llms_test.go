@@ -32,12 +32,8 @@ func buildLLMSEnv(t *testing.T) *llmsEnv {
 		t.Fatalf("store open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(t.Context()) })
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
-	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache()}
+	svc := auth.New(st)
+	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	docs := &api.DocStore{}
 	for _, step := range []func() error{

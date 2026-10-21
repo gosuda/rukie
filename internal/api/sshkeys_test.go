@@ -4,12 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"database/sql"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +17,7 @@ import (
 	"github.com/gosuda/rukie/internal/api"
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/op"
+	"github.com/gosuda/rukie/internal/store"
 	"github.com/gosuda/rukie/internal/web/zerojs"
 
 	"golang.org/x/crypto/ssh"
@@ -27,32 +26,13 @@ import (
 func openKeysTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "keys.sqlite")
-	raw, openErr := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_journal_mode=WAL&_synchronous=FULL&_foreign_keys=on&_busy_timeout=5000")
+	st, openErr := store.Open(t.Context(), store.Options{Path: path})
 	if openErr != nil {
-		t.Fatalf("sql open: %v", openErr)
+		t.Fatalf("store open: %v", openErr)
 	}
-	entries, dirErr := os.ReadDir("../store/migrations")
-	if dirErr != nil {
-		t.Fatalf("migrations dir: %v", dirErr)
-	}
-	for _, e := range entries {
-		body, readErr := os.ReadFile(filepath.Join("../store/migrations", e.Name()))
-		if readErr != nil {
-			t.Fatalf("read %s: %v", e.Name(), readErr)
-		}
-		if _, execErr := raw.Exec(string(body)); execErr != nil {
-			t.Fatalf("apply %s: %v", e.Name(), execErr)
-		}
-	}
-	if closeErr := raw.Close(); closeErr != nil {
-		t.Fatalf("sql close: %v", closeErr)
-	}
-	svc, svcErr := auth.Open(path)
-	if svcErr != nil {
-		t.Fatalf("auth open: %v", svcErr)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
-	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache()}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	svc := auth.New(st)
+	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	if regErr := api.RegisterAuth(table, deps); regErr != nil {
 		t.Fatalf("register auth: %v", regErr)
@@ -252,7 +232,7 @@ func TestOwnerKeysPlain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ada: %v", err)
 	}
-	tag, err := e.svc.ETagFor(user.ID)
+	tag, err := e.svc.ETagFor(t.Context(), user.ID)
 	if err != nil {
 		t.Fatalf("etag: %v", err)
 	}

@@ -47,15 +47,11 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	if serr != nil {
 		t.Fatalf("store open: %v", serr)
 	}
-	svc, aerr := auth.Open(path)
-	if aerr != nil {
-		t.Fatalf("auth open: %v", aerr)
-	}
+	svc := auth.New(st)
 	t.Cleanup(func() {
-		_ = svc.Close()
 		_ = st.Close(context.Background())
 	})
-	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache()}
+	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	docs := &api.DocStore{}
 	if err := api.RegisterAll(table, docs); err != nil {

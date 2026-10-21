@@ -74,7 +74,7 @@ func RegisterUser(t *op.Table, deps Deps) error {
 			if err != nil {
 				return SettingsPageOut{}, mapAuthError(err)
 			}
-			tag, err := deps.Service.ETagFor(userID)
+			tag, err := deps.Service.ETagFor(ctx, userID)
 			if err != nil {
 				return SettingsPageOut{}, mapAuthError(err)
 			}

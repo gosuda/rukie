@@ -274,11 +274,7 @@ func TestCLILocalAdminMode(t *testing.T) {
 		t.Fatalf("store open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	svc, err := auth.Open(dbPath)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
+	svc := auth.New(st)
 	if _, berr := svc.BootstrapAdmin(ctx, "localadmin", testPassword(t), "127.0.0.1"); berr != nil {
 		t.Fatalf("bootstrap: %v", berr)
 	}

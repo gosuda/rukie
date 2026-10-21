@@ -70,11 +70,7 @@ func buildConfEnv(t *testing.T) *confEnv {
 		t.Fatalf("store open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
-	svc, err := auth.Open(path)
-	if err != nil {
-		t.Fatalf("auth open: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Close() })
+	svc := auth.New(st)
 	user, err := svc.BootstrapAdmin(ctx, "mcptester", "K8-summit-trail-42x", "127.0.0.1")
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)

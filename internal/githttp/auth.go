@@ -9,6 +9,7 @@ import (
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/op"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 type identity struct {
@@ -122,14 +123,20 @@ func (s *Server) checkEntryRate(w http.ResponseWriter, r *http.Request, id ident
 }
 
 func (s *Server) lookupRepo(ctx context.Context, owner, repo string) (int64, bool) {
-	var userID int64
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE lower_name = ?`, strings.ToLower(owner)).Scan(&userID)
-	if err != nil {
+	meta, merr := s.store.LookupUserByName(ctx, strings.ToLower(owner))
+	if merr != nil {
 		return 0, false
 	}
 	var repoID int64
-	err = s.db.QueryRowContext(ctx, `SELECT id FROM repos WHERE owner_user_id = ? AND org_id = 0 AND name = ? AND deleted_at IS NULL`, userID, repo).Scan(&repoID)
-	if err != nil {
+	rerr := s.store.Read(ctx, func(tx *store.ReadTx) error {
+		row, ferr := tx.FindRepo(meta.ID, 0, repo)
+		if ferr != nil {
+			return ferr
+		}
+		repoID = row.ID
+		return nil
+	})
+	if rerr != nil {
 		return 0, false
 	}
 	return repoID, true

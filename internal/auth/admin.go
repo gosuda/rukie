@@ -3,12 +3,12 @@ package auth
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"errors"
 	"regexp"
 	"strings"
 
 	"github.com/gosuda/rukie/internal/reserved"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,38}$`)
@@ -50,35 +50,24 @@ func (s *Service) CreateUser(ctx context.Context, actor int64, in CreateUserInpu
 		return User{}, err
 	}
 	now := millis(s.clock())
-	admin := 0
-	if in.IsAdmin {
-		admin = 1
-	}
-	var u User
-	err = s.execTx(ctx, func(tx *sql.Tx) error {
-		res, txErr := tx.ExecContext(ctx, `INSERT INTO users
-			(name, lower_name, email, full_name, password_hash, password_algo, password_changed_at, is_admin, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, 'argon2id-v19', ?, ?, ?, ?)`,
-			in.Name, strings.ToLower(in.Name), in.Email, in.FullName, hash, now, admin, now, now)
-		if txErr != nil {
-			return txErr
-		}
-		id, txErr := res.LastInsertId()
-		if txErr != nil {
-			return txErr
-		}
-		u = User{ID: id, Name: in.Name, LowerName: strings.ToLower(in.Name), Email: in.Email,
-			FullName: in.FullName, PasswordAlgo: argonAlgo, IsAdmin: in.IsAdmin, IsActive: true,
-			PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now}
-		return nil
+	au, ierr := s.store.InsertAuthUser(ctx, store.AuthUserCreate{
+		Name:     in.Name,
+		Lower:    strings.ToLower(in.Name),
+		Email:    in.Email,
+		FullName: in.FullName,
+		Hash:     hash,
+		Algo:     argonAlgo,
+		Now:      now,
+		Admin:    in.IsAdmin,
 	})
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
+	if ierr != nil {
+		if errors.Is(ierr, store.ErrConflict) {
 			return User{}, errors.New("username is taken")
 		}
-		return User{}, err
+		return User{}, ierr
 	}
-	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.user_create", Target: "user:" + u.Name, IP: ip, Result: "ok"})
+	u, _ := authUserFromStore(au)
+	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.user_create", Target: "user:" + in.Name, IP: ip, Result: "ok"})
 	return u, nil
 }
 
@@ -102,34 +91,24 @@ func (s *Service) CreateUserRandom(ctx context.Context, actor int64, in CreateUs
 		return User{}, "", err
 	}
 	now := millis(s.clock())
-	admin := 0
-	if in.IsAdmin {
-		admin = 1
-	}
-	var u User
-	err = s.execTx(ctx, func(tx *sql.Tx) error {
-		res, txErr := tx.ExecContext(ctx, `INSERT INTO users
-			(name, lower_name, email, full_name, password_hash, password_algo, password_changed_at, must_change_password, is_admin, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, 'argon2id-v19', ?, 1, ?, ?, ?)`,
-			in.Name, strings.ToLower(in.Name), in.Email, in.FullName, hash, now, admin, now, now)
-		if txErr != nil {
-			return txErr
-		}
-		id, txErr := res.LastInsertId()
-		if txErr != nil {
-			return txErr
-		}
-		u = User{ID: id, Name: in.Name, LowerName: strings.ToLower(in.Name), Email: in.Email,
-			FullName: in.FullName, PasswordAlgo: argonAlgo, IsActive: true, MustChangePassword: true, IsAdmin: in.IsAdmin,
-			PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now}
-		return nil
+	au, ierr := s.store.InsertAuthUser(ctx, store.AuthUserCreate{
+		Name:       in.Name,
+		Lower:      strings.ToLower(in.Name),
+		Email:      in.Email,
+		FullName:   in.FullName,
+		Hash:       hash,
+		Algo:       argonAlgo,
+		Now:        now,
+		MustChange: true,
+		Admin:      in.IsAdmin,
 	})
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
+	if ierr != nil {
+		if errors.Is(ierr, store.ErrConflict) {
 			return User{}, "", errors.New("username is taken")
 		}
-		return User{}, "", err
+		return User{}, "", ierr
 	}
+	u, _ := authUserFromStore(au)
 	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.user_create", Target: "user:" + in.Name, IP: ip, Result: "ok"})
 	return u, temp, nil
 }
@@ -146,41 +125,17 @@ func (s *Service) BootstrapAdmin(ctx context.Context, name, password, ip string)
 		return User{}, err
 	}
 	now := millis(s.clock())
-	var u User
-	err = s.execTx(ctx, func(tx *sql.Tx) error {
-		res, txErr := tx.ExecContext(ctx, `INSERT INTO users
-			(name, lower_name, email, full_name, password_hash, password_algo, password_changed_at, is_admin, created_at, updated_at)
-			SELECT ?, ?, '', '', ?, 'argon2id-v19', ?, 1, ?, ?
-			WHERE NOT EXISTS (SELECT 1 FROM users WHERE is_admin != 0)`,
-			name, strings.ToLower(name), hash, now, now, now)
-		if txErr != nil {
-			return txErr
-		}
-		affected, txErr := res.RowsAffected()
-		if txErr != nil {
-			return txErr
-		}
-		if affected == 0 {
-			var dup int64
-			if qerr := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE lower_name = ?`, strings.ToLower(name)).Scan(&dup); qerr == nil {
-				return errors.New("username is taken")
-			}
-			return errors.New("an admin already exists")
-		}
-		id, txErr := res.LastInsertId()
-		if txErr != nil {
-			return txErr
-		}
-		u = User{ID: id, Name: name, LowerName: strings.ToLower(name), PasswordAlgo: argonAlgo,
-			IsAdmin: true, IsActive: true, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now}
-		return nil
-	})
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
+	au, berr := s.store.BootstrapAuthAdmin(ctx, name, strings.ToLower(name), hash, argonAlgo, now)
+	if berr != nil {
+		if errors.Is(berr, store.ErrConflict) {
 			return User{}, errors.New("username is taken")
 		}
-		return User{}, err
+		if errors.Is(berr, store.ErrAdminExists) {
+			return User{}, errors.New("an admin already exists")
+		}
+		return User{}, berr
 	}
+	u, _ := authUserFromStore(au)
 	s.recordAudit(ctx, AuditEvent{Action: "admin.user_create", Target: "user:" + name, IP: ip, Result: "ok"})
 	return u, nil
 }
@@ -193,7 +148,7 @@ type ResetPasswordInput struct {
 }
 
 func (s *Service) ResetPassword(ctx context.Context, actor int64, in ResetPasswordInput, ip string) (string, error) {
-	u, _, err := s.userByName(ctx, s.db, strings.ToLower(in.Target))
+	u, _, err := s.authUserByName(ctx, strings.ToLower(in.Target))
 	if err != nil {
 		return "", errors.New("unknown user")
 	}
@@ -209,25 +164,14 @@ func (s *Service) ResetPassword(ctx context.Context, actor int64, in ResetPasswo
 		return "", err
 	}
 	now := millis(s.clock())
-	err = s.execTx(ctx, func(tx *sql.Tx) error {
-		if _, txErr := tx.ExecContext(ctx, `UPDATE users SET password_hash = ?, password_changed_at = ?,
-			must_change_password = ?, failed_login_count = 0, locked_until = NULL, updated_at = ? WHERE id = ?`,
-			hash, now, boolToInt(in.Random), now, u.ID); txErr != nil {
-			return txErr
-		}
-		if _, txErr := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, u.ID); txErr != nil {
-			return txErr
-		}
-		if in.RevokeTokens {
-			_, txErr := tx.ExecContext(ctx, `UPDATE scoped_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, u.ID)
-			if txErr != nil {
-				return txErr
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
+	var rerr error
+	if in.RevokeTokens {
+		rerr = s.store.ApplyPasswordResetRevokingTokens(ctx, u.ID, hash, boolToInt(in.Random) == 1, now)
+	} else {
+		rerr = s.store.ApplyPasswordReset(ctx, u.ID, hash, boolToInt(in.Random) == 1, now)
+	}
+	if rerr != nil {
+		return "", rerr
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.password_reset", Target: "user:" + u.Name, IP: ip, Result: "ok"})
 	if in.RevokeTokens {
@@ -247,7 +191,7 @@ func boolToInt(b bool) int {
 }
 
 func randomTempPassword() string {
-	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	out := make([]byte, 20)
 	var raw [20]byte
 	_, _ = rand.Read(raw[:])
@@ -257,24 +201,22 @@ func randomTempPassword() string {
 	return string(out)
 }
 
-func (s *Service) UnlockUser(ctx context.Context, actor int64, target, ip string) error {
-	u, _, err := s.userByName(ctx, s.db, strings.ToLower(target))
+func (s *Service) UnlockUser(ctx context.Context, actor int64, target string, ip string) error {
+	u, _, err := s.authUserByName(ctx, strings.ToLower(target))
 	if err != nil {
 		return errors.New("unknown user")
 	}
 	now := millis(s.clock())
-	_, err = s.db.ExecContext(ctx, `UPDATE users SET failed_login_count = 0, locked_until = NULL, updated_at = ? WHERE id = ?`, now, u.ID)
-	if err != nil {
-		return err
+	if cerr := s.store.ClearAuthLockout(ctx, u.ID, now); cerr != nil {
+		return cerr
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.unlock", Target: "user:" + u.Name, IP: ip, Result: "ok"})
 	return nil
 }
 
 func (s *Service) CountActiveAdmins(ctx context.Context) int {
-	var n int
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_admin != 0 AND is_active != 0`).Scan(&n)
-	return n
+	n, _ := s.store.CountActiveAuthAdmins(ctx)
+	return int(n)
 }
 
 type UpdateUserInput struct {
@@ -286,7 +228,7 @@ type UpdateUserInput struct {
 }
 
 func (s *Service) UpdateUser(ctx context.Context, actor int64, in UpdateUserInput, ip string) (User, error) {
-	u, _, err := s.userByName(ctx, s.db, strings.ToLower(in.Target))
+	u, _, err := s.authUserByName(ctx, strings.ToLower(in.Target))
 	if err != nil {
 		return User{}, errors.New("unknown user")
 	}
@@ -296,10 +238,8 @@ func (s *Service) UpdateUser(ctx context.Context, actor int64, in UpdateUserInpu
 	if !etagMatch(in.IfMatch, quoteETag(u.ID, u.UpdatedAt)) {
 		return User{}, errStale
 	}
-	if in.IsActive != nil && !*in.IsActive && u.IsAdmin && u.IsActive {
-		if s.CountActiveAdmins(ctx) <= 1 {
-			return User{}, errors.New("cannot deactivate the last active admin")
-		}
+	if u.IsAdmin && u.IsActive && in.IsActive != nil && !*in.IsActive && s.CountActiveAdmins(ctx) <= 1 {
+		return User{}, errors.New("cannot deactivate the last active admin")
 	}
 	now := millis(s.clock())
 	fullName := u.FullName
@@ -320,10 +260,8 @@ func (s *Service) UpdateUser(ctx context.Context, actor int64, in UpdateUserInpu
 	if in.IsActive != nil {
 		active = *in.IsActive
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE users SET full_name = ?, email = ?, is_active = ?, updated_at = ? WHERE id = ?`,
-		fullName, email, boolToInt(active), now, u.ID)
-	if err != nil {
-		return User{}, err
+	if uerr := s.store.UpdateAuthUserAdmin(ctx, u.ID, fullName, email, active, now); uerr != nil {
+		return User{}, uerr
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: actor, Action: "admin.user_update", Target: "user:" + u.Name, IP: ip, Result: "ok"})
 	u.FullName = fullName
@@ -337,33 +275,14 @@ func (s *Service) ListUsers(ctx context.Context, after string, limit int) ([]Use
 	if limit <= 0 || limit > 100 {
 		limit = 25
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+userColumns+` FROM users WHERE name > ? ORDER BY name LIMIT ?`, after, limit+1)
+	recs, err := s.store.ListAuthUsers(ctx, after, limit+1)
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _ = rows.Close() }()
 	var out []User
-	for rows.Next() {
-		var u User
-		var mustChange, totp, oidc, admin, active int64
-		var locked sql.NullInt64
-		if err := rows.Scan(&u.ID, &u.Name, &u.LowerName, &u.Email, &u.FullName,
-			&u.PasswordAlgo, &mustChange, &totp, &oidc, &admin, &active,
-			&u.FailedLoginCount, &locked, &u.PasswordChangedAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			return nil, "", err
-		}
-		u.MustChangePassword = mustChange != 0
-		u.TOTPEnabled = totp != 0
-		u.OIDCOnly = oidc != 0
-		u.IsAdmin = admin != 0
-		u.IsActive = active != 0
-		if locked.Valid {
-			u.LockedUntil = locked.Int64
-		}
+	for _, rec := range recs {
+		u, _ := authUserFromStore(rec)
 		out = append(out, u)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
 	}
 	next := ""
 	if len(out) > limit {
@@ -374,7 +293,7 @@ func (s *Service) ListUsers(ctx context.Context, after string, limit int) ([]Use
 }
 
 func (s *Service) GetUser(ctx context.Context, name string) (User, error) {
-	u, _, err := s.userByName(ctx, s.db, strings.ToLower(name))
+	u, _, err := s.authUserByName(ctx, strings.ToLower(name))
 	if err != nil {
 		return User{}, errors.New("unknown user")
 	}
@@ -382,15 +301,11 @@ func (s *Service) GetUser(ctx context.Context, name string) (User, error) {
 }
 
 func (s *Service) GetUserByID(ctx context.Context, userID int64) (User, error) {
-	u, _, err := s.userByNameID(ctx, userID)
+	u, _, err := s.authUserByID(ctx, userID)
 	if err != nil {
 		return User{}, errors.New("unknown user")
 	}
 	return u, nil
-}
-
-func (s *Service) DB() *sql.DB {
-	return s.db
 }
 
 type UpdateSelfInput struct {
@@ -400,14 +315,14 @@ type UpdateSelfInput struct {
 }
 
 func (s *Service) UpdateSelf(ctx context.Context, userID int64, in UpdateSelfInput) (User, error) {
-	u, _, err := s.userByNameID(ctx, userID)
+	u, _, err := s.authUserByID(ctx, userID)
 	if err != nil {
 		return User{}, err
 	}
 	if in.IfMatch == "" {
 		return User{}, errors.New("if-match is required")
 	}
-	if !etagMatch(in.IfMatch, quoteETag(userID, u.UpdatedAt)) {
+	if !etagMatch(in.IfMatch, quoteETag(u.ID, u.UpdatedAt)) {
 		return User{}, errStale
 	}
 	fullName := u.FullName
@@ -425,10 +340,8 @@ func (s *Service) UpdateSelf(ctx context.Context, userID int64, in UpdateSelfInp
 		email = *in.Email
 	}
 	now := millis(s.clock())
-	_, err = s.db.ExecContext(ctx, `UPDATE users SET full_name = ?, email = ?, updated_at = ? WHERE id = ?`,
-		fullName, email, now, userID)
-	if err != nil {
-		return User{}, err
+	if uerr := s.store.UpdateAuthUserSelf(ctx, userID, fullName, email, now); uerr != nil {
+		return User{}, uerr
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: userID, Action: "user.self_update", Target: "user:" + u.Name, Result: "ok"})
 	u.FullName = fullName
@@ -438,35 +351,24 @@ func (s *Service) UpdateSelf(ctx context.Context, userID int64, in UpdateSelfInp
 }
 
 func (s *Service) DeleteSelf(ctx context.Context, userID int64, ifMatch, ip string) error {
-	u, _, err := s.userByNameID(ctx, userID)
+	u, _, err := s.authUserByID(ctx, userID)
 	if err != nil {
 		return err
 	}
 	if ifMatch == "" {
 		return errors.New("if-match is required")
 	}
-	if !etagMatch(ifMatch, quoteETag(userID, u.UpdatedAt)) {
+	if !etagMatch(ifMatch, quoteETag(u.ID, u.UpdatedAt)) {
 		return errStale
 	}
 	if u.IsAdmin && u.IsActive && s.CountActiveAdmins(ctx) <= 1 {
 		return errors.New("cannot delete the last active admin")
 	}
-	err = s.execTx(ctx, func(tx *sql.Tx) error {
-		var sole int64
-		if qerr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_members m
-			JOIN teams t ON t.id = m.team_id
-			WHERE t.lower_name = 'owners' AND m.user_id = ?
-			AND (SELECT COUNT(*) FROM team_members m2 WHERE m2.team_id = m.team_id) <= 1`, userID).Scan(&sole); qerr != nil {
-			return qerr
-		}
-		if sole > 0 {
+	if derr := s.store.DeleteAuthUser(ctx, userID); derr != nil {
+		if errors.Is(derr, store.ErrSoleOwner) {
 			return errors.New("cannot delete the last org owner")
 		}
-		_, derr := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
 		return derr
-	})
-	if err != nil {
-		return err
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: userID, Action: "user.self_delete", Target: "user:" + u.Name, IP: ip, Result: "ok"})
 	return nil
