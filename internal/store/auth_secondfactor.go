@@ -166,6 +166,9 @@ func (s *Store) PromoteTOTPSecret(ctx context.Context, userID int64, counter, no
 			now, userID); uerr != nil {
 			return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(uerr))
 		}
+		if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM user_recovery_codes WHERE user_id = ?`, userID); derr != nil {
+			return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(derr))
+		}
 		if cerr := s.insertRecoveryCodes(tx.ctx, inner, userID, now, digests); cerr != nil {
 			return fmt.Errorf("PromoteTOTPSecret: %w", cerr)
 		}
