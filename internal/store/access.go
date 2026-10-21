@@ -10,15 +10,15 @@ import (
 	"github.com/gosuda/rukie/internal/access"
 )
 
-type StoreResolver struct {
+type Resolver struct {
 	s *Store
 }
 
 func (s *Store) Resolver() access.Resolver {
-	return &StoreResolver{s: s}
+	return &Resolver{s: s}
 }
 
-func (r *StoreResolver) Repo(id int64) (access.RepoRecord, bool) {
+func (r *Resolver) Repo(id int64) (access.RepoRecord, bool) {
 	var out access.RepoRecord
 	ok := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
@@ -44,7 +44,7 @@ func (r *StoreResolver) Repo(id int64) (access.RepoRecord, bool) {
 	return out, ok
 }
 
-func (r *StoreResolver) DirectRole(repoID, userID int64) (access.Role, bool) {
+func (r *Resolver) DirectRole(repoID, userID int64) (access.Role, bool) {
 	var role access.Role
 	found := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
@@ -67,7 +67,7 @@ func (r *StoreResolver) DirectRole(repoID, userID int64) (access.Role, bool) {
 	return role, found
 }
 
-func (r *StoreResolver) TeamRole(repoID, userID int64) (access.Role, bool) {
+func (r *Resolver) TeamRole(repoID, userID int64) (access.Role, bool) {
 	var best access.Role
 	found := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
@@ -157,7 +157,7 @@ func parseAccessRequiredList(raw string) []access.AttestationReq {
 	return out
 }
 
-func (r *StoreResolver) Rules(repoID int64) []access.BookmarkRule {
+func (r *Resolver) Rules(repoID int64) []access.BookmarkRule {
 	var out []access.BookmarkRule
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
 		inner, lerr := tx.live()
@@ -189,7 +189,7 @@ push_allow, land_allow, required, version FROM bookmark_rules WHERE repo_id = ?`
 	return out
 }
 
-func (r *StoreResolver) IsOrgMember(orgID, userID int64) bool {
+func (r *Resolver) IsOrgMember(orgID, userID int64) bool {
 	hit := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
 		inner, lerr := tx.live()
@@ -206,7 +206,7 @@ JOIN teams t ON t.id = m.team_id WHERE t.org_id = ? AND m.user_id = ?`,
 	return hit
 }
 
-func (r *StoreResolver) IsOrgOwner(orgID, userID int64) bool {
+func (r *Resolver) IsOrgOwner(orgID, userID int64) bool {
 	hit := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
 		inner, lerr := tx.live()
@@ -224,7 +224,7 @@ WHERE t.org_id = ? AND t.lower_name = 'owners' AND m.user_id = ?`,
 	return hit
 }
 
-func (r *StoreResolver) CanCreateRepo(orgID, userID int64) bool {
+func (r *Resolver) CanCreateRepo(orgID, userID int64) bool {
 	if r.IsOrgOwner(orgID, userID) {
 		return true
 	}
@@ -245,7 +245,7 @@ WHERE t.org_id = ? AND t.can_create_repo = 1 AND m.user_id = ?`,
 	return hit
 }
 
-func (r *StoreResolver) IsTeamMember(teamID, userID int64) bool {
+func (r *Resolver) IsTeamMember(teamID, userID int64) bool {
 	hit := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
 		inner, lerr := tx.live()
@@ -262,7 +262,7 @@ func (r *StoreResolver) IsTeamMember(teamID, userID int64) bool {
 	return hit
 }
 
-func (r *StoreResolver) TeamOrg(teamID int64) (int64, bool) {
+func (r *Resolver) TeamOrg(teamID int64) (int64, bool) {
 	var org int64
 	found := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
@@ -280,7 +280,7 @@ func (r *StoreResolver) TeamOrg(teamID int64) (int64, bool) {
 	return org, found
 }
 
-func (r *StoreResolver) OrgPublic(orgID int64) bool {
+func (r *Resolver) OrgPublic(orgID int64) bool {
 	hit := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
 		inner, lerr := tx.live()
@@ -296,7 +296,7 @@ func (r *StoreResolver) OrgPublic(orgID int64) bool {
 	return hit
 }
 
-func (r *StoreResolver) IsSiteAdmin(userID int64) bool {
+func (r *Resolver) IsSiteAdmin(userID int64) bool {
 	hit := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
 		inner, lerr := tx.live()
@@ -312,7 +312,7 @@ func (r *StoreResolver) IsSiteAdmin(userID int64) bool {
 	return hit
 }
 
-func (r *StoreResolver) IsActive(userID int64) bool {
+func (r *Resolver) IsActive(userID int64) bool {
 	hit := false
 	_ = r.s.Read(context.Background(), func(tx *ReadTx) error {
 		inner, lerr := tx.live()

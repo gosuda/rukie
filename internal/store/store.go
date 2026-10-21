@@ -22,7 +22,8 @@ const appID = 1381321545
 // Options configures Open. Zero values select the defaults noted.
 type Options struct {
 	// Logger receives slow-operation warnings. Nil selects slog.Default.
-	Logger *slog.Logger
+	Logger  *slog.Logger
+	Barrier func() (release func(), ok bool)
 	// Path is the database file. Its parent directory is created 0700 and the file 0600.
 	Path string
 	// ReadConns is the reader pool size. Zero selects max(2, GOMAXPROCS); values clamp to [2, 64].
@@ -35,7 +36,6 @@ type Options struct {
 	QueueDepth int
 	// AllowPOSIXLocks permits Open where OFD locks are unavailable.
 	AllowPOSIXLocks bool
-	Barrier         func() (release func(), ok bool)
 }
 
 // Stats is advisory and intended for metrics.

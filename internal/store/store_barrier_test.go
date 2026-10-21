@@ -10,7 +10,7 @@ import (
 func TestWriteRefusesDuringBackup(t *testing.T) {
 	s := openTest(t, Options{Barrier: func() (func(), bool) { return func() {}, false }})
 	ran := false
-	err := s.Write(t.Context(), func(tx *WriteTx) error {
+	err := s.Write(t.Context(), func(_ *WriteTx) error {
 		ran = true
 		return nil
 	})
@@ -20,7 +20,7 @@ func TestWriteRefusesDuringBackup(t *testing.T) {
 	if ran {
 		t.Fatalf("write ran despite refused barrier")
 	}
-	if err := s.Read(t.Context(), func(tx *ReadTx) error { return nil }); err != nil {
+	if err := s.Read(t.Context(), func(_ *ReadTx) error { return nil }); err != nil {
 		t.Fatalf("read during barrier refusal: %v", err)
 	}
 }
@@ -32,7 +32,7 @@ func TestWriteHoldsBarrierAcrossCommit(t *testing.T) {
 		held.Add(1)
 		return func() { released.Add(1) }, true
 	}})
-	err := s.Write(t.Context(), func(tx *WriteTx) error {
+	err := s.Write(t.Context(), func(_ *WriteTx) error {
 		if held.Load() != 1 {
 			return errors.New("barrier not held during write")
 		}
@@ -57,7 +57,7 @@ func TestWriteReleasesBarrierOnSubmitCancel(t *testing.T) {
 	ctx, stop := context.WithCancel(t.Context())
 	stop()
 	ran := false
-	err := s.Write(ctx, func(tx *WriteTx) error {
+	err := s.Write(ctx, func(_ *WriteTx) error {
 		ran = true
 		return nil
 	})
