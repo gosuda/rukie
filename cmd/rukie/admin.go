@@ -63,6 +63,7 @@ var handWrittenAdminLeaves = map[string]bool{
 	"migrate":    true,
 	"status":     true,
 	"reconcile":  true,
+	"ssh-keygen": true,
 }
 
 func tryHandWrittenAdmin(argv []string) (int, bool) {
@@ -73,6 +74,8 @@ func tryHandWrittenAdmin(argv []string) (int, bool) {
 	switch argv[0] {
 	case "secret-gen":
 		code = runSecretGen(argv[1:])
+	case "ssh-keygen":
+		code = runSSHKeygen(argv[1:])
 	case "migrate":
 		code = runMigrate(argv[1:])
 	case "status":
@@ -109,6 +112,38 @@ func runSecretGen(argv []string) int {
 	}
 	fmt.Printf("wrote %s (key id %s)\n", *out, id)
 	fmt.Fprintln(os.Stderr, "back up the key offline: rukie backup never copies it")
+	return exitOK
+}
+
+func runSSHKeygen(argv []string) int {
+	fs := flag.NewFlagSet("ssh-keygen", flag.ContinueOnError)
+	out := fs.String("out", "", "output host key file")
+	force := fs.Bool("force", false, "overwrite an existing key file")
+	asJSON := fs.Bool("json", false, "machine output")
+	if err := fs.Parse(argv); err != nil {
+		return exitUsage
+	}
+	if *out == "" {
+		fmt.Fprintln(os.Stderr, "admin ssh-keygen: --out is required")
+		return exitUsage
+	}
+	var (
+		id  string
+		err error
+	)
+	if *force {
+		id, err = rotateSSHHostKey(*out)
+	} else {
+		id, err = generateSSHHostKey(*out)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "admin ssh-keygen:", err.Error())
+		return exitRuntime
+	}
+	if *asJSON {
+		return emitJSON(map[string]string{"path": *out, "fingerprint": id})
+	}
+	fmt.Printf("wrote %s (%s)\n", *out, id)
 	return exitOK
 }
 

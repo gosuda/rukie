@@ -53,6 +53,9 @@ func buildEnv(t *testing.T) *testEnv {
 	if regErr := api.RegisterAdmin(table, deps); regErr != nil {
 		t.Fatalf("register admin: %v", regErr)
 	}
+	if regErr := api.RegisterSSHKeys(table, deps); regErr != nil {
+		t.Fatalf("register sshkeys: %v", regErr)
+	}
 	if regErr := api.RegisterF12(table, deps); regErr != nil {
 		t.Fatalf("register f12: %v", regErr)
 	}
@@ -175,6 +178,7 @@ func TestAuthOpRegistration(t *testing.T) {
 		"auth.totp.verify", "auth.totp.enroll", "auth.totp.disable",
 		"auth.recovery.regenerate", "auth.oidc.start", "auth.oidc.callback",
 		"auth.oidc.link", "admin.user.totp-reset",
+		"auth.sshkey.list", "auth.sshkey.add", "auth.sshkey.remove",
 		"user.get", "user.self.update", "user.self.delete",
 		"admin.user.create", "admin.user.reset-password", "admin.user.unlock",
 		"admin.user.update", "admin.user.list",
@@ -188,8 +192,8 @@ func TestAuthOpRegistration(t *testing.T) {
 			t.Fatalf("page op %q missing or not hidden", want)
 		}
 	}
-	if len(specs) != 29 {
-		t.Fatalf("ops = %d, want 29", len(specs))
+	if len(specs) != 32 {
+		t.Fatalf("ops = %d, want 32", len(specs))
 	}
 	tools, err := op.BuildTools(specs, e.server.Document(), op.ToolFilter{Principal: op.Principal{Kind: op.PrincipalHuman, Grants: adminGrants()}})
 	if err != nil {
