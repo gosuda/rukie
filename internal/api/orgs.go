@@ -2231,6 +2231,7 @@ func tokenRepoSelector(ctx context.Context, d Deps, p op.Principal, ids []int64)
 		return nil, rerr
 	}
 	seen := map[int64]bool{}
+	var rows []store.RepoRow
 	var out []int64
 	serr = st.Read(ctx, func(tx *store.ReadTx) error {
 		for _, id := range ids {
@@ -2248,13 +2249,18 @@ func tokenRepoSelector(ctx context.Context, d Deps, p op.Principal, ids []int64)
 				}
 				return gerr
 			}
-			if derr := d.checkRepoAccess(rq, row, "repo.view", ""); derr != nil {
-				return op.Errorf(op.CodeValidation, "token repository is not visible to the caller")
-			}
-			out = append(out, id)
+			rows = append(rows, row)
 		}
 		return nil
 	})
+	if serr == nil {
+		for _, row := range rows {
+			if derr := d.checkRepoAccess(rq, row, "repo.view", ""); derr != nil {
+				return nil, op.Errorf(op.CodeValidation, "token repository is not visible to the caller")
+			}
+			out = append(out, row.ID)
+		}
+	}
 	if serr != nil {
 		if oerr, ok := errors.AsType[*op.Error](serr); ok {
 			return nil, oerr
