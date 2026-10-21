@@ -4,7 +4,7 @@ import "net/http"
 
 const CSP = "default-src 'none'; style-src 'self' https://fonts.bunny.net; " +
 	"font-src https://fonts.bunny.net; img-src 'self' data:; " +
-	"form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+	"script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 
 const (
 	contentTypeOptions = "nosniff"
