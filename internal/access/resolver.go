@@ -13,6 +13,7 @@ type RepoRecord struct {
 	ID          int64
 	OwnerUserID int64
 	OrgID       int64
+	Archived    bool
 }
 
 type Resolver interface {
@@ -163,12 +164,14 @@ func (s *SQLResolver) Repo(id int64) (RepoRecord, bool) {
 	var r RepoRecord
 	var vis string
 	var owner sql.NullInt64
+	var archived int64
 	ctx := context.Background()
-	err := s.db.QueryRowContext(ctx, `SELECT id, owner_user_id, org_id, visibility FROM repos WHERE id = ? AND deleted_at IS NULL`, id).Scan(
-		&r.ID, &owner, &r.OrgID, &vis)
+	err := s.db.QueryRowContext(ctx, `SELECT id, owner_user_id, org_id, visibility, archived FROM repos WHERE id = ? AND deleted_at IS NULL`, id).Scan(
+		&r.ID, &owner, &r.OrgID, &vis, &archived)
 	if err != nil {
 		return RepoRecord{}, false
 	}
+	r.Archived = archived != 0
 	if owner.Valid {
 		r.OwnerUserID = owner.Int64
 	}

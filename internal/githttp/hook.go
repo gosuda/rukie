@@ -122,5 +122,8 @@ func (s *Server) judge(caller access.Caller, repoID int64, phase wire.HookPhase,
 	if !decision.Allow {
 		return wire.RejectVerdict(truncateReason("push to " + cmd.Name + " is not allowed by policy"))
 	}
+	if repo, ok := s.resolver.Repo(repoID); ok && repo.Archived {
+		return wire.RejectVerdict(truncateReason("repository is archived"))
+	}
 	return wire.AcceptVerdict()
 }
