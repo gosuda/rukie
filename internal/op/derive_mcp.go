@@ -45,7 +45,8 @@ func (a Args) ToRequest(s *Spec, d *Document, base *url.URL) (*http.Request, err
 	if !ok {
 		return nil, fmt.Errorf("op %q: missing from document", s.Name)
 	}
-	path := s.Path
+	plain := s.Path
+	escaped := s.Path
 	for _, p := range os.Params {
 		if p.In != "path" {
 			continue
@@ -54,11 +55,24 @@ func (a Args) ToRequest(s *Spec, d *Document, base *url.URL) (*http.Request, err
 		if !ok {
 			return nil, fmt.Errorf("op %q: missing path parameter %q", s.Name, p.Name)
 		}
-		path = strings.Replace(path, "{"+p.Name+"}", url.PathEscape(value), 1)
-		path = strings.Replace(path, "{"+p.Name+"...}", url.PathEscape(value), 1)
+		plain = strings.Replace(plain, "{"+p.Name+"}", value, 1)
+		plain = strings.Replace(plain, "{"+p.Name+"...}", value, 1)
+		enc := value
+		if !strings.Contains(s.Path, "{"+p.Name+"...}") {
+			enc = url.PathEscape(value)
+		} else {
+			parts := strings.Split(value, "/")
+			for i := range parts {
+				parts[i] = url.PathEscape(parts[i])
+			}
+			enc = strings.Join(parts, "/")
+		}
+		escaped = strings.Replace(escaped, "{"+p.Name+"}", enc, 1)
+		escaped = strings.Replace(escaped, "{"+p.Name+"...}", enc, 1)
 	}
 	target := *base
-	target.Path = singleJoinPath(base.Path, path)
+	target.Path = singleJoinPath(base.Path, plain)
+	target.RawPath = singleJoinPath(base.EscapedPath(), escaped)
 	query := target.Query()
 	for _, p := range os.Params {
 		if p.In != "query" {
