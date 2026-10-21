@@ -379,6 +379,19 @@ func UserAgent(ctx context.Context) string {
 	return ""
 }
 
+type requestCookiesKey struct{}
+
+func Cookie(ctx context.Context, name string) string {
+	if cs, ok := ctx.Value(requestCookiesKey{}).([]*http.Cookie); ok {
+		for _, c := range cs {
+			if c.Name == name {
+				return c.Value
+			}
+		}
+	}
+	return ""
+}
+
 func CursorKey(ctx context.Context) []byte {
 	if st := stateFrom(ctx); st != nil && st.srv != nil {
 		return cursorSubkey(st.srv.cfg.CSRFKey)
@@ -961,6 +974,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), stateKey{}, st)
 	ctx = context.WithValue(ctx, clientIPKey{}, clientIP(r))
 	ctx = context.WithValue(ctx, userAgentKey{}, r.UserAgent())
+	ctx = context.WithValue(ctx, requestCookiesKey{}, r.Cookies())
 	r = r.WithContext(ctx)
 	decision := "allow"
 	matches, methods := s.lookup(st.path)

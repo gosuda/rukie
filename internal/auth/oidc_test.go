@@ -171,9 +171,9 @@ func (o *stubOP) issueCode(challenge, nonce, sub, username, email string, verifi
 	return code
 }
 
-func startStubLogin(t *testing.T, svc *Service, linkUser int64) (state, challenge, nonce string) {
+func startStubLogin(t *testing.T, svc *Service, linkUser int64) (state, challenge, nonce, browser string) {
 	t.Helper()
-	redirect, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", ReturnTo: "/", IP: "127.0.0.1", LinkUserID: linkUser})
+	redirect, browser, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", ReturnTo: "/", IP: "127.0.0.1", LinkUserID: linkUser})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -191,7 +191,10 @@ func startStubLogin(t *testing.T, svc *Service, linkUser int64) (state, challeng
 	if _, err := base64.RawURLEncoding.DecodeString(q.Get("nonce")); err != nil {
 		t.Fatalf("nonce encoding: %v", err)
 	}
-	return q.Get("state"), q.Get("code_challenge"), q.Get("nonce")
+	if browser == "" {
+		t.Fatal("start returned no browser secret")
+	}
+	return q.Get("state"), q.Get("code_challenge"), q.Get("nonce"), browser
 }
 
 func configureStub(t *testing.T, svc *Service, op *stubOP, allowSignup bool) {
@@ -209,10 +212,11 @@ func TestOIDCStubProviderLogin(t *testing.T) {
 	svc.SetSealKey(testSealKey())
 	op := newStubOP(t)
 	configureStub(t, svc, op, true)
-	state, challenge, nonce := startStubLogin(t, svc, 0)
+	state, challenge, nonce, browser := startStubLogin(t, svc, 0)
 	code := op.issueCode(challenge, nonce, "user-1", "oidcuser", "oidcuser@example.com", true)
 	res, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: code, State: state, IP: "127.0.0.1", UserAgent: "test",
+		BrowserSecret: browser,
 	})
 	if err != nil {
 		t.Fatalf("callback: %v", err)
@@ -230,10 +234,11 @@ func TestOIDCStubProviderLogin(t *testing.T) {
 	if err != nil || len(linked) != 1 || linked[0] != op.issuer {
 		t.Fatalf("links = %v, err = %v", linked, err)
 	}
-	state2, challenge2, nonce2 := startStubLogin(t, svc, 0)
+	state2, challenge2, nonce2, browser2 := startStubLogin(t, svc, 0)
 	code2 := op.issueCode(challenge2, nonce2, "user-1", "oidcuser", "oidcuser@example.com", true)
 	res2, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: code2, State: state2, IP: "127.0.0.1", UserAgent: "test",
+		BrowserSecret: browser2,
 	})
 	if err != nil {
 		t.Fatalf("second callback: %v", err)
@@ -246,11 +251,11 @@ func TestOIDCStubProviderLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bob login: %v", err)
 	}
-	state3, challenge3, nonce3 := startStubLogin(t, svc, bob.ID)
+	state3, challenge3, nonce3, browser3 := startStubLogin(t, svc, bob.ID)
 	code3 := op.issueCode(challenge3, nonce3, "user-9", "boboidc", "bob@example.com", true)
 	linkRes, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: code3, State: state3, IP: "127.0.0.1",
-		UserAgent: "test", SessionSecret: bobLogin.Secret,
+		UserAgent: "test", BrowserSecret: browser3, SessionSecret: bobLogin.Secret,
 	})
 	if err != nil {
 		t.Fatalf("link callback: %v", err)
@@ -269,21 +274,23 @@ func TestOIDCPKCEAndNonce(t *testing.T) {
 	svc.SetSealKey(testSealKey())
 	op := newStubOP(t)
 	configureStub(t, svc, op, true)
-	state, _, _ := startStubLogin(t, svc, 0)
+	state, _, _, browser := startStubLogin(t, svc, 0)
 	foreign := oauth2.S256ChallengeFromVerifier(strings.Repeat("z", 64))
 	badCode := op.issueCode(foreign, "irrelevant", "user-x", "mallory", "m@example.com", true)
 	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: badCode, State: state, IP: "127.0.0.1", UserAgent: "test",
+		BrowserSecret: browser,
 	}); !errors.Is(err, errOIDCBadToken) {
 		t.Fatalf("wrong verifier err = %v", err)
 	}
 	if _, err := svc.userByOIDCLink(t.Context(), op.issuer, "user-x"); err == nil {
 		t.Fatal("user row created from a failed exchange")
 	}
-	state2, challenge2, _ := startStubLogin(t, svc, 0)
+	state2, challenge2, _, browser2 := startStubLogin(t, svc, 0)
 	tampered := op.issueCode(challenge2, "tampered-nonce", "user-y", "mallory2", "m2@example.com", true)
 	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: tampered, State: state2, IP: "127.0.0.1", UserAgent: "test",
+		BrowserSecret: browser2,
 	}); !errors.Is(err, errOIDCBadToken) {
 		t.Fatalf("wrong nonce err = %v", err)
 	}
@@ -305,7 +312,7 @@ func TestOIDCStateAbuseBlock(t *testing.T) {
 			t.Fatalf("attempt %d err = %v", i+1, err)
 		}
 	}
-	if _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.7"}); err != nil {
+	if _, _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.7"}); err != nil {
 		t.Fatalf("start at N-1 blocked: %v", err)
 	}
 	if _, err := svc.HandleOIDCCallback(t.Context(), bad); !errors.Is(err, errOIDCBadState) {
@@ -314,14 +321,14 @@ func TestOIDCStateAbuseBlock(t *testing.T) {
 	if _, err := svc.HandleOIDCCallback(t.Context(), bad); !errors.Is(err, errOIDCIPBlocked) {
 		t.Fatalf("attempt N+1 err = %v, want blocked", err)
 	}
-	if _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.7"}); !errors.Is(err, errOIDCIPBlocked) {
+	if _, _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.7"}); !errors.Is(err, errOIDCIPBlocked) {
 		t.Fatalf("start while blocked err = %v", err)
 	}
 	setNow(now.Add(oidcBlockTTL + time.Minute))
 	if _, err := svc.HandleOIDCCallback(t.Context(), bad); !errors.Is(err, errOIDCBadState) {
 		t.Fatalf("after block expiry err = %v, want bad-state", err)
 	}
-	if _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.7"}); err != nil {
+	if _, _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.7"}); err != nil {
 		t.Fatalf("start after block expiry: %v", err)
 	}
 	windowBad := OIDCCallbackInput{ProviderID: "stub", Code: "nope", State: "bogus-state", IP: "10.9.8.9", UserAgent: "test"}
@@ -340,13 +347,74 @@ func TestOIDCStateAbuseBlock(t *testing.T) {
 			t.Fatalf("fresh window attempt %d err = %v", i+1, err)
 		}
 	}
-	if _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.9"}); err != nil {
+	if _, _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.9"}); err != nil {
 		t.Fatalf("start at fresh N-1 blocked: %v", err)
 	}
 	if _, err := svc.HandleOIDCCallback(t.Context(), windowBad); !errors.Is(err, errOIDCBadState) {
 		t.Fatalf("fresh attempt N err = %v", err)
 	}
-	if _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.9"}); !errors.Is(err, errOIDCIPBlocked) {
+	if _, _, err := svc.StartOIDCLogin(t.Context(), StartOIDCLoginInput{ProviderID: "stub", IP: "10.9.8.9"}); !errors.Is(err, errOIDCIPBlocked) {
 		t.Fatalf("start at fresh N+1 err = %v, want blocked", err)
+	}
+}
+func TestOIDCBrowserBinding(t *testing.T) {
+	svc, _ := openTestService(t)
+	svc.SetSealKey(testSealKey())
+	op := newStubOP(t)
+	configureStub(t, svc, op, true)
+	victim := mustCreateWithPassword(t, svc, "victim", false)
+	victimLogin, err := svc.Login(t.Context(), LoginInput{Username: "victim", Password: testPasswords["victim"], IP: "127.0.0.1", UserAgent: "victim-browser"})
+	if err != nil {
+		t.Fatalf("victim login: %v", err)
+	}
+	_, _, _, browserB := startStubLogin(t, svc, 0)
+	attackerState, attackerChallenge, attackerNonce, _ := startStubLogin(t, svc, 0)
+	attackerCode := op.issueCode(attackerChallenge, attackerNonce, "attacker-sub", "attacker", "attacker@example.com", true)
+	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+		ProviderID: "stub", Code: attackerCode, State: attackerState, IP: "127.0.0.1",
+		UserAgent: "victim-browser", BrowserSecret: browserB, SessionSecret: victimLogin.Secret,
+	}); !errors.Is(err, errOIDCBadState) {
+		t.Fatalf("foreign-browser replay err = %v, want bad-state", err)
+	}
+	if _, err := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); err == nil {
+		t.Fatal("attacker subject linked to victim across browsers")
+	}
+	attackerState2, attackerChallenge2, attackerNonce2, _ := startStubLogin(t, svc, 0)
+	attackerCode2 := op.issueCode(attackerChallenge2, attackerNonce2, "attacker-sub", "attacker", "attacker@example.com", true)
+	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+		ProviderID: "stub", Code: attackerCode2, State: attackerState2, IP: "127.0.0.1",
+		UserAgent: "victim-browser", SessionSecret: victimLogin.Secret,
+	}); !errors.Is(err, errOIDCBadState) {
+		t.Fatalf("missing-secret replay err = %v, want bad-state", err)
+	}
+	if _, err := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); err == nil {
+		t.Fatal("attacker subject linked with missing browser secret")
+	}
+	attackerState3, attackerChallenge3, attackerNonce3, _ := startStubLogin(t, svc, 0)
+	attackerCode3 := op.issueCode(attackerChallenge3, attackerNonce3, "attacker-sub", "attacker", "attacker@example.com", true)
+	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+		ProviderID: "stub", Code: attackerCode3, State: attackerState3, IP: "127.0.0.1",
+		UserAgent: "victim-browser", BrowserSecret: "forged-secret", SessionSecret: victimLogin.Secret,
+	}); !errors.Is(err, errOIDCBadState) {
+		t.Fatalf("wrong-secret replay err = %v, want bad-state", err)
+	}
+	if _, err := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); err == nil {
+		t.Fatal("attacker subject linked with forged browser secret")
+	}
+	ownState, ownChallenge, ownNonce, ownBrowser := startStubLogin(t, svc, victim.ID)
+	ownCode := op.issueCode(ownChallenge, ownNonce, "victim-sub", "victimoidc", "victim@example.com", true)
+	linked, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+		ProviderID: "stub", Code: ownCode, State: ownState, IP: "127.0.0.1",
+		UserAgent: "victim-browser", BrowserSecret: ownBrowser, SessionSecret: victimLogin.Secret,
+	})
+	if err != nil {
+		t.Fatalf("same-browser link: %v", err)
+	}
+	if !linked.Linked {
+		t.Fatalf("same-browser link result = %+v", linked)
+	}
+	got, err := svc.userByOIDCLink(t.Context(), op.issuer, "victim-sub")
+	if err != nil || got.ID != victim.ID {
+		t.Fatalf("victim link = %+v, err = %v", got, err)
 	}
 }

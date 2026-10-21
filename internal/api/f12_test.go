@@ -289,8 +289,17 @@ func TestF12OIDCFlowHTTP(t *testing.T) {
 	authURL, _ := started["auth_url"].(string)
 	parsed, _ := url.Parse(authURL)
 	q := parsed.Query()
+	browserCookie := ""
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.OIDCBrowserCookieName() {
+			browserCookie = c.Name + "=" + c.Value
+		}
+	}
+	if browserCookie == "" {
+		t.Fatal("start set no oidc browser cookie")
+	}
 	code := stub.issue(q.Get("code_challenge"), q.Get("nonce"), "web-1", "webuser")
-	cb := doJSON(t, e, "GET", "/login/oidc/stub/callback?code="+code+"&state="+q.Get("state"), "", "")
+	cb := doJSON(t, e, "GET", "/login/oidc/stub/callback?code="+code+"&state="+q.Get("state"), browserCookie, "")
 	if cb.Code != http.StatusOK {
 		t.Fatalf("callback = %d: %s", cb.Code, cb.Body.String())
 	}
@@ -298,8 +307,15 @@ func TestF12OIDCFlowHTTP(t *testing.T) {
 	if done["username"] != "webuser" {
 		t.Fatalf("callback body = %s", cb.Body.String())
 	}
-	setCookie := cb.Header().Get("Set-Cookie")
-	cookie := strings.TrimSpace(strings.Split(setCookie, ";")[0])
+	cookie := ""
+	for _, c := range cb.Result().Cookies() {
+		if strings.HasPrefix(c.Name, "__Host-rukie_session") && c.Value != "" {
+			cookie = c.Name + "=" + c.Value
+		}
+	}
+	if cookie == "" {
+		t.Fatal("callback set no session cookie")
+	}
 	if rec := doJSON(t, e, "GET", "/settings/security", cookie, ""); rec.Code != http.StatusOK {
 		t.Fatalf("oidc session reads security = %d", rec.Code)
 	}

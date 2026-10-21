@@ -324,12 +324,13 @@ func RegisterF12(t *op.Table, deps Deps) error {
 		Description: "Mints single-use state with PKCE S256 and nonce. The page links on to the provider.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeForbidden},
 		Handler: func(ctx context.Context, _ op.Principal, in OIDCStartIn) (OIDCStartOut, error) {
-			redirect, serr := deps.Service.StartOIDCLogin(ctx, auth.StartOIDCLoginInput{
+			redirect, browser, serr := deps.Service.StartOIDCLogin(ctx, auth.StartOIDCLoginInput{
 				ProviderID: in.Provider, ReturnTo: cmp.Or(in.Next, "/"), IP: op.ClientIP(ctx),
 			})
 			if serr != nil {
 				return OIDCStartOut{}, mapF12Error(serr)
 			}
+			op.SetCookie(ctx, auth.OIDCBrowserCookie(browser))
 			return OIDCStartOut{Provider: in.Provider, AuthURL: redirect}, nil
 		},
 	}); err != nil {
@@ -353,11 +354,14 @@ func RegisterF12(t *op.Table, deps Deps) error {
 			}
 			res, cerr := deps.Service.HandleOIDCCallback(ctx, auth.OIDCCallbackInput{
 				ProviderID: in.Provider, Code: in.Code, State: in.State,
-				IP: op.ClientIP(ctx), SessionUserID: userID, SessionFresh: fresh,
+				IP: op.ClientIP(ctx), UserAgent: op.UserAgent(ctx),
+				BrowserSecret: op.Cookie(ctx, auth.OIDCBrowserCookieName()),
+				SessionUserID: userID, SessionFresh: fresh,
 			})
 			if cerr != nil {
 				return OIDCCallbackOut{}, mapF12Error(cerr)
 			}
+			op.SetCookie(ctx, auth.ClearOIDCBrowserCookie())
 			if res.Secret != "" {
 				op.SetCookie(ctx, auth.SessionCookie(res.Secret, time.UnixMilli(res.Session.AbsoluteExpiresAt), deps.now()))
 			}
@@ -377,12 +381,13 @@ func RegisterF12(t *op.Table, deps Deps) error {
 			if err != nil {
 				return OIDCLinkOut{}, mapAuthError(err)
 			}
-			redirect, serr := deps.Service.StartOIDCLogin(ctx, auth.StartOIDCLoginInput{
+			redirect, browser, serr := deps.Service.StartOIDCLogin(ctx, auth.StartOIDCLoginInput{
 				ProviderID: in.Body.Provider, ReturnTo: "/settings/security", IP: op.ClientIP(ctx), LinkUserID: userID,
 			})
 			if serr != nil {
 				return OIDCLinkOut{}, mapF12Error(serr)
 			}
+			op.SetCookie(ctx, auth.OIDCBrowserCookie(browser))
 			return OIDCLinkOut{AuthURL: redirect}, nil
 		},
 	}); err != nil {

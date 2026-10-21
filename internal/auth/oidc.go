@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math/big"
+	"net/http"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ const (
 	oidcBadStateLimit  = 20
 	oidcBadStateWindow = 10 * time.Minute
 	oidcBlockTTL       = time.Hour
+	oidcBrowserBytes   = 32
+	oidcBrowserCookie  = "__Host-rukie_oidc"
 )
 
 var oidcVerifierAlphabet = []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -60,6 +63,7 @@ type OIDCCallbackInput struct {
 	State         string
 	IP            string
 	UserAgent     string
+	BrowserSecret string
 	SessionSecret string
 	SessionUserID int64
 	SessionFresh  bool
@@ -157,33 +161,39 @@ func (s *Service) oidcLookup(id string) (*oidcRuntime, bool) {
 }
 
 // StartOIDCLogin stores single-use state and returns the authorization redirect.
-func (s *Service) StartOIDCLogin(ctx context.Context, in StartOIDCLoginInput) (string, error) {
+func (s *Service) StartOIDCLogin(ctx context.Context, in StartOIDCLoginInput) (string, string, error) {
 	rt, ok := s.oidcLookup(in.ProviderID)
 	if !ok {
-		return "", errOIDCUnknownProvider
+		return "", "", errOIDCUnknownProvider
 	}
 	now := millis(s.clock())
 	if blocked, _ := s.oidcIPBlocked(ctx, in.IP, now); blocked {
-		return "", errOIDCIPBlocked
+		return "", "", errOIDCIPBlocked
 	}
 	stateRaw := make([]byte, oidcStateBytes)
 	if _, err := rand.Read(stateRaw); err != nil {
-		return "", err
+		return "", "", err
 	}
 	nonceRaw := make([]byte, oidcStateBytes)
 	if _, err := rand.Read(nonceRaw); err != nil {
-		return "", err
+		return "", "", err
 	}
 	verifier := make([]byte, oidcVerifierChars)
 	if _, err := rand.Read(verifier); err != nil {
-		return "", err
+		return "", "", err
 	}
 	for i := range verifier {
 		verifier[i] = oidcVerifierAlphabet[int(verifier[i])%len(oidcVerifierAlphabet)]
 	}
+	browserRaw := make([]byte, oidcBrowserBytes)
+	if _, err := rand.Read(browserRaw); err != nil {
+		return "", "", err
+	}
 	state := base64.RawURLEncoding.EncodeToString(stateRaw)
 	nonce := base64.RawURLEncoding.EncodeToString(nonceRaw)
 	sum := sha256.Sum256([]byte(state))
+	browser := base64.RawURLEncoding.EncodeToString(browserRaw)
+	browserSum := sha256.Sum256([]byte(browser))
 	returnTo := in.ReturnTo
 	if returnTo == "" {
 		returnTo = "/"
@@ -197,16 +207,44 @@ func (s *Service) StartOIDCLogin(ctx context.Context, in StartOIDCLoginInput) (s
 			linkArg = in.LinkUserID
 		}
 		_, txErr := tx.ExecContext(ctx, `INSERT INTO oidc_states
-			(state_sha256, provider_id, nonce, verifier, link_user_id, return_to, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			hexEncode(sum[:]), in.ProviderID, nonce, string(verifier), linkArg, returnTo, now, now+oidcStateTTL.Milliseconds())
+			(state_sha256, provider_id, nonce, verifier, link_user_id, return_to, browser_sha256, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			hexEncode(sum[:]), in.ProviderID, nonce, string(verifier), linkArg, returnTo, hexEncode(browserSum[:]), now, now+oidcStateTTL.Milliseconds())
 		return txErr
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	s.recordAudit(ctx, AuditEvent{Action: "oidc.start", IP: in.IP, Result: "ok"})
-	return rt.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(string(verifier)), oidc.Nonce(nonce)), nil
+	return rt.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(string(verifier)), oidc.Nonce(nonce)), browser, nil
+}
+
+func OIDCBrowserCookieName() string {
+	return oidcBrowserCookie
+}
+
+func OIDCBrowserCookie(secret string) *http.Cookie {
+	return &http.Cookie{
+		Name:     oidcBrowserCookie,
+		Value:    secret,
+		Path:     "/",
+		MaxAge:   int(oidcStateTTL.Seconds()),
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+func ClearOIDCBrowserCookie() *http.Cookie {
+	return &http.Cookie{
+		Name:     oidcBrowserCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
 }
 
 func hexEncode(raw []byte) string {
@@ -235,15 +273,21 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		return OIDCCallbackResult{}, errOIDCUnknownProvider
 	}
 	sum := sha256.Sum256([]byte(in.State))
-	var nonce, verifier, returnTo string
+	var nonce, verifier, returnTo, browserStored string
 	var linkUserID sql.NullInt64
 	cerr := s.db.QueryRowContext(ctx, `DELETE FROM oidc_states
 		WHERE state_sha256 = ? AND provider_id = ? AND expires_at > ?
-		RETURNING nonce, verifier, link_user_id, return_to`,
-		hexEncode(sum[:]), in.ProviderID, now).Scan(&nonce, &verifier, &linkUserID, &returnTo)
+		RETURNING nonce, verifier, link_user_id, return_to, browser_sha256`,
+		hexEncode(sum[:]), in.ProviderID, now).Scan(&nonce, &verifier, &linkUserID, &returnTo, &browserStored)
 	if cerr != nil {
 		_ = s.recordOIDCBadState(ctx, in.IP, now)
 		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-state"})
+		return OIDCCallbackResult{}, errOIDCBadState
+	}
+	presented := sha256.Sum256([]byte(in.BrowserSecret))
+	if subtle.ConstantTimeCompare([]byte(hexEncode(presented[:])), []byte(browserStored)) != 1 {
+		_ = s.recordOIDCBadState(ctx, in.IP, now)
+		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-browser"})
 		return OIDCCallbackResult{}, errOIDCBadState
 	}
 	exctx, cancel := context.WithTimeout(ctx, 30*time.Second)
