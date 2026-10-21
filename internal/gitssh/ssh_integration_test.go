@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"database/sql"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -54,30 +53,6 @@ func sshBin(t *testing.T) string {
 		t.Fatalf("ruk binary: %v", err)
 	}
 	return bin
-}
-
-func sshTestDB(t *testing.T, path string) {
-	t.Helper()
-	raw, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_journal_mode=WAL&_synchronous=FULL&_foreign_keys=on&_busy_timeout=5000")
-	if err != nil {
-		t.Fatalf("sql open: %v", err)
-	}
-	entries, err := os.ReadDir("../store/migrations")
-	if err != nil {
-		t.Fatalf("migrations dir: %v", err)
-	}
-	for _, e := range entries {
-		body, err := os.ReadFile(filepath.Join("../store/migrations", e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		if _, err := raw.Exec(string(body)); err != nil {
-			t.Fatalf("apply %s: %v", e.Name(), err)
-		}
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatalf("sql close: %v", err)
-	}
 }
 
 func sshDaemonLogs(t *testing.T, dir, roots string) (*rukproc.Child, string, *bytes.Buffer) {
