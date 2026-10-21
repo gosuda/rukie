@@ -418,3 +418,35 @@ func TestOIDCBrowserBinding(t *testing.T) {
 		t.Fatalf("victim link = %+v, err = %v", got, err)
 	}
 }
+func TestOIDCWrongSecretPreservesState(t *testing.T) {
+	svc, _ := openTestService(t)
+	svc.SetSealKey(testSealKey())
+	op := newStubOP(t)
+	configureStub(t, svc, op, true)
+	state, challenge, nonce, browser := startStubLogin(t, svc, 0)
+	code := op.issueCode(challenge, nonce, "user-1", "oidcuser", "oidcuser@example.com", true)
+	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+		ProviderID: "stub", Code: code, State: state, IP: "127.0.0.1", UserAgent: "test",
+		BrowserSecret: "forged-secret",
+	}); !errors.Is(err, errOIDCBadState) {
+		t.Fatalf("wrong secret err = %v, want bad-state", err)
+	}
+	retryCode := op.issueCode(challenge, nonce, "user-1", "oidcuser", "oidcuser@example.com", true)
+	res, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+		ProviderID: "stub", Code: retryCode, State: state, IP: "127.0.0.1", UserAgent: "test",
+		BrowserSecret: browser,
+	})
+	if err != nil {
+		t.Fatalf("retry with owner secret: %v", err)
+	}
+	if !res.IsNew {
+		t.Fatalf("retry result = %+v", res)
+	}
+	lateCode := op.issueCode(challenge, nonce, "user-1", "oidcuser", "oidcuser@example.com", true)
+	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+		ProviderID: "stub", Code: lateCode, State: state, IP: "127.0.0.1", UserAgent: "test",
+		BrowserSecret: browser,
+	}); !errors.Is(err, errOIDCBadState) {
+		t.Fatalf("replay after success err = %v, want bad-state", err)
+	}
+}

@@ -79,7 +79,35 @@ type OIDCState struct {
 	HasLink     bool
 }
 
-func (s *Store) ConsumeOIDCState(ctx context.Context, stateHash, providerID string, now int64) (OIDCState, error) {
+func (s *Store) GetOIDCState(ctx context.Context, stateHash, providerID string, now int64) (OIDCState, error) {
+	var out OIDCState
+	err := s.Read(ctx, func(tx *ReadTx) error {
+		inner, lerr := tx.live()
+		if lerr != nil {
+			return lerr
+		}
+		var linkUserID sql.NullInt64
+		cerr := inner.QueryRowContext(tx.ctx, `SELECT nonce, verifier, link_user_id, return_to, browser_sha256
+			FROM oidc_states WHERE state_sha256 = ? AND provider_id = ? AND expires_at > ?`,
+			stateHash, providerID, now).Scan(&out.Nonce, &out.Verifier, &linkUserID, &out.ReturnTo, &out.BrowserHash)
+		if cerr != nil {
+			if errors.Is(cerr, sql.ErrNoRows) {
+				return fmt.Errorf("GetOIDCState: %w", ErrNotFound)
+			}
+			return fmt.Errorf("GetOIDCState: %w", cerr)
+		}
+		if linkUserID.Valid {
+			out.LinkUserID = linkUserID.Int64
+			out.HasLink = true
+		}
+		return nil
+	})
+	if err != nil {
+		return OIDCState{}, err
+	}
+	return out, nil
+}
+func (s *Store) ConsumeOIDCStateVerified(ctx context.Context, stateHash, providerID, browserHash string, now int64) (OIDCState, error) {
 	var out OIDCState
 	err := s.Write(ctx, func(tx *WriteTx) error {
 		inner, lerr := tx.live()
@@ -88,14 +116,14 @@ func (s *Store) ConsumeOIDCState(ctx context.Context, stateHash, providerID stri
 		}
 		var linkUserID sql.NullInt64
 		cerr := inner.QueryRowContext(tx.ctx, `DELETE FROM oidc_states
-			WHERE state_sha256 = ? AND provider_id = ? AND expires_at > ?
-			RETURNING nonce, verifier, link_user_id, return_to, browser_sha256`,
-			stateHash, providerID, now).Scan(&out.Nonce, &out.Verifier, &linkUserID, &out.ReturnTo, &out.BrowserHash)
+			WHERE state_sha256 = ? AND provider_id = ? AND browser_sha256 = ? AND expires_at > ?
+			RETURNING nonce, verifier, link_user_id, return_to`,
+			stateHash, providerID, browserHash, now).Scan(&out.Nonce, &out.Verifier, &linkUserID, &out.ReturnTo)
 		if cerr != nil {
 			if errors.Is(cerr, sql.ErrNoRows) {
-				return fmt.Errorf("ConsumeOIDCState: %w", ErrNotFound)
+				return fmt.Errorf("ConsumeOIDCStateVerified: %w", ErrNotFound)
 			}
-			return fmt.Errorf("ConsumeOIDCState: %w", cerr)
+			return fmt.Errorf("ConsumeOIDCStateVerified: %w", cerr)
 		}
 		if linkUserID.Valid {
 			out.LinkUserID = linkUserID.Int64

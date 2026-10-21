@@ -257,8 +257,8 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		return OIDCCallbackResult{}, errOIDCUnknownProvider
 	}
 	sum := sha256.Sum256([]byte(in.State))
-	st, cerr := s.store.ConsumeOIDCState(ctx, hexEncode(sum[:]), in.ProviderID, now)
-	if cerr != nil {
+	st, gerr := s.store.GetOIDCState(ctx, hexEncode(sum[:]), in.ProviderID, now)
+	if gerr != nil {
 		_ = s.recordOIDCBadState(ctx, in.IP, now)
 		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-state"})
 		return OIDCCallbackResult{}, errOIDCBadState
@@ -267,6 +267,11 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 	if subtle.ConstantTimeCompare([]byte(hexEncode(presented[:])), []byte(st.BrowserHash)) != 1 {
 		_ = s.recordOIDCBadState(ctx, in.IP, now)
 		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-browser"})
+		return OIDCCallbackResult{}, errOIDCBadState
+	}
+	if _, cerr := s.store.ConsumeOIDCStateVerified(ctx, hexEncode(sum[:]), in.ProviderID, hexEncode(presented[:]), now); cerr != nil {
+		_ = s.recordOIDCBadState(ctx, in.IP, now)
+		s.recordAudit(ctx, AuditEvent{Action: "oidc.callback", IP: in.IP, Result: "bad-state"})
 		return OIDCCallbackResult{}, errOIDCBadState
 	}
 	exctx, cancel := context.WithTimeout(ctx, 30*time.Second)
