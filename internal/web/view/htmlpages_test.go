@@ -492,10 +492,19 @@ func collectHTMLPages(t *testing.T, e *renderEnv) []htmlPage {
 		t.Fatalf("start = %d: %s", started.Code, started.Body.String())
 	}
 	authURL, _ := renderDecode(t, started)["auth_url"].(string)
+	browserCookie := ""
+	for _, h := range started.Header().Values("Set-Cookie") {
+		if strings.HasPrefix(h, auth.OIDCBrowserCookieName()+"=") {
+			browserCookie = strings.TrimSpace(strings.Split(h, ";")[0])
+		}
+	}
+	if browserCookie == "" {
+		t.Fatalf("start returned no browser cookie")
+	}
 	parsed, _ := url.Parse(authURL)
 	q := parsed.Query()
 	code := stub.issue(q.Get("code_challenge"), q.Get("nonce"), "render-1", "renderuser")
-	captureGET(t, e, &pages, "auth.oidc.callback", "oidc-callback.html", "/login/oidc/stub/callback?code="+code+"&state="+q.Get("state"), "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "auth.oidc.callback", "oidc-callback.html", "/login/oidc/stub/callback?code="+code+"&state="+q.Get("state"), browserCookie, http.StatusOK, nil)
 	return pages
 }
 
