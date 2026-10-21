@@ -14,10 +14,14 @@ type Requirement struct {
 }
 
 // AttestationFact is one live attestation read from Ruk at evaluation time.
+// Signer carries the attestation key when the caller cannot map it to a
+// user id; quorum counts distinct non-empty signers, falling back to the
+// numeric id only when no key is present.
 type AttestationFact struct {
 	Kind     string
 	Result   string
 	OID      string
+	Signer   string
 	SignerID int64
 	AgeSecs  int64
 	Live     bool
@@ -54,7 +58,7 @@ func GapsForChange(head string, authorID int64, reqs []Requirement, facts []Atte
 			}
 			continue
 		}
-		seen := map[int64]bool{}
+		seen := map[string]bool{}
 		for _, fact := range facts {
 			if !fact.Live || fact.OID != head {
 				continue
@@ -65,10 +69,14 @@ func GapsForChange(head string, authorID int64, reqs []Requirement, facts []Atte
 			if !matchKind(req.Kind, fact.Kind) || req.Result != fact.Result {
 				continue
 			}
+			key := fact.Signer
+			if key == "" {
+				key = "\x00" + itoa(int(fact.SignerID))
+			}
 			if fact.SignerID == authorID {
 				continue
 			}
-			seen[fact.SignerID] = true
+			seen[key] = true
 		}
 		if len(seen) < need {
 			reason := "needs_review"

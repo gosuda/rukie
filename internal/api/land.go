@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 
 	"github.com/gosuda/rukie/internal/access"
@@ -149,47 +150,36 @@ func landPlanCreateHandler(d Deps) func(context.Context, op.Principal, LandPlanC
 	}
 }
 
-func (d Deps) liveGaps(ctx context.Context, daemon ruk.Repo, repoID int64, row store.ChangeRow) ([]review.Gap, error) {
+func (d Deps) liveGaps(ctx context.Context, daemon ruk.Repo, repoID int64, row store.ChangeRow) ([]review.Gap, []review.Requirement, error) {
 	resolver := access.NewSQLResolver(d.Service.DB(), access.NewStoreTeams(d.Service.DB(), nil))
 	rules := resolver.Rules(repoID)
 	if len(rules) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	reqs := make([]review.Requirement, 0, len(rules[0].Required))
 	for _, req := range rules[0].Required {
 		reqs = append(reqs, review.Requirement{Kind: req.Kind, Result: req.Result, MinSigners: req.MinSigners})
 	}
 	if len(reqs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var reply attestListReply
 	if rerr := d.callRuk(ctx, daemon, wire.MethodAttestList,
 		map[string]any{"subject": row.HeadOid, "page": map[string]any{"limit": 100}}, &reply); rerr != nil {
-		return nil, rerr
+		return nil, nil, rerr
 	}
 	facts := make([]review.AttestationFact, 0, len(reply.Records.Items))
 	for _, record := range reply.Records.Items {
-		fact, ok := countableFact(row.HeadOid, record)
-		if !ok {
-			continue
-		}
-		facts = append(facts, fact)
+		facts = append(facts, review.AttestationFact{
+			Kind: record.Kind, Result: record.Result, OID: row.HeadOid,
+			Signer: record.Signer, Live: record.Status == "live",
+		})
 	}
-	return review.GapsForChange(row.HeadOid, row.AuthorUserID, reqs, facts), nil
-}
-
-func countableFact(head string, record AttestationRecord) (review.AttestationFact, bool) {
-	if record.Kind == "review/approve" {
-		return review.AttestationFact{}, false
-	}
-	return review.AttestationFact{
-		Kind: record.Kind, Result: record.Result, OID: head,
-		Live: record.Status == "live",
-	}, true
+	return review.GapsForChange(row.HeadOid, row.AuthorUserID, reqs, facts), reqs, nil
 }
 
 func (d Deps) liveGapsInTx(ctx context.Context, daemon ruk.Repo, tx *store.WriteTx, repoID int64, change store.ChangeRow) ([]review.Gap, error) {
-	gaps, gerr := d.liveGaps(ctx, daemon, repoID, change)
+	gaps, reqs, gerr := d.liveGaps(ctx, daemon, repoID, change)
 	if gerr != nil {
 		return nil, gerr
 	}
@@ -197,31 +187,41 @@ func (d Deps) liveGapsInTx(ctx context.Context, daemon ruk.Repo, tx *store.Write
 	if cerr != nil {
 		return nil, cerr
 	}
-	eligible := false
+	approvers := map[int64]bool{}
 	for _, comment := range comments {
 		if comment.AuthorUserID == change.AuthorUserID {
 			continue
 		}
 		if comment.Body == "approve" || strings.HasPrefix(comment.Body, "approve:") {
-			eligible = true
-			break
+			approvers[comment.AuthorUserID] = true
 		}
 	}
+	need := 0
+	for _, req := range reqs {
+		if req.Kind == "review/approve" && req.MinSigners > need {
+			need = req.MinSigners
+		}
+	}
+	if need <= 0 {
+		need = 1
+	}
+	short := need - len(approvers)
 	kept := make([]review.Gap, 0, len(gaps))
 	keptApprove := false
 	for _, gap := range gaps {
 		if gap.Reason == "needs_review" && gap.Kind == "review/approve" {
-			if eligible {
+			if short <= 0 {
 				continue
 			}
 			keptApprove = true
+			gap.Detail = "review/approve wants " + strconv.FormatInt(int64(short), 10) + " more"
 		}
 		kept = append(kept, gap)
 	}
-	if !eligible && !keptApprove {
+	if short > 0 && !keptApprove {
 		kept = append(kept, review.Gap{
 			Kind: "review/approve", Reason: "needs_review",
-			Detail: "review/approve wants 1 more", NextOp: "change.review.create",
+			Detail: "review/approve wants " + strconv.FormatInt(int64(short), 10) + " more", NextOp: "change.review.create",
 		})
 	}
 	return kept, nil
@@ -1080,7 +1080,7 @@ func viewResultListHandler(d Deps) func(context.Context, op.Principal, ViewResul
 				return lerr
 			}
 			for _, row := range rows {
-				gaps, gerr := d.liveGaps(ctx, daemon, rc.row.ID, row)
+				gaps, _, gerr := d.liveGaps(ctx, daemon, rc.row.ID, row)
 				if gerr != nil {
 					return gerr
 				}
