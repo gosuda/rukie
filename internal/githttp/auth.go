@@ -19,10 +19,6 @@ type identity struct {
 	authed bool
 }
 
-// authenticate maps HTTP credentials to a token identity. Git clients send
-// Basic with the username equal to the token owner and the token as the
-// password (auth-design 10.1). Bearer with a bare token is accepted too so
-// scripted callers can reuse one header shape; it carries no extra rights.
 func (s *Server) authenticate(r *http.Request) (identity, bool, bool) {
 	var zero identity
 	header := r.Header.Get("Authorization")
