@@ -3,7 +3,6 @@ package events
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -159,7 +158,7 @@ func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
 		return jerr
 	}
 	existing, gerr := tx.GetPendingPush(rec.InvocationID)
-	if gerr != nil && !errors.Is(gerr, sql.ErrNoRows) {
+	if gerr != nil && !errors.Is(gerr, store.ErrNotFound) {
 		return gerr
 	}
 	if gerr == nil {

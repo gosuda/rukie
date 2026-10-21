@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -63,6 +64,44 @@ var readerChecks = []pragmaCheck{
 func fileDSN(path, params string) string {
 	u := url.URL{Scheme: "file", Path: path}
 	return u.String() + "?" + params
+}
+
+func AppliedSchemaVersion(dbPath string) (int64, error) {
+	abs, err := absPath(dbPath)
+	if err != nil {
+		if errors.Is(err, ErrInvalid) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("AppliedSchemaVersion: %w", err)
+	}
+	if _, serr := os.Stat(abs); serr != nil {
+		if errors.Is(serr, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("AppliedSchemaVersion: %w", serr)
+	}
+	dsn := fileDSN(abs, "mode=ro&_query_only=on&_busy_timeout=5000")
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return 0, fmt.Errorf("AppliedSchemaVersion: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	ctx := context.Background()
+	var table string
+	terr := db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&table)
+	if errors.Is(terr, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if terr != nil {
+		return 0, fmt.Errorf("AppliedSchemaVersion: %w", terr)
+	}
+	var highest int64
+	if herr := db.QueryRowContext(ctx,
+		`SELECT COALESCE(max(version), 0) FROM schema_migrations`).Scan(&highest); herr != nil {
+		return 0, fmt.Errorf("AppliedSchemaVersion: %w", herr)
+	}
+	return highest, nil
 }
 
 func openWriter(ctx context.Context, path string) (*sql.DB, *sql.Conn, error) {

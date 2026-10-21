@@ -2,10 +2,8 @@ package sysops
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -76,47 +74,11 @@ func CodeSchemaVersion() (int64, error) {
 	return codeVersion, codeVersionErr
 }
 
-func readonlyDSN(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("sysops: resolve db path: %w", err)
-	}
-	u := url.URL{Scheme: "file", Path: abs}
-	return u.String() + "?mode=ro&_query_only=on&_busy_timeout=5000", nil
-}
-
 // AppliedSchemaVersion reads the highest applied migration from dbPath
 // without migrating. A missing file or a file without the migrations
 // table reports 0.
 func AppliedSchemaVersion(dbPath string) (int64, error) {
-	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
-	dsn, err := readonlyDSN(dbPath)
-	if err != nil {
-		return 0, err
-	}
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return 0, fmt.Errorf("sysops: open db for schema read: %w", err)
-	}
-	defer func() { _ = db.Close() }()
-	ctx := context.Background()
-	var table string
-	err = db.QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&table)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("sysops: read schema state: %w", err)
-	}
-	var highest int64
-	if err := db.QueryRowContext(ctx,
-		`SELECT COALESCE(max(version), 0) FROM schema_migrations`).Scan(&highest); err != nil {
-		return 0, fmt.Errorf("sysops: read schema state: %w", err)
-	}
-	return highest, nil
+	return store.AppliedSchemaVersion(dbPath)
 }
 
 // PendingSchemaVersions lists applied+1 through the binary's version:

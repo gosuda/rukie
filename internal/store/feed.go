@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -77,6 +79,9 @@ func (tx *WriteTx) GetPendingPush(id string) (PendingPush, error) {
 	var push PendingPush
 	var landed string
 	err = inner.QueryRowContext(tx.ctx, sqlPushGet, id).Scan(&push.InvocationID, &push.RepoID, &push.ActorID, &landed, &push.AttemptedAt, &push.Enqueued)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PendingPush{}, fmt.Errorf("GetPendingPush: %w: %s", ErrNotFound, id)
+	}
 	if err != nil {
 		return PendingPush{}, fmt.Errorf("GetPendingPush: %w", err)
 	}
