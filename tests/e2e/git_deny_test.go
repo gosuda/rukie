@@ -33,7 +33,6 @@ type trackFake struct {
 	t        *testing.T
 	opens    chan uint64
 	replies  chan wire.HookReply
-	cancels  chan struct{}
 	streams  chan struct{}
 	closes   chan struct{}
 	hook     *wire.HookCall
@@ -89,13 +88,6 @@ func (f *trackFake) serve(t *testing.T, conn net.Conn) {
 		kind, stream, payload := readFrameSoft(conn)
 		if kind == 0 {
 			return
-		}
-		if kind == 8 {
-			select {
-			case f.cancels <- struct{}{}:
-			default:
-			}
-			continue
 		}
 		if kind != 1 {
 			continue
@@ -163,12 +155,6 @@ func (f *trackFake) drainRound(t *testing.T, conn net.Conn, stream uint64) {
 		}
 		if kind == 4 {
 			break
-		}
-		if kind == 8 {
-			select {
-			case f.cancels <- struct{}{}:
-			default:
-			}
 		}
 	}
 	if f.hook != nil {
@@ -260,7 +246,6 @@ func newDenyHarness(t *testing.T, hook *wire.HookCall, delay time.Duration, visi
 		t:       t,
 		opens:   make(chan uint64, 64),
 		replies: make(chan wire.HookReply, 16),
-		cancels: make(chan struct{}, 16),
 		streams: make(chan struct{}, 64),
 		closes:  make(chan struct{}, 64),
 		hook:    hook,
@@ -333,6 +318,34 @@ func (h *denyHarness) grant(t *testing.T, userID, repoID int64, role string) {
 
 func (h *denyHarness) opens() int {
 	return len(h.fake.opens)
+}
+
+func (h *denyHarness) lsRemote(t *testing.T, repoURL string) map[string]string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	out, err := gitRun(ctx, t, t.TempDir(), "ls-remote", repoURL)
+	if err != nil {
+		t.Fatalf("ls-remote: %v\n%s", err, out)
+	}
+	refs := map[string]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		oid, name, _ := strings.Cut(line, "\t")
+		refs[name] = oid
+	}
+	return refs
+}
+
+func (h *denyHarness) repoURL(username, token string) string {
+	plain, _ := strings.CutPrefix(h.url, "http://")
+	creds := ""
+	if username != "" {
+		creds = username + ":" + token + "@"
+	}
+	return "http://" + creds + plain + "/ada/hello.git"
 }
 
 func TestGitDenialsOpenNoStream(t *testing.T) {
@@ -447,12 +460,14 @@ func TestGitClientDisconnectCancelsStream(t *testing.T) {
 	if derr != nil {
 		t.Logf("disconnected POST ended: %v", derr)
 	}
-	if _, ok := waitFor(t, h.fake.cancels, 10*time.Second); !ok {
-		t.Fatal("daemon saw no cancel after client disconnect")
-	}
+
 	_ = pw.Close()
 	if _, ok := waitFor(t, h.fake.closes, 10*time.Second); !ok {
 		t.Fatal("daemon stream never closed after client disconnect")
+	}
+	pushURL := h.repoURL("ada", h.ada.token)
+	if refs := h.lsRemote(t, pushURL); refs["refs/heads/main"] != "" {
+		t.Fatalf("aborted push landed: %q", refs["refs/heads/main"])
 	}
 }
 
