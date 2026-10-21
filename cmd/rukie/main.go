@@ -140,6 +140,22 @@ func configPath(flagValue string) string {
 	return "/etc/rukie/config.toml"
 }
 
+func superviseWorker(ctx context.Context, interval time.Duration, retry func(error) bool, run func(context.Context) error) {
+	for {
+		if err := run(ctx); err != nil && !retry(err) {
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
+}
+
 func runServe(argv []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	configFlag := fs.String("config", "", "config file path")
@@ -304,7 +320,11 @@ func runServe(argv []string) int {
 	sweepDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		_ = app.jobs.RunKinds(workerCtx, repowatch.WorkerConfig("serve"), repowatch.PurgeKinds(), app.watcher.HandlePurge)
+		superviseWorker(workerCtx, time.Minute, func(err error) bool {
+			return errors.Is(err, store.ErrBackupInProgress)
+		}, func(ctx context.Context) error {
+			return app.jobs.RunKinds(ctx, repowatch.WorkerConfig("serve"), repowatch.PurgeKinds(), app.watcher.HandlePurge)
+		})
 	}()
 	go func() {
 		defer close(sweepDone)
@@ -570,7 +590,10 @@ func llmsBase(cfg config.Config) string {
 
 func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *supervisor.Supervisor) (*app, func(), error) {
 	cleanup := func() {}
-	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, Logger: logger})
+	holdBarrier := func() (func(), bool) {
+		return sysops.HoldSharedBarrier(cfg.DataDir)
+	}
+	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, Logger: logger, Barrier: holdBarrier})
 	if err != nil {
 		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
@@ -643,6 +666,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	repoJobs := queue.Open(st, time.Now)
 	watcher := repowatch.New(repowatch.Config{
 		Store: st, Queue: repoJobs, Client: repoClient, RepoRoot: cfg.Ruk.RepoRoot,
+		Barrier: holdBarrier, Logger: logger,
 	})
 	repoDeps := api.Deps{
 		Service: authSvc, Limiter: limiter, Reveals: authDeps.Reveals,
@@ -736,7 +760,6 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
-	dataDir := cfg.DataDir
 	git, err := githttp.New(githttp.Config{
 		Auth:       authSvc,
 		Limiter:    limiter,
@@ -744,9 +767,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		RepoRoot:   cfg.Ruk.RepoRoot,
 		Limits:     wire.DefaultGitLimits(),
 		Feed:       events.OpenHookSink(st, spool, time.Now),
-		Barrier: func() (func(), bool) {
-			return sysops.HoldSharedBarrier(dataDir)
-		},
+		Barrier:    holdBarrier,
 	})
 	if err != nil {
 		cleanup()
@@ -756,7 +777,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	if sup != nil {
 		gitHandler = sup.FailFast(git)
 	}
-	sshSrv, err := setupSSH(cfg, authSvc, limiter, st, spool)
+	sshSrv, err := setupSSH(cfg, authSvc, limiter, st, spool, holdBarrier)
 	if err != nil {
 		cleanup()
 		return nil, cleanup, err

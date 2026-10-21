@@ -25,7 +25,7 @@ import (
 
 const sshKeepaliveInterval = 60 * time.Second
 
-func setupSSH(cfg config.Config, authSvc *auth.Service, limiter *access.Limiter, st *store.Store, spool *events.Spool) (*gitssh.Server, error) {
+func setupSSH(cfg config.Config, authSvc *auth.Service, limiter *access.Limiter, st *store.Store, spool *events.Spool, barrier func() (release func(), ok bool)) (*gitssh.Server, error) {
 	if !cfg.SSH.Enabled {
 		return nil, nil
 	}
@@ -45,6 +45,7 @@ func setupSSH(cfg config.Config, authSvc *auth.Service, limiter *access.Limiter,
 		MaxSessions:       cfg.SSH.MaxSessions,
 		IdleTimeout:       time.Duration(cfg.SSH.IdleTimeoutMs) * time.Millisecond,
 		KeepaliveInterval: sshKeepaliveInterval,
+		Barrier:           barrier,
 	})
 }
 

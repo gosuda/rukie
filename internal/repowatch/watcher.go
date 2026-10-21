@@ -1,9 +1,11 @@
 package repowatch
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 	"time"
@@ -29,17 +31,22 @@ type Config struct {
 	Client   *ruk.Client
 	Clock    func() time.Time
 	RepoRoot string
+	Barrier  func() (release func(), ok bool)
+	Logger   *slog.Logger
 }
 
 type Watcher struct {
-	store    *store.Store
-	queue    *queue.Queue
-	client   *ruk.Client
-	clock    func() time.Time
-	cancel   map[int64]context.CancelFunc
-	repoRoot string
-	wg       sync.WaitGroup
-	mu       sync.Mutex
+	store      *store.Store
+	queue      *queue.Queue
+	client     *ruk.Client
+	clock      func() time.Time
+	cancel     map[int64]context.CancelFunc
+	repoRoot   string
+	barrier    func() (release func(), ok bool)
+	retryEvery time.Duration
+	log        *slog.Logger
+	wg         sync.WaitGroup
+	mu         sync.Mutex
 }
 
 func New(cfg Config) *Watcher {
@@ -48,12 +55,15 @@ func New(cfg Config) *Watcher {
 		clock = time.Now
 	}
 	return &Watcher{
-		store:    cfg.Store,
-		queue:    cfg.Queue,
-		client:   cfg.Client,
-		clock:    clock,
-		repoRoot: cfg.RepoRoot,
-		cancel:   map[int64]context.CancelFunc{},
+		store:      cfg.Store,
+		queue:      cfg.Queue,
+		client:     cfg.Client,
+		clock:      clock,
+		repoRoot:   cfg.RepoRoot,
+		barrier:    cfg.Barrier,
+		retryEvery: 10 * time.Second,
+		log:        cmp.Or(cfg.Logger, slog.Default()),
+		cancel:     map[int64]context.CancelFunc{},
 	}
 }
 
@@ -178,13 +188,29 @@ func (w *Watcher) watch(ctx context.Context, repoID int64) {
 	inner.Add(2)
 	go func() {
 		defer inner.Done()
-		_ = follower.Run(ctx)
+		w.supervise(ctx, follower.Run)
 	}()
 	go func() {
 		defer inner.Done()
-		_ = reconciler.Run(ctx)
+		w.supervise(ctx, reconciler.Run)
 	}()
 	inner.Wait()
+}
+
+func (w *Watcher) supervise(ctx context.Context, run func(context.Context) error) {
+	for {
+		if err := run(ctx); err != nil {
+			w.log.Warn("watch worker exited; restarting", slog.Any("err", err))
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(w.retryEvery):
+		}
+	}
 }
 
 func (w *Watcher) RunSweeper(ctx context.Context, interval time.Duration) error {
@@ -264,6 +290,13 @@ func (w *Watcher) HandlePurge(ctx context.Context, job store.Job) error {
 	}
 	if w.now().UnixMilli() < payload.NotBefore {
 		return fmt.Errorf("repowatch: purge for repo %d is not due", payload.RepoID)
+	}
+	if w.barrier != nil {
+		release, ok := w.barrier()
+		if !ok {
+			return fmt.Errorf("repowatch: %w", store.ErrBackupInProgress)
+		}
+		defer release()
 	}
 	if w.store == nil || w.client == nil {
 		return fmt.Errorf("repowatch: store and client are required")

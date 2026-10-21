@@ -35,6 +35,7 @@ type Options struct {
 	QueueDepth int
 	// AllowPOSIXLocks permits Open where OFD locks are unavailable.
 	AllowPOSIXLocks bool
+	Barrier         func() (release func(), ok bool)
 }
 
 // Stats is advisory and intended for metrics.
@@ -61,6 +62,7 @@ type Store struct {
 	closeSem     chan struct{}
 	path         string
 	ftsTokenizer string
+	barrier      func() (release func(), ok bool)
 	migrations   []migration
 	readerCount  int
 	signalOnce   sync.Once
@@ -126,6 +128,7 @@ func openAt(ctx context.Context, path string, opts Options, fsys fs.FS) (*Store,
 	st := &Store{
 		path:         path,
 		ftsTokenizer: tokenizer,
+		barrier:      opts.Barrier,
 		log:          cmp.Or(opts.Logger, slog.Default()),
 		migrations:   migs,
 		wdb:          wdb,
@@ -172,6 +175,13 @@ func (s *Store) Read(ctx context.Context, fn func(tx *ReadTx) error) error {
 func (s *Store) Write(ctx context.Context, fn func(tx *WriteTx) error) error {
 	if fn == nil {
 		return ErrInvalid
+	}
+	if s.barrier != nil {
+		release, ok := s.barrier()
+		if !ok {
+			return ErrBackupInProgress
+		}
+		defer release()
 	}
 	r := &writeReq{ctx: ctx, fn: fn, done: make(chan error, 1)}
 	if err := s.writer.submit(ctx, r); err != nil {

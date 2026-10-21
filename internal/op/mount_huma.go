@@ -30,6 +30,11 @@ import (
 	"github.com/gosuda/rukie/internal/web/secheaders"
 )
 
+type backupRefusal interface {
+	error
+	BackupInProgress() bool
+}
+
 var ErrUnauthenticated = errors.New("unauthenticated")
 
 type Authenticator interface {
@@ -484,8 +489,12 @@ func defaultRecovery(code Code) *Recovery {
 }
 
 func problemFor(st *reqState, s *Spec, err error) problemBody {
-	target, ok := errors.AsType[*Error](err)
-	if !ok {
+	var target *Error
+	if refusal, isRefusal := errors.AsType[backupRefusal](err); isRefusal && refusal.BackupInProgress() {
+		target = &Error{Code: CodeUnavailable, Detail: "backup in progress; retry the mutation shortly", RetryAfter: 10 * time.Second}
+	} else if parsed, ok := errors.AsType[*Error](err); ok {
+		target = parsed
+	} else {
 		target = &Error{Code: CodeInternal, Detail: "internal error"}
 	}
 	declared := s == nil
@@ -1337,6 +1346,9 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request, st *reqState, st
 		status = p.Status
 		header = http.Header{}
 		header.Set("Content-Type", "application/problem+json")
+		if p.Recovery != nil && p.Recovery.BackoffMs > 0 {
+			header.Set("Retry-After", strconv.FormatInt((p.Recovery.BackoffMs+999)/1000, 10))
+		}
 		raw, _ := jsonv2.Marshal(p, jsonv1.DefaultOptionsV1())
 		body = raw
 	}

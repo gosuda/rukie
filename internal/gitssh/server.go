@@ -45,6 +45,7 @@ type Config struct {
 	MaxSessions       int
 	IdleTimeout       time.Duration
 	KeepaliveInterval time.Duration
+	Barrier           func() (release func(), ok bool)
 }
 
 // Server speaks git-upload-pack and git-receive-pack over SSH exec.
@@ -67,6 +68,7 @@ type Server struct {
 	keepEvery time.Duration
 	maxSess   int
 	hookAfter time.Duration
+	barrier   func() (release func(), ok bool)
 	sessions  int
 	mu        sync.Mutex
 	closed    atomic.Bool
@@ -147,6 +149,7 @@ func New(cfg Config) (*Server, error) {
 		sock:      cfg.SocketPath,
 		limits:    cfg.Limits,
 		hookAfter: hookTimeout,
+		barrier:   cfg.Barrier,
 		hostKeys:  cfg.HostKeys,
 		maxSess:   maxSess,
 		idleAfter: idleAfter,
@@ -287,7 +290,7 @@ func (s *Server) handle(ctx context.Context, conf *ssh.ServerConfig, raw net.Con
 		perms := conn.Permissions
 		go func() {
 			defer s.releaseSession()
-			s.serveSession(ctx, perms, channel, reqs, live)
+			s.serveSessionGuarded(ctx, perms, channel, reqs, live)
 		}()
 	}
 }

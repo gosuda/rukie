@@ -46,8 +46,15 @@ var (
 	// ErrMigrationChanged reports an applied migration whose bytes changed.
 	ErrMigrationChanged = errors.New("store: applied migration checksum differs from embedded file")
 	// ErrMigrationFailed reports a migration whose transaction rolled back.
-	ErrMigrationFailed = errors.New("store: migration failed; transaction rolled back")
+	ErrMigrationFailed  = errors.New("store: migration failed; transaction rolled back")
+	ErrBackupInProgress = barrierRefusal{}
 )
+
+type barrierRefusal struct{}
+
+func (barrierRefusal) Error() string { return "store: backup in progress" }
+
+func (barrierRefusal) BackupInProgress() bool { return true }
 
 const (
 	sqliteConstraintCheck   = sqlite3.SQLITE_CONSTRAINT_CHECK
