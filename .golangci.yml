@@ -26,5 +26,8 @@ linters:
       - path: ^internal/auth/totp\.go$
         text: G505
         linters: [gosec]
+      - path: ^internal/gitssh/exec\.go$
+        text: G115
+        linters: [gosec]
 formatters:
   enable: [gofmt, goimports]

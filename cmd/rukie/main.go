@@ -26,6 +26,7 @@ import (
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/events"
 	"github.com/gosuda/rukie/internal/githttp"
+	"github.com/gosuda/rukie/internal/gitssh"
 	"github.com/gosuda/rukie/internal/logging"
 	"github.com/gosuda/rukie/internal/mcp"
 	"github.com/gosuda/rukie/internal/op"
@@ -320,6 +321,20 @@ func runServe(argv []string) int {
 		<-sweepDone
 		return nil
 	}
+	if app.ssh != nil {
+		if _, err := serveSSHListeners(ctx, app.ssh, cfg.SSH.Listen); err != nil {
+			logger.Error("ssh listen", slog.Any("err", err))
+			supStop()
+			_ = waitSupervisorOnce()
+			return 78
+		}
+		for _, addr := range cfg.SSH.Listen {
+			logger.Info("listening ssh", slog.String("addr", addr))
+		}
+		ownedDrainRunners["ssh"] = func(context.Context) error {
+			return app.ssh.Close()
+		}
+	}
 	supervisorDeathStopsServing := make(chan error, 1)
 	go func() {
 		if err := waitSupervisorOnce(); err != nil {
@@ -444,15 +459,23 @@ type app struct {
 	spool   *events.Spool
 	watcher *repowatch.Watcher
 	jobs    *queue.Queue
+	ssh     *gitssh.Server
 }
 
 type gitFallback struct {
-	git      *githttp.Server
 	fallback http.Handler
+	git      *githttp.Server
 	daemon   func() (bool, string)
+	keys     api.Deps
 }
 
 func (h gitFallback) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if owner, ok := api.OwnerKeysPath(r.URL.Path); ok {
+			api.ServeOwnerKeys(w, r, h.keys, owner)
+			return
+		}
+	}
 	if _, _, ok := githttp.RouteGitPath(r.URL.Path); ok {
 		if h.daemon != nil {
 			if ready, _ := h.daemon(); !ready {
@@ -535,6 +558,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	if regErr := api.RegisterSSHKeys(table, authDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	if regErr := api.RegisterAdmin(table, authDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
@@ -580,6 +607,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	api.RegisterViews(views)
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
+	api.RegisterSSHKeysViews(views)
 	api.RegisterAdminViews(views)
 	api.RegisterF12Views(views)
 	api.RegisterReposViews(views)
@@ -651,7 +679,12 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, daemo
 	if daemon == nil {
 		daemon = api.NotReadyDaemon
 	}
-	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: git, fallback: server, daemon: daemon}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs}, cleanup, nil
+	sshSrv, err := setupSSH(cfg, authSvc, limiter, st, spool)
+	if err != nil {
+		cleanup()
+		return nil, cleanup, err
+	}
+	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: git, keys: authDeps, fallback: server, daemon: daemon}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {

@@ -31,9 +31,9 @@ type SSHConfig struct {
 	Shell         string   `toml:"shell"`
 	Listen        []string `toml:"listen"`
 	HostKeyFiles  []string `toml:"host_key_files"`
-	MaxSessions   uint     `toml:"max_sessions"`
+	MaxSessions   int      `toml:"max_sessions"`
 	AuthTimeoutMs uint     `toml:"auth_timeout_ms"`
-	IdleTimeoutMs uint     `toml:"idle_timeout_ms"`
+	IdleTimeoutMs int64    `toml:"idle_timeout_ms"`
 	Enabled       bool     `toml:"enabled"`
 }
 
@@ -184,7 +184,7 @@ func Defaults() Config {
 			Listen: []string{"127.0.0.1:3000"}, ReadTimeoutMs: 15000, ReadHeaderTimeoutMs: 10000,
 			WriteTimeoutMs: 60000, IdleTimeoutMs: 120000, MaxRequestBodyBytes: 33554432, ShutdownDrainMs: 30000,
 		},
-		SSH:   SSHConfig{Listen: []string{"0.0.0.0:2222"}, Shell: "internal", MaxSessions: 128, AuthTimeoutMs: 30000, IdleTimeoutMs: 300000},
+		SSH:   SSHConfig{Listen: []string{"0.0.0.0:2222"}, Shell: "internal", MaxSessions: 128, AuthTimeoutMs: 30000, IdleTimeoutMs: 600000},
 		Store: StoreConfig{Backend: "sqlite", SQLite: SQLiteConfig{MaxOpenConns: 16, BusyTimeoutMs: 5000}, Pebble: PebbleConfig{CacheBytes: 67108864}},
 		Ruk: RukConfig{
 			BinaryPath: "ruk", MaxConnections: 128, BlockingPoolSize: 16,
