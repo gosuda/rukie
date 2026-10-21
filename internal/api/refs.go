@@ -354,7 +354,7 @@ func branchUpdateHandler(d Deps) func(context.Context, op.Principal, BranchUpdat
 		if !ok {
 			return BranchUpdateOut{}, op.Errorf(op.CodeNotFound, "branch was not found")
 		}
-		if !etagMatches(in.IfMatch, "\""+current+"\"") {
+		if !etagMatches(in.IfMatch, "\""+current+"\"") && !etagMatches(in.IfMatch, "\"branch-"+current+"\"") {
 			return BranchUpdateOut{}, op.Errorf(op.CodeStale, "branch moved under this request")
 		}
 		to, terr := d.resolveRev(ctx, rc, in.Body.Target)
@@ -408,7 +408,7 @@ func branchDeleteHandler(d Deps) func(context.Context, op.Principal, BranchDelet
 		if !ok {
 			return BranchDeleteOut{}, op.Errorf(op.CodeNotFound, "branch was not found")
 		}
-		if !etagMatches(in.IfMatch, "\""+current+"\"") {
+		if !etagMatches(in.IfMatch, "\""+current+"\"") && !etagMatches(in.IfMatch, "\"branch-"+current+"\"") {
 			return BranchDeleteOut{}, op.Errorf(op.CodeStale, "branch moved under this request")
 		}
 		var reply map[string]any
@@ -606,7 +606,7 @@ func tagDeleteHandler(d Deps) func(context.Context, op.Principal, TagDeleteIn) (
 		if !ok {
 			return TagDeleteOut{}, op.Errorf(op.CodeNotFound, "tag was not found")
 		}
-		if !etagMatches(in.IfMatch, "\""+current+"\"") {
+		if !etagMatches(in.IfMatch, "\""+current+"\"") && !etagMatches(in.IfMatch, "\"tag-"+current+"\"") {
 			return TagDeleteOut{}, op.Errorf(op.CodeStale, "tag moved under this request")
 		}
 		var reply map[string]any
