@@ -57,7 +57,7 @@ func (a Args) ToRequest(s *Spec, d *Document, base *url.URL) (*http.Request, err
 		}
 		plain = strings.Replace(plain, "{"+p.Name+"}", value, 1)
 		plain = strings.Replace(plain, "{"+p.Name+"...}", value, 1)
-		enc := value
+		var enc string
 		if !strings.Contains(s.Path, "{"+p.Name+"...}") {
 			enc = url.PathEscape(value)
 		} else {
