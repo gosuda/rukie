@@ -372,8 +372,8 @@ func TestKeysExportOpHandler(t *testing.T) {
 	if second := opv.ETag(out2); second == first {
 		t.Fatalf("etag unchanged after key add")
 	}
-	if _, err := opv.Handler(t.Context(), op.AnonymousPrincipal(), api.KeysExportIn{Owner: "ghost"}); !isKeysNotFound(err) {
-		t.Fatalf("unknown user err = %v", err)
+	if _, ghostErr := opv.Handler(t.Context(), op.AnonymousPrincipal(), api.KeysExportIn{Owner: "ghost"}); !isKeysNotFound(ghostErr) {
+		t.Fatalf("unknown user err = %v", ghostErr)
 	}
 	admin, err := e.svc.GetUser(t.Context(), "ada")
 	if err != nil {
@@ -387,8 +387,8 @@ func TestKeysExportOpHandler(t *testing.T) {
 	if _, err := e.svc.UpdateUser(t.Context(), admin.ID, auth.UpdateUserInput{Target: user.Name, IsActive: &inactive, IfMatch: tag}, "127.0.0.1"); err != nil {
 		t.Fatalf("deactivate: %v", err)
 	}
-	if _, err := opv.Handler(t.Context(), op.AnonymousPrincipal(), api.KeysExportIn{Owner: "erin"}); !isKeysNotFound(err) {
-		t.Fatalf("inactive user err = %v", err)
+	if _, inactiveErr := opv.Handler(t.Context(), op.AnonymousPrincipal(), api.KeysExportIn{Owner: "erin"}); !isKeysNotFound(inactiveErr) {
+		t.Fatalf("inactive user err = %v", inactiveErr)
 	}
 }
 

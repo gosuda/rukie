@@ -23,8 +23,8 @@ func TestProtectedBranchNeedsRef(t *testing.T) {
 	if !empty.Allow {
 		t.Fatalf("empty ref unexpectedly denied: %v", empty.Reason)
 	}
-	real := access.Check(res, caller, "repo.push", access.Resource{Kind: access.KindRepo, RepoID: 7, Ref: "refs/heads/main"})
-	if real.Allow {
+	withRef := access.Check(res, caller, "repo.push", access.Resource{Kind: access.KindRepo, RepoID: 7, Ref: "refs/heads/main"})
+	if withRef.Allow {
 		t.Fatalf("protected branch push with real ref must be denied")
 	}
 }
