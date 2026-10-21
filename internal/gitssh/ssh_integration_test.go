@@ -121,7 +121,11 @@ func newSSHStackWith(t *testing.T, idle, keepalive time.Duration) *sshStack {
 		t.Fatalf("roots: %v", err)
 	}
 	sqlite := filepath.Join(dir, "rukie.sqlite")
-	sshTestDB(t, sqlite)
+	st, err := store.Open(t.Context(), store.Options{Path: sqlite})
+	if err != nil {
+		t.Fatalf("store open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	svc, err := auth.Open(sqlite)
 	if err != nil {
 		t.Fatalf("auth open: %v", err)
@@ -157,11 +161,6 @@ func newSSHStackWith(t *testing.T, idle, keepalive time.Duration) *sshStack {
 		t.Fatalf("host pub: %v", err)
 	}
 	hostLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostSSHPub)))
-	st, err := store.Open(t.Context(), store.Options{Path: sqlite})
-	if err != nil {
-		t.Fatalf("store open: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	srv, err := New(Config{
 		Auth:              svc,
 		Limiter:           access.NewLimiter(),

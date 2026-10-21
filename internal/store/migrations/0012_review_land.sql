@@ -47,7 +47,7 @@ CREATE TABLE patchsets (
   id         INTEGER PRIMARY KEY,
   change_id  INTEGER NOT NULL REFERENCES changes(id) ON DELETE CASCADE,
   ordinal    INTEGER NOT NULL CHECK (ordinal > 0),
-  head_oid   TEXT    NOT NULL CHECK (length(head_oid) = 64),
+  head_oid   TEXT    NOT NULL CHECK (head_oid = '' OR length(head_oid) IN (40, 64)),
   created_at INTEGER NOT NULL CHECK (created_at > 0),
   UNIQUE (change_id, ordinal)
 ) STRICT;
