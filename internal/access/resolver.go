@@ -164,7 +164,7 @@ func (s *SQLResolver) Repo(id int64) (RepoRecord, bool) {
 	var vis string
 	var owner sql.NullInt64
 	ctx := context.Background()
-	err := s.db.QueryRowContext(ctx, `SELECT id, owner_user_id, org_id, visibility FROM repos WHERE id = ?`, id).Scan(
+	err := s.db.QueryRowContext(ctx, `SELECT id, owner_user_id, org_id, visibility FROM repos WHERE id = ? AND deleted_at IS NULL`, id).Scan(
 		&r.ID, &owner, &r.OrgID, &vis)
 	if err != nil {
 		return RepoRecord{}, false

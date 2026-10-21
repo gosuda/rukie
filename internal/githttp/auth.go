@@ -128,7 +128,7 @@ func (s *Server) lookupRepo(ctx context.Context, owner, repo string) (int64, boo
 		return 0, false
 	}
 	var repoID int64
-	err = s.db.QueryRowContext(ctx, `SELECT id FROM repos WHERE owner_user_id = ? AND org_id = 0 AND name = ?`, userID, repo).Scan(&repoID)
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM repos WHERE owner_user_id = ? AND org_id = 0 AND name = ? AND deleted_at IS NULL`, userID, repo).Scan(&repoID)
 	if err != nil {
 		return 0, false
 	}
