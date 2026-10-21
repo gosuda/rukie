@@ -4,7 +4,7 @@
 
 Mint a scoped agent token
 
-Session-only with fresh auth. The secret is shown once. Repo restriction is empty until F4.
+Session-only with fresh auth. The secret is shown once. A repo selector narrows the token to listed repositories.
 
 - Method and path: `POST /settings/tokens`
 - Scope: `repo:read`
@@ -26,4 +26,4 @@ Session-only with fresh auth. The secret is shown once. Repo restriction is empt
 
 ## Errors
 
-`unauthorized`, `validation`, plus the framework problems.
+`not-found`, `unauthorized`, `validation`, plus the framework problems.

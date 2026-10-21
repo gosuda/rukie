@@ -102,6 +102,9 @@ func RegisterUser(t *op.Table, deps Deps) error {
 				}
 				return UserGetOut{Name: u.Name, FullName: u.FullName}, nil
 			}
+			if deps.Store == nil {
+				return UserGetOut{}, op.Errorf(op.CodeNotFound, "unknown user")
+			}
 			return orgProfileForOwner(ctx, deps, p, in.Owner)
 		},
 	}); err != nil {

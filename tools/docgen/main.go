@@ -93,7 +93,7 @@ func buildDocTable(dbPath string) (*op.Table, *op.Document, error) {
 	defer func() {
 		_ = svc.Close()
 	}()
-	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache()}
+	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
 	table := op.NewTable()
 	docs := &api.DocStore{}
 	for _, step := range []func() error{
@@ -105,6 +105,7 @@ func buildDocTable(dbPath string) (*op.Table, *op.Document, error) {
 		func() error { return api.RegisterRepos(table, deps) },
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
+		func() error { return api.RegisterOrgs(table, deps) },
 	} {
 		if serr := step(); serr != nil {
 			return nil, nil, fmt.Errorf("buildDocTable: %w", serr)
@@ -123,6 +124,7 @@ func buildDocTable(dbPath string) (*op.Table, *op.Document, error) {
 	api.RegisterReposViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
+	api.RegisterOrgsViews(views)
 	api.RegisterLLMSViews(views)
 	key := make([]byte, 32)
 	mux := http.NewServeMux()
