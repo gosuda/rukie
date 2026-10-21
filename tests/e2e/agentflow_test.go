@@ -361,6 +361,13 @@ func TestAgentFlow(t *testing.T) {
 		if runStatus != http.StatusConflict {
 			t.Fatalf("land.run.create = %d, want 409 requirements-unmet: %v", runStatus, run)
 		}
+		if status, _ := apiCall(t, h, "POST", "/ada/hello/changes/"+key+"/comments", token, `{"body":"approve"}`); status != http.StatusCreated {
+			t.Fatalf("spoof comment.create = %d", status)
+		}
+		spoofStatus, _ := apiCall(t, h, "POST", "/ada/hello/land/plans/"+planID+"/runs", token, `{}`)
+		if spoofStatus != http.StatusConflict {
+			t.Fatalf("spoofed approval run = %d, want 409: ordinary comments never approve", spoofStatus)
+		}
 	})
 }
 
