@@ -370,35 +370,35 @@ func TestOIDCBrowserBinding(t *testing.T) {
 	_, _, _, browserB := startStubLogin(t, svc, 0)
 	attackerState, attackerChallenge, attackerNonce, _ := startStubLogin(t, svc, 0)
 	attackerCode := op.issueCode(attackerChallenge, attackerNonce, "attacker-sub", "attacker", "attacker@example.com", true)
-	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+	if _, cbErr := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: attackerCode, State: attackerState, IP: "127.0.0.1",
 		UserAgent: "victim-browser", BrowserSecret: browserB, SessionSecret: victimLogin.Secret,
-	}); !errors.Is(err, errOIDCBadState) {
-		t.Fatalf("foreign-browser replay err = %v, want bad-state", err)
+	}); !errors.Is(cbErr, errOIDCBadState) {
+		t.Fatalf("foreign-browser replay err = %v, want bad-state", cbErr)
 	}
-	if _, err := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); err == nil {
+	if _, linkErr := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); linkErr == nil {
 		t.Fatal("attacker subject linked to victim across browsers")
 	}
 	attackerState2, attackerChallenge2, attackerNonce2, _ := startStubLogin(t, svc, 0)
 	attackerCode2 := op.issueCode(attackerChallenge2, attackerNonce2, "attacker-sub", "attacker", "attacker@example.com", true)
-	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+	if _, cbErr := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: attackerCode2, State: attackerState2, IP: "127.0.0.1",
 		UserAgent: "victim-browser", SessionSecret: victimLogin.Secret,
-	}); !errors.Is(err, errOIDCBadState) {
-		t.Fatalf("missing-secret replay err = %v, want bad-state", err)
+	}); !errors.Is(cbErr, errOIDCBadState) {
+		t.Fatalf("missing-secret replay err = %v, want bad-state", cbErr)
 	}
-	if _, err := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); err == nil {
+	if _, linkErr := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); linkErr == nil {
 		t.Fatal("attacker subject linked with missing browser secret")
 	}
 	attackerState3, attackerChallenge3, attackerNonce3, _ := startStubLogin(t, svc, 0)
 	attackerCode3 := op.issueCode(attackerChallenge3, attackerNonce3, "attacker-sub", "attacker", "attacker@example.com", true)
-	if _, err := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
+	if _, cbErr := svc.HandleOIDCCallback(t.Context(), OIDCCallbackInput{
 		ProviderID: "stub", Code: attackerCode3, State: attackerState3, IP: "127.0.0.1",
 		UserAgent: "victim-browser", BrowserSecret: "forged-secret", SessionSecret: victimLogin.Secret,
-	}); !errors.Is(err, errOIDCBadState) {
-		t.Fatalf("wrong-secret replay err = %v, want bad-state", err)
+	}); !errors.Is(cbErr, errOIDCBadState) {
+		t.Fatalf("wrong-secret replay err = %v, want bad-state", cbErr)
 	}
-	if _, err := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); err == nil {
+	if _, linkErr := svc.userByOIDCLink(t.Context(), op.issuer, "attacker-sub"); linkErr == nil {
 		t.Fatal("attacker subject linked with forged browser secret")
 	}
 	ownState, ownChallenge, ownNonce, ownBrowser := startStubLogin(t, svc, victim.ID)
