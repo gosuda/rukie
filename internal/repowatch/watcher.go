@@ -30,9 +30,9 @@ type Config struct {
 	Queue    *queue.Queue
 	Client   *ruk.Client
 	Clock    func() time.Time
-	RepoRoot string
 	Barrier  func() (release func(), ok bool)
 	Logger   *slog.Logger
+	RepoRoot string
 }
 
 type Watcher struct {
@@ -41,10 +41,10 @@ type Watcher struct {
 	client     *ruk.Client
 	clock      func() time.Time
 	cancel     map[int64]context.CancelFunc
-	repoRoot   string
 	barrier    func() (release func(), ok bool)
-	retryEvery time.Duration
 	log        *slog.Logger
+	repoRoot   string
+	retryEvery time.Duration
 	wg         sync.WaitGroup
 	mu         sync.Mutex
 }
