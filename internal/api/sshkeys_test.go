@@ -359,7 +359,7 @@ func TestKeysExportOpHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ada: %v", err)
 	}
-	tag, err := e.svc.ETagFor(user.ID)
+	tag, err := e.svc.ETagFor(t.Context(), user.ID)
 	if err != nil {
 		t.Fatalf("etag: %v", err)
 	}
