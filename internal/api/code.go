@@ -983,7 +983,7 @@ func RegisterCode(t *op.Table, deps Deps) error {
 			"prefixes, and full oids resolve through the revset. Ambiguous names fail, never guess.",
 		Problems: []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
 		ETag: func(out RevResolveOut) string {
-			return fmt.Sprintf("\"rev-%s-%s\"", out.Kind, out.Commit)
+			return fmt.Sprintf("rev-%s-%s", out.Kind, out.Commit)
 		},
 		Handler: revResolveHandler(deps),
 	}); err != nil {
@@ -996,7 +996,7 @@ func RegisterCode(t *op.Table, deps Deps) error {
 			"The root directory reads through code.tree.list.",
 		Problems: []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeValidation, op.CodeForbidden},
 		ETag: func(out TreeGetOut) string {
-			return fmt.Sprintf("\"tree-%s-%s-%x-%d\"", out.Commit, out.Path, etagHash(out.Next), len(out.Items))
+			return fmt.Sprintf("tree-%s-%s-%x-%d", out.Commit, out.Path, etagHash(out.Next), len(out.Items))
 		},
 		Pagination: &op.Pagination[TreeGetOut]{Default: 100, Max: 1000, Next: func(out TreeGetOut) (string, bool) {
 			if out.Next == "" {
@@ -1016,9 +1016,9 @@ func RegisterCode(t *op.Table, deps Deps) error {
 		Problems: []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden, op.CodeConflict},
 		ETag: func(out BlobGetOut) string {
 			if out.Oid == "" {
-				return fmt.Sprintf("\"blob-%s-%s\"", out.Commit, out.Path)
+				return fmt.Sprintf("blob-%s-%s", out.Commit, out.Path)
 			}
-			return "\"blob-" + out.Oid + "\""
+			return "blob-" + out.Oid
 		},
 		Handler: blobGetHandler(deps),
 	}); err != nil {
@@ -1032,7 +1032,7 @@ func RegisterCode(t *op.Table, deps Deps) error {
 			"Full-oid revisions are immutable.",
 		Problems: []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
 		ETag: func(out RawGetOut) string {
-			return "\"raw-" + out.Oid + "\""
+			return "raw-" + out.Oid
 		},
 		Handler: rawGetHandler(deps),
 	}); err != nil {
@@ -1044,7 +1044,7 @@ func RegisterCode(t *op.Table, deps Deps) error {
 		Description: "Line hunks with introducing commits. Binary files fail.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
 		ETag: func(out BlameGetOut) string {
-			return fmt.Sprintf("\"blame-%s-%s-%x-%d\"", out.Commit, out.Path, etagHash(out.Next), len(out.Hunks))
+			return fmt.Sprintf("blame-%s-%s-%x-%d", out.Commit, out.Path, etagHash(out.Next), len(out.Hunks))
 		},
 		Pagination: &op.Pagination[BlameGetOut]{Default: 100, Max: 1000, Next: func(out BlameGetOut) (string, bool) {
 			if out.Next == "" {
@@ -1064,9 +1064,9 @@ func RegisterCode(t *op.Table, deps Deps) error {
 		Problems: []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
 		ETag: func(out LogListOut) string {
 			if len(out.Commits) == 0 {
-				return "\"log-empty\""
+				return "log-empty"
 			}
-			return fmt.Sprintf("\"log-%s-%x-%d\"", out.Commits[0].Head, etagHash(out.Next), len(out.Commits))
+			return fmt.Sprintf("log-%s-%x-%d", out.Commits[0].Head, etagHash(out.Next), len(out.Commits))
 		},
 		Pagination: &op.Pagination[LogListOut]{Default: 30, Max: 100, Next: func(out LogListOut) (string, bool) {
 			if out.Next == "" {
@@ -1083,7 +1083,7 @@ func RegisterCode(t *op.Table, deps Deps) error {
 		Scope: op.ScopePublicRead, Summary: "Show one commit",
 		Description: "Message, parents, and live attestations. Immutable: full-oid revisions cache.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeValidation, op.CodeForbidden},
-		ETag:        func(out CommitGetOut) string { return "\"commit-" + out.Oid + "\"" },
+		ETag:        func(out CommitGetOut) string { return "commit-" + out.Oid },
 		Handler:     commitGetHandler(deps),
 	}); err != nil {
 		return err
@@ -1095,7 +1095,7 @@ func RegisterCode(t *op.Table, deps Deps) error {
 			"Only the daemon default context and rename settings are served.",
 		Problems: []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
 		ETag: func(out DiffGetOut) string {
-			return fmt.Sprintf("\"diff-%s-%s-%x-%d\"", out.Left, out.Right, etagHash(out.Next), len(out.Files))
+			return fmt.Sprintf("diff-%s-%s-%x-%d", out.Left, out.Right, etagHash(out.Next), len(out.Files))
 		},
 		Pagination: &op.Pagination[DiffGetOut]{Default: 100, Max: 1000, Next: func(out DiffGetOut) (string, bool) {
 			if out.Next == "" {

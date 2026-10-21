@@ -387,6 +387,27 @@ func TestRepoRestoreStrangerDenied(t *testing.T) {
 	}
 }
 
+func TestRepoConditionalGet304(t *testing.T) {
+	e := buildRepoEnv(t)
+	rbootstrap(t, e, "ada", "long-test-password-01")
+	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	rseedRepo(t, e, ada.ID, "pub", "public")
+	first := rdo(t, e, "GET", "/ada/pub", "", "")
+	if first.Code != 200 {
+		t.Fatalf("get = %d: %s", first.Code, first.Body.String())
+	}
+	etag := first.Header().Get("ETag")
+	if !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) || strings.HasPrefix(etag, `""`) {
+		t.Fatalf("etag %q is not a single-quoted strong validator", etag)
+	}
+	second := rdoFull(t, e, "GET", "/ada/pub", "", "application/json", map[string]string{"If-None-Match": etag}, "")
+	if second.Code != http.StatusNotModified {
+		t.Fatalf("conditional get = %d: %s", second.Code, second.Body.String())
+	}
+	if second.Body.Len() != 0 {
+		t.Fatalf("304 must have no body")
+	}
+}
 func TestRepoOpRegistration(t *testing.T) {
 	e := buildRepoEnv(t)
 	names := map[string]bool{}

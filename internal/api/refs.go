@@ -628,7 +628,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Description: "Keyset pages over the hosted branch namespace.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
 		ETag: func(out BranchListOut) string {
-			return fmt.Sprintf("\"branches-%d-%x\"", len(out.Branches), etagHash(out.Next))
+			return fmt.Sprintf("branches-%d-%x", len(out.Branches), etagHash(out.Next))
 		},
 		Pagination: &op.Pagination[BranchListOut]{Default: 30, Max: 100, Next: func(out BranchListOut) (string, bool) {
 			if out.Next == "" {
@@ -645,7 +645,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Scope: op.ScopePublicRead, Summary: "Show a branch",
 		Description: "The branch target as stored. Slashed names arrive percent-encoded.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeInvalid, op.CodeForbidden},
-		ETag:        func(out BranchGetOut) string { return "\"branch-" + out.Branch.Target + "\"" },
+		ETag:        func(out BranchGetOut) string { return "branch-" + out.Branch.Target },
 		Handler:     branchGetHandler(deps),
 	}); err != nil {
 		return err
@@ -655,7 +655,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Create a branch",
 		Description: "Compare-and-swap on absence through the hosted bookmark. Needs repo:write.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeArchived},
-		ETag:        func(out BranchCreateOut) string { return "\"branch-" + out.Branch.Target + "\"" },
+		ETag:        func(out BranchCreateOut) string { return "branch-" + out.Branch.Target },
 		Location:    func(BranchCreateOut) string { return "" },
 		Handler:     branchCreateHandler(deps),
 	}); err != nil {
@@ -668,7 +668,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq, op.CodeArchived},
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		Status:      http.StatusOK,
-		ETag:        func(out BranchUpdateOut) string { return "\"branch-" + out.Branch.Target + "\"" },
+		ETag:        func(out BranchUpdateOut) string { return "branch-" + out.Branch.Target },
 		Location:    func(BranchUpdateOut) string { return "" },
 		Handler:     branchUpdateHandler(deps),
 	}); err != nil {
@@ -682,7 +682,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		Status:      http.StatusNoContent,
 		Location:    func(BranchDeleteOut) string { return "" },
-		ETag:        func(BranchDeleteOut) string { return "\"branch-deleted\"" },
+		ETag:        func(BranchDeleteOut) string { return "branch-deleted" },
 		Handler:     branchDeleteHandler(deps),
 	}); err != nil {
 		return err
@@ -693,7 +693,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Description: "Keyset pages over the hosted tag namespace.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
 		ETag: func(out TagListOut) string {
-			return fmt.Sprintf("\"tags-%d-%x\"", len(out.Tags), etagHash(out.Next))
+			return fmt.Sprintf("tags-%d-%x", len(out.Tags), etagHash(out.Next))
 		},
 		Pagination: &op.Pagination[TagListOut]{Default: 30, Max: 100, Next: func(out TagListOut) (string, bool) {
 			if out.Next == "" {
@@ -710,7 +710,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Scope: op.ScopePublicRead, Summary: "Show a tag",
 		Description: "The tag target with the peeled commit when the object is annotated.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeValidation, op.CodeInvalid, op.CodeForbidden},
-		ETag:        func(out TagGetOut) string { return "\"tag-" + out.Tag.Target + "\"" },
+		ETag:        func(out TagGetOut) string { return "tag-" + out.Tag.Target },
 		Handler:     tagGetHandler(deps),
 	}); err != nil {
 		return err
@@ -720,7 +720,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Scope: op.ScopeRepoWrite, Summary: "Create a tag",
 		Description: "Lightweight without a message, annotated with one. Needs repo:write.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeArchived},
-		ETag:        func(out TagCreateOut) string { return "\"tag-" + out.Tag.Target + "\"" },
+		ETag:        func(out TagCreateOut) string { return "tag-" + out.Tag.Target },
 		Location:    func(TagCreateOut) string { return "" },
 		Handler:     tagCreateHandler(deps),
 	}); err != nil {
@@ -734,7 +734,7 @@ func RegisterRefs(t *op.Table, deps Deps) error {
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		Status:      http.StatusNoContent,
 		Location:    func(TagDeleteOut) string { return "" },
-		ETag:        func(TagDeleteOut) string { return "\"tag-deleted\"" },
+		ETag:        func(TagDeleteOut) string { return "tag-deleted" },
 		Handler:     tagDeleteHandler(deps),
 	}); err != nil {
 		return err

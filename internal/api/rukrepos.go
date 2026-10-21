@@ -861,7 +861,7 @@ func repoPurgeDelay() time.Duration {
 }
 
 func repoETag(row store.RepoRow) string {
-	return fmt.Sprintf("\"repo-%d-%d\"", row.ID, row.UpdatedAt)
+	return fmt.Sprintf("repo-%d-%d", row.ID, row.UpdatedAt)
 }
 
 func matchRepoETag(ifMatch, owner string, row store.RepoRow) error {

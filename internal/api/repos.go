@@ -1312,7 +1312,7 @@ func RegisterRepos(t *op.Table, deps Deps) error {
 		Name: "repo.create.page", Kind: op.KindRead, Method: http.MethodGet, Path: "/new/repo",
 		Scope: op.ScopePublicRead, Summary: "Show the new repository form",
 		Description: "Page-only. Renders the zero-JS creation form.",
-		ETag:        func(RepoNewPageOut) string { return "\"repo-new\"" },
+		ETag:        func(RepoNewPageOut) string { return "repo-new" },
 		Hidden:      true,
 		Handler: func(context.Context, op.Principal, op.NoBody) (RepoNewPageOut, error) {
 			return RepoNewPageOut{}, nil
@@ -1353,7 +1353,7 @@ func RegisterRepos(t *op.Table, deps Deps) error {
 			if out.Commit == "" {
 				return repoOutETag(out.Repo)
 			}
-			return fmt.Sprintf("\"repo-%s-%s-%d-%s\"", out.Repo.Owner, out.Repo.Name, out.Repo.UpdatedAt, out.Commit)
+			return fmt.Sprintf("repo-%s-%s-%d-%s", out.Repo.Owner, out.Repo.Name, out.Repo.UpdatedAt, out.Commit)
 		},
 		Handler: getRepoHandler(deps),
 	}); err != nil {
@@ -1366,10 +1366,10 @@ func RegisterRepos(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeValidation, op.CodeInvalid},
 		ETag: func(out RepoListOut) string {
 			if len(out.Repos) == 0 {
-				return "\"repos-empty\""
+				return "repos-empty"
 			}
 			first, last := out.Repos[0], out.Repos[len(out.Repos)-1]
-			return fmt.Sprintf("\"repos-%d-%s-%s-%s\"", len(out.Repos), first.Name, last.Name, out.Next)
+			return fmt.Sprintf("repos-%d-%s-%s-%s", len(out.Repos), first.Name, last.Name, out.Next)
 		},
 		Pagination: &op.Pagination[RepoListOut]{Default: 30, Max: 100, Next: func(out RepoListOut) (string, bool) {
 			if out.Next == "" {
@@ -1434,7 +1434,7 @@ func RegisterRepos(t *op.Table, deps Deps) error {
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		Status:      http.StatusAccepted,
 		Location:    func(RepoDeleteOut) string { return "/repos" },
-		ETag:        func(out RepoDeleteOut) string { return fmt.Sprintf("\"repo-deleted-%d\"", out.PurgeAfter) },
+		ETag:        func(out RepoDeleteOut) string { return fmt.Sprintf("repo-deleted-%d", out.PurgeAfter) },
 		Handler:     deleteRepoHandler(deps),
 	}); err != nil {
 		return err
@@ -1461,7 +1461,7 @@ func RegisterRepos(t *op.Table, deps Deps) error {
 		Description: "Direct grants. Team grants arrive with organizations.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeValidation, op.CodeForbidden},
 		ETag: func(out CollaboratorListOut) string {
-			return fmt.Sprintf("\"collabs-%d-%s\"", len(out.Collaborators), out.Next)
+			return fmt.Sprintf("collabs-%d-%s", len(out.Collaborators), out.Next)
 		},
 		Pagination: &op.Pagination[CollaboratorListOut]{Default: 30, Max: 100, Next: func(out CollaboratorListOut) (string, bool) {
 			if out.Next == "" {
@@ -1529,7 +1529,7 @@ func settingsPageHandler(d Deps) func(context.Context, op.Principal, RepoGetIn) 
 }
 
 func repoOutETag(repo RepoJSON) string {
-	return fmt.Sprintf("\"repo-%s-%s-%d\"", repo.Owner, repo.Name, repo.UpdatedAt)
+	return fmt.Sprintf("repo-%s-%s-%d", repo.Owner, repo.Name, repo.UpdatedAt)
 }
 
 func RegisterReposViews(v *op.Views) {

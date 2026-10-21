@@ -90,9 +90,9 @@ func RegisterUser(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeNotFound},
 		ETag: func(out UserGetOut) string {
 			if out.Kind == "org" {
-				return fmt.Sprintf("\"org-%s-%d\"", out.Name, out.UpdatedAt)
+				return fmt.Sprintf("org-%s-%d", out.Name, out.UpdatedAt)
 			}
-			return "\"user-" + out.Name + "\""
+			return "user-" + out.Name
 		},
 		Handler: func(ctx context.Context, p op.Principal, in UserGetIn) (UserGetOut, error) {
 			u, err := deps.Service.GetUser(ctx, in.Owner)
@@ -117,7 +117,7 @@ func RegisterUser(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeValidation, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		ETag: func(out SelfUpdateOut) string {
-			return "\"user-" + out.Name + "\""
+			return "user-" + out.Name
 		},
 		Location: func(SelfUpdateOut) string { return "/settings" },
 		Handler: func(ctx context.Context, p op.Principal, in SelfUpdateIn) (SelfUpdateOut, error) {

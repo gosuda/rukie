@@ -217,7 +217,7 @@ func RegisterAdmin(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		ETag: func(out AdminUpdateOut) string {
-			return "\"admin-" + out.Name + "\""
+			return "admin-" + out.Name
 		},
 		Location: func(AdminUpdateOut) string { return "/admin/users" },
 		Handler: func(ctx context.Context, p op.Principal, in AdminUpdateIn) (AdminUpdateOut, error) {

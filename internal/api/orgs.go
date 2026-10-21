@@ -34,11 +34,11 @@ func orgJSON(row store.OrgRow, role string) OrgJSON {
 }
 
 func orgETag(row store.OrgRow) string {
-	return fmt.Sprintf("\"org-%d-%d\"", row.ID, row.UpdatedAt)
+	return fmt.Sprintf("org-%d-%d", row.ID, row.UpdatedAt)
 }
 
 func teamETag(row store.TeamRow) string {
-	return fmt.Sprintf("\"team-%d-%d\"", row.ID, row.UpdatedAt)
+	return fmt.Sprintf("team-%d-%d", row.ID, row.UpdatedAt)
 }
 
 func matchOrgETag(ifMatch string, row store.OrgRow) error {
@@ -1578,7 +1578,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Name: "org.create.page", Kind: op.KindRead, Method: http.MethodGet, Path: "/new/org",
 		Scope: op.ScopePublicRead, Summary: "Show the new organization form",
 		Description: "Page-only. Renders the zero-JS organization creation form.",
-		ETag:        func(OrgNewPageOut) string { return "\"org-new\"" },
+		ETag:        func(OrgNewPageOut) string { return "org-new" },
 		Hidden:      true,
 		Handler: func(context.Context, op.Principal, op.NoBody) (OrgNewPageOut, error) {
 			return OrgNewPageOut{}, nil
@@ -1592,7 +1592,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only. The creator joins the owners team, which holds admin on every org repository.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeValidation, op.CodeConflict},
 		Location:    func(out OrgCreateOut) string { return "/" + out.Org.Name },
-		ETag:        func(out OrgCreateOut) string { return fmt.Sprintf("\"org-%s-%d\"", out.Org.Name, out.Org.UpdatedAt) },
+		ETag:        func(out OrgCreateOut) string { return fmt.Sprintf("org-%s-%d", out.Org.Name, out.Org.UpdatedAt) },
 		Handler:     createOrgHandler(deps),
 	}); err != nil {
 		return err
@@ -1603,7 +1603,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Public organizations render for anyone. Private organizations render for members and 404 otherwise.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeForbidden},
 		ETag: func(out OrgGetOut) string {
-			return fmt.Sprintf("\"org-%s-%d\"", out.Org.Name, out.Org.UpdatedAt)
+			return fmt.Sprintf("org-%s-%d", out.Org.Name, out.Org.UpdatedAt)
 		},
 		Handler: getOrgHandler(deps),
 	}); err != nil {
@@ -1616,9 +1616,9 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized},
 		ETag: func(out OrgListOut) string {
 			if len(out.Orgs) == 0 {
-				return "\"orgs-empty\""
+				return "orgs-empty"
 			}
-			return fmt.Sprintf("\"orgs-%d-%s-%s\"", len(out.Orgs), out.Orgs[0].Name, out.Next)
+			return fmt.Sprintf("orgs-%d-%s-%s", len(out.Orgs), out.Orgs[0].Name, out.Next)
 		},
 		Pagination: &op.Pagination[OrgListOut]{Default: 30, Max: 100, Next: func(out OrgListOut) (string, bool) {
 			if out.Next == "" {
@@ -1646,7 +1646,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only, organization owners. Requires a current If-Match entity tag.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
-		ETag:        func(out OrgUpdateOut) string { return fmt.Sprintf("\"org-%s-%d\"", out.Org.Name, out.Org.UpdatedAt) },
+		ETag:        func(out OrgUpdateOut) string { return fmt.Sprintf("org-%s-%d", out.Org.Name, out.Org.UpdatedAt) },
 		Location:    func(out OrgUpdateOut) string { return "/" + out.Org.Name + "/-/settings" },
 		Handler:     updateOrgHandler(deps),
 	}); err != nil {
@@ -1658,7 +1658,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only, organization owners. The old name keeps resolving until another organization takes it.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
-		ETag:        func(out OrgRenameOut) string { return fmt.Sprintf("\"org-%s-%d\"", out.Org.Name, out.Org.UpdatedAt) },
+		ETag:        func(out OrgRenameOut) string { return fmt.Sprintf("org-%s-%d", out.Org.Name, out.Org.UpdatedAt) },
 		Location:    func(out OrgRenameOut) string { return "/" + out.Org.Name + "/-/settings" },
 		Handler:     renameOrgHandler(deps),
 	}); err != nil {
@@ -1684,9 +1684,9 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeNotFound, op.CodeForbidden},
 		ETag: func(out OrgMemberListOut) string {
 			if len(out.Members) == 0 {
-				return "\"org-members-empty\""
+				return "org-members-empty"
 			}
-			return fmt.Sprintf("\"org-members-%d-%s-%s\"", len(out.Members), out.Members[0].Username, out.Next)
+			return fmt.Sprintf("org-members-%d-%s-%s", len(out.Members), out.Members[0].Username, out.Next)
 		},
 		Pagination: &op.Pagination[OrgMemberListOut]{Default: 30, Max: 100, Next: func(out OrgMemberListOut) (string, bool) {
 			if out.Next == "" {
@@ -1727,9 +1727,9 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound},
 		ETag: func(out TeamListOut) string {
 			if len(out.Teams) == 0 {
-				return "\"teams-empty\""
+				return "teams-empty"
 			}
-			return fmt.Sprintf("\"teams-%d-%s-%s\"", len(out.Teams), out.Teams[0].Name, out.Next)
+			return fmt.Sprintf("teams-%d-%s-%s", len(out.Teams), out.Teams[0].Name, out.Next)
 		},
 		Pagination: &op.Pagination[TeamListOut]{Default: 30, Max: 100, Next: func(out TeamListOut) (string, bool) {
 			if out.Next == "" {
@@ -1748,7 +1748,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict},
 		Location:    func(TeamCreateOut) string { return "" },
 		ETag: func(out TeamCreateOut) string {
-			return fmt.Sprintf("\"team-%s-%d\"", out.Team.Name, out.Team.UpdatedAt)
+			return fmt.Sprintf("team-%s-%d", out.Team.Name, out.Team.UpdatedAt)
 		},
 		Handler: createTeamHandler(deps),
 	}); err != nil {
@@ -1760,7 +1760,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Description: "Session-only, organization members. Renders members and repository grants.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound},
 		ETag: func(out TeamGetOut) string {
-			return fmt.Sprintf("\"team-%s-%d-%d\"", out.Team.Name, len(out.Members), len(out.Repos))
+			return fmt.Sprintf("team-%s-%d-%d", out.Team.Name, len(out.Members), len(out.Repos))
 		},
 		Handler: getTeamHandler(deps),
 	}); err != nil {
@@ -1773,7 +1773,7 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		ETag: func(out TeamUpdateOut) string {
-			return fmt.Sprintf("\"team-%s-%d\"", out.Team.Name, out.Team.UpdatedAt)
+			return fmt.Sprintf("team-%s-%d", out.Team.Name, out.Team.UpdatedAt)
 		},
 		Location: func(TeamUpdateOut) string { return "" },
 		Handler:  updateTeamHandler(deps),
@@ -1800,9 +1800,9 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound},
 		ETag: func(out TeamMemberListOut) string {
 			if len(out.Members) == 0 {
-				return "\"team-members-empty\""
+				return "team-members-empty"
 			}
-			return fmt.Sprintf("\"team-members-%d-%s-%s\"", len(out.Members), out.Members[0].Username, out.Next)
+			return fmt.Sprintf("team-members-%d-%s-%s", len(out.Members), out.Members[0].Username, out.Next)
 		},
 		Pagination: &op.Pagination[TeamMemberListOut]{Default: 30, Max: 100, Next: func(out TeamMemberListOut) (string, bool) {
 			if out.Next == "" {
@@ -1843,9 +1843,9 @@ func RegisterOrgs(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeNotFound},
 		ETag: func(out TeamRepoListOut) string {
 			if len(out.Repos) == 0 {
-				return "\"team-repos-empty\""
+				return "team-repos-empty"
 			}
-			return fmt.Sprintf("\"team-repos-%d-%s-%s\"", len(out.Repos), out.Repos[0], out.Next)
+			return fmt.Sprintf("team-repos-%d-%s-%s", len(out.Repos), out.Repos[0], out.Next)
 		},
 		Pagination: &op.Pagination[TeamRepoListOut]{Default: 30, Max: 100, Next: func(out TeamRepoListOut) (string, bool) {
 			if out.Next == "" {
