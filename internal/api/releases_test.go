@@ -425,7 +425,7 @@ func TestReleaseMutationsRequireReleaseScope(t *testing.T) {
 	}); gerr != nil {
 		t.Fatalf("grant write: %v", gerr)
 	}
-	writerToken := rreleaseToken(t, e, mallory, "repo:read", "repo:write")
+	writerToken := rreleaseToken(t, e, mallory, "repo:read", "repo:write", "releases:write")
 	if rec := relpost(t, e, "/ada/ships/releases/new", writerToken, `{"tag":"v2","title":"Second","draft":true}`); rec.Code != http.StatusForbidden {
 		t.Fatalf("writer create = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
