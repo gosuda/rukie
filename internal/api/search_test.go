@@ -182,6 +182,7 @@ func TestSearchValidationTable(t *testing.T) {
 		auth   string
 		code   int
 	}{
+		{"code empty q", "/search?q=", "validation", "ada", 422},
 		{"code q too long", "/search?q=" + long, "validation", "ada", 422},
 		{"code bad type", "/search?q=x&type=bogus", "invalid", "ada", 400},
 		{"code too many globs", "/search?q=x&globs=" + globs33, "validation", "ada", 422},
@@ -193,8 +194,10 @@ func TestSearchValidationTable(t *testing.T) {
 		{"code single-shaped cursor on multi", "/search?q=x&next=%7B%22a%22%3A1%7D", "invalid", "ada", 400},
 		{"code wrong-fingerprint cursor", "/search?q=x&next=" + fakeComposite(t, "ff"), "invalid", "ada", 400},
 		{"code garbage cursor single", "/search?q=x&owner=ada&repo=hello&next=!!!", "invalid", "ada", 400},
+		{"repos empty q", "/search/repos?q=", "validation", "", 422},
 		{"repos q too long", "/search/repos?q=" + long, "validation", "", 422},
 		{"repos garbage cursor", "/search/repos?q=x&next=!!!", "invalid", "", 400},
+		{"users empty q", "/search/users?q=", "validation", "", 422},
 		{"users q too long", "/search/users?q=" + long, "validation", "", 422},
 		{"users garbage cursor", "/search/users?q=x&next=!!!", "invalid", "", 400},
 	} {
@@ -230,7 +233,7 @@ func fakeComposite(t *testing.T, fp string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
-func TestSearchEmptyQueryHints(t *testing.T) {
+func TestSearchEmptyQueryInvalid(t *testing.T) {
 	e := buildSearchEnv(t)
 	ada, _, _ := seedSearchUsers(t, e)
 	seedSearchRepo(t, e, ada.ID, "hello", "public", "hello world")
@@ -248,9 +251,13 @@ func TestSearchEmptyQueryHints(t *testing.T) {
 		if target.auth == "ada" {
 			token = e.adaTok
 		}
+		code, decoded, _ := searchJSON(t, e, http.MethodGet, target.url, token)
+		if code != http.StatusUnprocessableEntity {
+			t.Fatalf("GET %s json = %d, want 422 (%v)", target.url, code, decoded)
+		}
 		code, body, _ := searchHTML(t, e, target.url, token)
-		if code != http.StatusOK {
-			t.Fatalf("GET %s html = %d, want 200", target.url, code)
+		if code != http.StatusUnprocessableEntity {
+			t.Fatalf("GET %s html = %d, want 422", target.url, code)
 		}
 		if err := zerojs.Assert([]byte(body)); err != nil {
 			t.Fatalf("GET %s failed zero-JS: %v", target.url, err)
@@ -263,12 +270,12 @@ func TestSearchEmptyQueryHints(t *testing.T) {
 	if code != http.StatusForbidden {
 		t.Fatalf("GET /search anonymous json = %d, want 403", code)
 	}
-	code, decoded, _ := searchJSON(t, e, http.MethodGet, "/search", e.adaTok)
+	code, decoded, _ := searchJSON(t, e, http.MethodGet, "/search?type=repos&q=x", e.adaTok)
 	if code != http.StatusOK {
-		t.Fatalf("GET /search json = %d", code)
+		t.Fatalf("GET unified repos json = %d", code)
 	}
-	if decoded["type"] != "code" {
-		t.Fatalf("unified default type = %v, want code", decoded["type"])
+	if decoded["type"] != "repos" {
+		t.Fatalf("unified type = %v, want repos", decoded["type"])
 	}
 }
 
@@ -307,6 +314,8 @@ func TestSearchReposFTS(t *testing.T) {
 		{"HELLO", []string{"ada/hello"}},
 		{"world", []string{"ada/hello", "bob/world"}},
 		{"vault", []string{}},
+		{"o", []string{"ada/hello", "bob/world"}},
+		{"ll", []string{"ada/hello"}},
 	} {
 		code, body, _ := searchJSON(t, e, http.MethodGet, "/search/repos?q="+tc.q, "")
 		if code != http.StatusOK {
@@ -358,6 +367,13 @@ func TestSearchUsersDirectory(t *testing.T) {
 	}
 	if got := userNames(body); strings.Join(got, ",") != "bob" {
 		t.Fatalf("q=builder got %v, want [bob]", got)
+	}
+	code, body, _ = searchJSON(t, e, http.MethodGet, "/search/users?q=a", "")
+	if code != http.StatusOK {
+		t.Fatalf("code = %d (%v)", code, body)
+	}
+	if got := userNames(body); strings.Join(got, ",") != "ada" {
+		t.Fatalf("q=a got %v, want [ada]", got)
 	}
 	code, body, _ = searchJSON(t, e, http.MethodGet, "/search/users?q=bob-secret", "")
 	if code != http.StatusOK || len(userNames(body)) != 0 {
@@ -455,12 +471,10 @@ func TestSearchNoLinkHeader(t *testing.T) {
 		url  string
 		auth string
 	}{
-		{"/search", "ada"},
 		{"/search?type=repos&q=pad-&per_page=2", "ada"},
 		{"/search?type=users&q=zzz-no-such-user", "ada"},
 		{"/search/repos?q=pad-&per_page=2", ""},
 		{"/search/users?q=zzz-no-such-user", ""},
-		{"/explore/code", "ada"},
 		{"/explore/code?type=repos&q=pad-&per_page=2", "ada"},
 	} {
 		token := ""

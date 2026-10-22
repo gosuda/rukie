@@ -120,11 +120,6 @@ func writeSearch(w io.Writer, c op.ViewCtx, out SearchOut) error {
 	b.WriteString(heading("Search"))
 	b.WriteString(searchTabs(active))
 	b.WriteString(searchForm("/search", c.Input.Get("q"), active, c.Input.Get("owner"), c.Input.Get("repo")))
-	if strings.TrimSpace(c.Input.Get("q")) == "" {
-		b.WriteString(para("Enter a query to search code, repositories, and users."))
-		_, err := io.WriteString(w, pageShell("Search", b.String()))
-		return err
-	}
 	switch out.Type {
 	case "repos":
 		b.WriteString(heading("Repositories"))
@@ -174,11 +169,6 @@ func writeSearchRepos(w io.Writer, c op.ViewCtx, out SearchReposOut) error {
 	var b strings.Builder
 	b.WriteString(heading("Search repositories"))
 	b.WriteString(searchForm("/search/repos", c.Input.Get("q"), "repos", "", ""))
-	if strings.TrimSpace(c.Input.Get("q")) == "" {
-		b.WriteString(para("Enter a query to search repository names, descriptions, topics, and websites."))
-		_, err := io.WriteString(w, pageShell("Search repositories", b.String()))
-		return err
-	}
 	if len(out.Repos) == 0 {
 		b.WriteString("<p>No repositories match.</p>\n")
 	} else {
@@ -204,11 +194,6 @@ func writeSearchUsers(w io.Writer, c op.ViewCtx, out SearchUsersOut) error {
 	var b strings.Builder
 	b.WriteString(heading("Search users"))
 	b.WriteString(searchForm("/search/users", c.Input.Get("q"), "users", "", ""))
-	if strings.TrimSpace(c.Input.Get("q")) == "" {
-		b.WriteString(para("Enter a query to search the public user directory."))
-		_, err := io.WriteString(w, pageShell("Search users", b.String()))
-		return err
-	}
 	if len(out.Users) == 0 {
 		b.WriteString("<p>No users match.</p>\n")
 	} else {

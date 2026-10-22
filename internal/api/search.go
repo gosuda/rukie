@@ -130,6 +130,9 @@ func parseSearchCodeQuery(q, owner, repo, rev string, regex, caseFold bool, glob
 		regex: regex, caseFold: caseFold,
 		path: path, next: next, perPage: clampLimit(perPage, searchDefaultPerPage, searchMaxPerPage),
 	}
+	if strings.TrimSpace(q) == "" {
+		return out, op.Errorf(op.CodeValidation, "q must not be empty")
+	}
 	if len(q) > searchMaxQueryBytes {
 		return out, op.Errorf(op.CodeValidation, "q must not exceed 4 KiB")
 	}
@@ -695,7 +698,7 @@ func (d Deps) searchReposPage(ctx context.Context, rq requester, q, next string,
 	}
 	trimmed := strings.TrimSpace(q)
 	if trimmed == "" {
-		return out, nil
+		return out, op.Errorf(op.CodeValidation, "q must not be empty")
 	}
 	if len(q) > searchMaxQueryBytes {
 		return out, op.Errorf(op.CodeValidation, "q must not exceed 4 KiB")
@@ -749,7 +752,7 @@ func (d Deps) searchUsersPage(ctx context.Context, q, next string, perPage int) 
 	}
 	trimmed := strings.TrimSpace(q)
 	if trimmed == "" {
-		return out, nil
+		return out, op.Errorf(op.CodeValidation, "q must not be empty")
 	}
 	if len(q) > searchMaxQueryBytes {
 		return out, op.Errorf(op.CodeValidation, "q must not exceed 4 KiB")
@@ -814,9 +817,6 @@ func searchCodeHandler(d Deps) func(context.Context, op.Principal, SearchCodeIn)
 		q, qerr := parseSearchCodeQuery(in.Q, in.Owner, in.Repo, in.Rev, in.Regex, in.CaseInsensitive, in.Globs, in.ExcludeGlobs, in.Path, in.Next, in.PerPage)
 		if qerr != nil {
 			return SearchCodeOut{Type: "code"}, qerr
-		}
-		if strings.TrimSpace(q.q) == "" {
-			return SearchCodeOut{Type: "code", Hits: []SearchHitJSON{}, Repos: []RepoJSON{}, Users: []SearchUserJSON{}, Exhausted: "none"}, nil
 		}
 		if q.owner != "" {
 			return d.singlePage(ctx, rq, q.owner, q.repo, q)
