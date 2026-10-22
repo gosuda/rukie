@@ -318,7 +318,7 @@ func (h ReleaseBytes) serveAssetUpload(w http.ResponseWriter, r *http.Request) {
 		writeRawProblem(w, cerr)
 		return
 	}
-	if derr := h.Deps.checkRepoAccess(rq, rc.row, "repo.push", ""); derr != nil {
+	if derr := h.Deps.checkRepoAccess(rq, rc.row, "release.publish", ""); derr != nil {
 		writeRawProblem(w, derr)
 		return
 	}
@@ -398,6 +398,10 @@ func (h ReleaseBytes) serveAssetUpload(w http.ResponseWriter, r *http.Request) {
 	if werr != nil {
 		if oerr, ok := errors.AsType[*op.Error](werr); ok {
 			writeRawProblem(w, oerr)
+			return
+		}
+		if errors.Is(werr, store.ErrConflict) {
+			writeRawProblem(w, op.Errorf(op.CodeConflict, "published releases are immutable"))
 			return
 		}
 		writeRawProblem(w, op.Wrap(op.CodeInternal, werr, "asset store failed"))

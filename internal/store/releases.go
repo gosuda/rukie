@@ -364,9 +364,21 @@ func (tx *WriteTx) InsertAsset(a AssetRow) error {
 	if err != nil {
 		return fmt.Errorf("InsertAsset: %w", err)
 	}
-	_, err = inner.ExecContext(tx.ctx, `INSERT INTO release_assets(public_id,release_id,uploader_id,name,sha256,size_bytes,content_type,state,path,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, a.PublicID, a.ReleaseID, a.UploaderID, a.Name, a.SHA256, a.Size, a.ContentType, a.State, a.Path, a.CreatedAt.Unix())
+	// The parent check rides in the same statement as the insert so a
+	// publish racing the upload cannot land an asset on a live release:
+	// PublishRelease flips state inside its own write transaction, and
+	// this insert only takes effect while the row is still an undeleted
+	// draft in this transaction's snapshot.
+	res, err := inner.ExecContext(tx.ctx, `INSERT INTO release_assets(public_id,release_id,uploader_id,name,sha256,size_bytes,content_type,state,path,created_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM releases WHERE id=? AND state='draft' AND deleted_at=0)`, a.PublicID, a.ReleaseID, a.UploaderID, a.Name, a.SHA256, a.Size, a.ContentType, a.State, a.Path, a.CreatedAt.Unix(), a.ReleaseID)
 	if err != nil {
 		return fmt.Errorf("InsertAsset: %w", mapErr(err))
+	}
+	moved, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("InsertAsset: %w", err)
+	}
+	if moved != 1 {
+		return fmt.Errorf("InsertAsset: %w: release %d is not an undeleted draft", ErrConflict, a.ReleaseID)
 	}
 	return nil
 }
