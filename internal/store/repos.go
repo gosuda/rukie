@@ -10,21 +10,26 @@ import (
 )
 
 type RepoRow struct {
-	Description   string
-	Website       string
-	Topics        string
-	Name          string
-	Visibility    string
-	DefaultBranch string
-	RukPath       string
-	OwnerUserID   sql.NullInt64
-	DeletedAt     sql.NullInt64
-	PurgeAfter    sql.NullInt64
-	OrgID         int64
-	ID            int64
-	CreatedAt     int64
-	UpdatedAt     int64
-	Archived      bool
+	Description    string
+	Website        string
+	Topics         string
+	Name           string
+	Visibility     string
+	DefaultBranch  string
+	RukPath        string
+	State          string
+	OwnerUserID    sql.NullInt64
+	DeletedAt      sql.NullInt64
+	PurgeAfter     sql.NullInt64
+	ForkOfRepoID   sql.NullInt64
+	ForkRootRepoID sql.NullInt64
+	OrgID          int64
+	ID             int64
+	CreatedAt      int64
+	UpdatedAt      int64
+	StarCount      int64
+	ForksCount     int64
+	Archived       bool
 }
 
 type GrantRow struct {
@@ -41,7 +46,8 @@ type RedirectRow struct {
 }
 
 const sqlRepoColumns = `id, owner_user_id, org_id, name, visibility, description, website,
-	topics, default_branch, archived, deleted_at, purge_after, ruk_path, created_at, updated_at`
+	topics, default_branch, archived, deleted_at, purge_after, ruk_path, created_at, updated_at,
+	state, fork_of_repo_id, fork_root_repo_id, star_count, forks_count`
 
 func scanRepoRow(scan func(dest ...any) error) (RepoRow, error) {
 	var row RepoRow
@@ -50,7 +56,8 @@ func scanRepoRow(scan func(dest ...any) error) (RepoRow, error) {
 		&row.ID, &row.OwnerUserID, &row.OrgID, &row.Name, &row.Visibility,
 		&row.Description, &row.Website, &row.Topics, &row.DefaultBranch,
 		&archived, &row.DeletedAt, &row.PurgeAfter, &row.RukPath,
-		&row.CreatedAt, &row.UpdatedAt,
+		&row.CreatedAt, &row.UpdatedAt, &row.State, &row.ForkOfRepoID,
+		&row.ForkRootRepoID, &row.StarCount, &row.ForksCount,
 	)
 	if err != nil {
 		return RepoRow{}, err
@@ -422,14 +429,27 @@ func (tx *WriteTx) SoftDeleteRepo(id int64, now time.Time, purgeAfter time.Time)
 	if err != nil {
 		return err
 	}
+	var parent sql.NullInt64
+	if serr := inner.QueryRowContext(tx.ctx, `SELECT fork_of_repo_id FROM repos WHERE id = ? AND deleted_at IS NULL`, id).Scan(&parent); errors.Is(serr, sql.ErrNoRows) {
+		return fmt.Errorf("SoftDeleteRepo: %w: repo %d", ErrNotFound, id)
+	} else if serr != nil {
+		return serr
+	}
 	moved, merr := execAffected(tx.ctx, inner, `UPDATE repos
-SET deleted_at = ?, purge_after = ?, updated_at = ?
+SET deleted_at = ?, purge_after = ?, state = 'deleted', updated_at = ?
 WHERE id = ? AND deleted_at IS NULL`, msOf(now), msOf(purgeAfter), msOf(now), id)
 	if merr != nil {
 		return merr
 	}
 	if moved == 0 {
 		return fmt.Errorf("SoftDeleteRepo: %w: repo %d", ErrNotFound, id)
+	}
+	if parent.Valid {
+		if _, derr := inner.ExecContext(tx.ctx, `UPDATE repos
+SET forks_count = CASE WHEN forks_count > 0 THEN forks_count - 1 ELSE 0 END
+WHERE id = ?`, parent.Int64); derr != nil {
+			return derr
+		}
 	}
 	return nil
 }
@@ -439,14 +459,25 @@ func (tx *WriteTx) RestoreRepo(id int64, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	var parent sql.NullInt64
+	if serr := inner.QueryRowContext(tx.ctx, `SELECT fork_of_repo_id FROM repos WHERE id = ? AND deleted_at IS NOT NULL`, id).Scan(&parent); errors.Is(serr, sql.ErrNoRows) {
+		return fmt.Errorf("RestoreRepo: %w: repo %d is not deleted", ErrNotFound, id)
+	} else if serr != nil {
+		return serr
+	}
 	moved, merr := execAffected(tx.ctx, inner, `UPDATE repos
-SET deleted_at = NULL, purge_after = NULL, updated_at = ?
+SET deleted_at = NULL, purge_after = NULL, state = 'active', updated_at = ?
 WHERE id = ? AND deleted_at IS NOT NULL`, msOf(now), id)
 	if merr != nil {
 		return merr
 	}
 	if moved == 0 {
 		return fmt.Errorf("RestoreRepo: %w: repo %d is not deleted", ErrNotFound, id)
+	}
+	if parent.Valid {
+		if _, ierr := inner.ExecContext(tx.ctx, `UPDATE repos SET forks_count = forks_count + 1 WHERE id = ?`, parent.Int64); ierr != nil {
+			return ierr
+		}
 	}
 	return nil
 }
@@ -455,6 +486,13 @@ func (tx *WriteTx) HardDeleteRepo(id int64) error {
 	inner, err := tx.live()
 	if err != nil {
 		return err
+	}
+	var parent sql.NullInt64
+	var deletedAt sql.NullInt64
+	if serr := inner.QueryRowContext(tx.ctx, `SELECT fork_of_repo_id, deleted_at FROM repos WHERE id = ?`, id).Scan(&parent, &deletedAt); errors.Is(serr, sql.ErrNoRows) {
+		return fmt.Errorf("HardDeleteRepo: %w: repo %d", ErrNotFound, id)
+	} else if serr != nil {
+		return serr
 	}
 	if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM repo_redirects WHERE repo_id = ?`, id); derr != nil {
 		return derr
@@ -465,6 +503,13 @@ func (tx *WriteTx) HardDeleteRepo(id int64) error {
 	}
 	if moved == 0 {
 		return fmt.Errorf("HardDeleteRepo: %w: repo %d", ErrNotFound, id)
+	}
+	if parent.Valid && !deletedAt.Valid {
+		if _, derr := inner.ExecContext(tx.ctx, `UPDATE repos
+SET forks_count = CASE WHEN forks_count > 0 THEN forks_count - 1 ELSE 0 END
+WHERE id = ?`, parent.Int64); derr != nil {
+			return derr
+		}
 	}
 	return nil
 }
