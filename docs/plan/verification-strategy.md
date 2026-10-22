@@ -316,10 +316,13 @@ cargo build --release --bin ruk
 
 # cwd: /home/alpha/rewrite/git-renewed/rukie
 passgate '--- PASS: TestPerfBudget (' -- env RUK_BIN=/home/alpha/rewrite/git-renewed/ruk/target/release/ruk go test -count=1 -tags perf -timeout 30m -v -run '^TestPerfBudget$' ./internal/bench/
+passgate '--- PASS: TestDaemonPathBudget (' -- env RUK_BIN=/home/alpha/rewrite/git-renewed/ruk/target/release/ruk GIT_EXEC="$(command -v git)" RUK_COORDINATOR=off go test -count=1 -tags perf -timeout 30m -v -run '^TestDaemonPathBudget$' ./tests/perf/
 env RUK_BIN=/home/alpha/rewrite/git-renewed/ruk/target/release/ruk go test -count=1 -tags perf -run='^$' -bench=. -benchtime=1000x ./internal/bench/
 ```
 
 The harness is stdlib `httptest` plus hand-rolled p50/p95/p99 over ≥1000 samples after 100 warmups. The nightly run uses `-count=3` and appends to `internal/bench/RESULTS.md` (`inference`).
+
+`TestDaemonPathBudget` compares the warm Ruk daemon path with stock Git on the same host. It gates incremental fetch at at most 7.5 times the stock Git p95 and single-ref lookup at at most 4 times the stock Git p95 (CEO-08). It also compares full clone and `info/refs`; `info/refs` must meet the 150 ms p95 budget above. The V5 brief defines no numerical clone budget. Clone latency and its ratio are reported, not assigned an invented threshold. Results, including failed budgets, append to `internal/bench/RESULTS.md`. A budget failure stops the dogfood gate and requires a new Ruk row; do not raise a budget to pass it.
 
 ## 8. Mutation testing (weekly, not a merge gate)
 
