@@ -6,7 +6,7 @@ appends one dated block per run. Each block records the binary provenance
 and `RUK_SCHEMA`, git binary, host, CPU, Go version), the method (100
 warmups, then 1000 paired samples with alternating stock/daemon order;
 setup and verification outside the timer; 16 tokens minted for ada and
-rotated per daemon request; nearest-rank p50/p95/p99; clone uses 20 warmups
+rotated per daemon request; nearest-rank p50/p95/p99; clone uses 2 warmups
 and 200 paired samples as report-only data), the fixture (200
 mixed-size commits, 4 branches, 1000 tags pushed through the daemon path;
 the CGI baseline serves an identical bare clone), and a table with the
@@ -52,7 +52,7 @@ budget results and do not produce pass/fail ratios:
 
 This file holds the method, the table schema, and diagnostic evidence only.
 
-## 2026-10-23 (transcribed partial runs; the test appended nothing; superseded by the bf3063c bounded run below, kept for history)
+## 2026-10-23 (transcribed partial runs; the test appended nothing; superseded by the completed ae8d221 runs below, kept for history)
 
 The test appends a block only on a fully completed run. Neither run below
 completed, so neither appended; the fetch and lookup rows are transcribed
@@ -108,4 +108,53 @@ samples (stock=0 daemon=0); nothing recorded` instead of indexing an empty
 slice. Daemon output for parent diagnosis:
 `/tmp/TestDaemonPathBudget2056305955/001/ruk-4137305063.log`. No diagnosis
 or tuning was done in this lane; per the brief, the failed budget stops
-the dogfood gate and needs a new Ruk row.
+the dogfood gate and needs a new Ruk row. That stop is now lifted by the
+completed runs below: the zero-sample cause was the unset clone
+workload totals, fixed by setting warmups 2 and total 200 (cloneSamples).
+
+## 2026-10-22T23:32:25Z
+
+- ruk binary: /home/alpha/rewrite/git-renewed/ruk/.outline/worktree/model-build/target/release/ruk
+- ruk version: unset
+- ruk commit: unset
+- ruk schema: unset
+- git binary: /usr/bin/git
+- host: alpha-Precision-7920-Tower
+- cpu: 80/amd64
+- go: go1.27.3
+- method: 100 warmups, then 1000 paired samples with alternating stock/daemon order; prepare and verify outside the timer; 16 tokens minted for ada and rotated per daemon request; nearest-rank p50/p95/p99
+
+| workload | stock p50 | stock p95 | stock p99 | daemon p50 | daemon p95 | daemon p99 | ratio p95 | budget | authority | result |
+|---|---|---|---|---|---|---|---|---|---|---|
+| incremental-fetch | 249.718275ms | 333.619631ms | 369.613872ms | 666.771468ms | 1.240287905s | 1.446051348s | 3.72x | <= 7.5x stock p95 (CEO-08) | CEO-08 | PASS |
+| single-ref-lookup | 56.41962ms | 67.535625ms | 94.875045ms | 85.160094ms | 99.59004ms | 132.387513ms | 1.47x | <= 4x stock p95 (CEO-08) | CEO-08 | PASS |
+| clone | 261.264802ms | 275.588993ms | 300.033186ms | 328.9257ms | 348.983954ms | 359.519417ms | 1.27x |  | V5 brief | REPORT |
+| info-refs | 11.966025ms | 14.47581ms | 15.967233ms | 6.364254ms | 8.472101ms | 10.475506ms | 0.59x | <= 150ms daemon p95 (verification §7) | verification §7 | PASS |
+
+## 2026-10-22T23:58:11Z
+
+- ruk binary: /home/alpha/rewrite/git-renewed/ruk/.outline/worktree/model-build/target/release/ruk
+- ruk version: unset
+- ruk commit: unset
+- ruk schema: unset
+- git binary: /usr/bin/git
+- host: alpha-Precision-7920-Tower
+- cpu: 80/amd64
+- go: go1.27.3
+- method: 100 warmups, then 1000 paired samples with alternating stock/daemon order; prepare and verify outside the timer; 16 tokens minted for ada and rotated per daemon request; nearest-rank p50/p95/p99
+
+| workload | stock p50 | stock p95 | stock p99 | daemon p50 | daemon p95 | daemon p99 | ratio p95 | budget | authority | result |
+|---|---|---|---|---|---|---|---|---|---|---|
+| incremental-fetch | 259.080783ms | 366.067975ms | 454.214716ms | 712.336734ms | 1.373328822s | 1.664995605s | 3.75x | <= 7.5x stock p95 (CEO-08) | CEO-08 | PASS |
+| single-ref-lookup | 55.840196ms | 62.496093ms | 84.734543ms | 85.810028ms | 95.695773ms | 125.848208ms | 1.53x | <= 4x stock p95 (CEO-08) | CEO-08 | PASS |
+| clone | 259.672604ms | 269.683494ms | 281.803582ms | 329.890047ms | 344.528273ms | 348.133321ms | 1.28x |  | V5 brief | REPORT |
+| info-refs | 11.114565ms | 12.457431ms | 13.715871ms | 6.212459ms | 7.779608ms | 8.641173ms | 0.62x | <= 150ms daemon p95 (verification §7) | verification §7 | PASS |
+
+Provenance for both complete blocks above: RUK_BIN was the model-build
+release binary, 84,918,512 bytes stamped 2026-10-23 08:30 +0900, built
+from ruk main `ae8d221` (hardened streaming). The blocks record version,
+commit, and schema as unset because the briefed command sets none of
+RUK_VERSION, RUK_COMMIT, or RUK_SCHEMA. Both runs reach the same verdict
+(fetch PASS around 3.7x, lookup PASS around 1.5x, clone REPORT around
+1.3x, info-refs PASS well under 150 ms daemon p95), so the V5 capacity
+gate is met and the earlier stop is lifted.

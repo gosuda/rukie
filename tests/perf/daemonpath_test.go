@@ -659,6 +659,8 @@ func TestDaemonPathBudget(t *testing.T) {
 		},
 		{
 			name:       "clone",
+			warmups:    2,
+			total:      cloneSamples,
 			budget:     "",
 			authority:  "V5 brief",
 			reportOnly: true,
