@@ -71,6 +71,60 @@ func TestBackupNeverCopiesKey(t *testing.T) {
 	}
 }
 
+func TestBackupIncludesReleaseAssets(t *testing.T) {
+	cfg := testConfig(t)
+	seedRepos(t, cfg.Ruk.RepoRoot)
+	assetRel := filepath.Join("sha256", "ab", "cd", "abcdef")
+	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "releases", "sha256", "ab", "cd"), 0o700); err != nil {
+		t.Fatalf("mkdir releases: %v", err)
+	}
+	want := []byte("release-asset-bytes-fixture")
+	if err := os.WriteFile(filepath.Join(cfg.DataDir, "releases", assetRel), want, 0o600); err != nil {
+		t.Fatalf("write asset: %v", err)
+	}
+	st := openTestStore(t, cfg.Store.SQLite.Path)
+	manifest, err := Backup(context.Background(), st, cfg, filepath.Join(cfg.DataDir, "backups"))
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	backupDir := filepath.Dir(manifest)
+	doc, err := ReadManifest(backupDir)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	found := false
+	for _, f := range doc.Files {
+		if f.Path == filepath.Join("releases", assetRel) {
+			found = true
+		}
+		if filepath.Ext(f.Path) == ".key" {
+			t.Fatalf("backup holds a key file: %s", f.Path)
+		}
+	}
+	if !found {
+		t.Fatalf("manifest lacks the release asset, lists %d files", len(doc.Files))
+	}
+	if err := VerifyManifest(backupDir, doc); err != nil {
+		t.Fatalf("VerifyManifest: %v", err)
+	}
+	if cerr := st.Close(context.Background()); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
+	}
+	if rerr := os.RemoveAll(filepath.Join(cfg.DataDir, "releases")); rerr != nil {
+		t.Fatalf("remove releases: %v", rerr)
+	}
+	if _, rerr := Restore(context.Background(), cfg, backupDir); rerr != nil {
+		t.Fatalf("Restore: %v", rerr)
+	}
+	restored, rerr := os.ReadFile(filepath.Join(cfg.DataDir, "releases", assetRel))
+	if rerr != nil {
+		t.Fatalf("restored asset missing: %v", rerr)
+	}
+	if !bytes.Equal(restored, want) {
+		t.Fatal("restored asset bytes differ")
+	}
+}
+
 func TestBackupRefusesWithoutKey(t *testing.T) {
 	cfg := testConfig(t)
 	if err := os.Remove(cfg.SecretKeyFile); err != nil {

@@ -196,7 +196,7 @@ func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase str
 	}
 	skip, _ := filepath.Abs(cfg.SecretKeyFile)
 	copyStart := time.Now()
-	repoFiles, rerr := copyRepoTree(cfg.Ruk.RepoRoot, filepath.Join(dir, "repos"), skip)
+	repoFiles, rerr := copyRepoTree(cfg.Ruk.RepoRoot, filepath.Join(dir, "repos"), "repos", skip)
 	if rerr != nil {
 		return "", rerr
 	}
@@ -206,6 +206,22 @@ func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase str
 		}
 	}
 	doc.Files = append(doc.Files, repoFiles...)
+	// Release assets live outside the repository root in the content-addressed
+	// store <data-dir>/releases. Without them a restore leaves every asset
+	// download failing, so the release tree rides the same barrier-hold as the
+	// repo copy and lands under the "releases/" manifest prefix.
+	if info, serr := os.Stat(filepath.Join(cfg.DataDir, "releases")); serr == nil && info.IsDir() {
+		releaseFiles, rerr := copyRepoTree(filepath.Join(cfg.DataDir, "releases"), filepath.Join(dir, "releases"), "releases", skip)
+		if rerr != nil {
+			return "", rerr
+		}
+		if barrier != nil {
+			if verr := verifyNoWritesDuringCopy(filepath.Join(cfg.DataDir, "releases"), copyStart); verr != nil {
+				return "", verr
+			}
+		}
+		doc.Files = append(doc.Files, releaseFiles...)
+	}
 	doc.TR = time.Now().UnixMilli()
 	release()
 	doc.BarrierHoldMs = barrierHoldMs
@@ -241,7 +257,7 @@ func freshBackupDir(outBase string) (string, error) {
 	}
 }
 
-func copyRepoTree(repoRoot, backupDst, excludedAbsPath string) ([]ManifestFile, error) {
+func copyRepoTree(repoRoot, backupDst, manifestPrefix, excludedAbsPath string) ([]ManifestFile, error) {
 	info, err := os.Stat(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("sysops: repo root: %w", err)
@@ -282,7 +298,7 @@ func copyRepoTree(repoRoot, backupDst, excludedAbsPath string) ([]ManifestFile, 
 		if cerr != nil {
 			return nil, cerr
 		}
-		rec.Path = filepath.Join("repos", rel)
+		rec.Path = filepath.Join(manifestPrefix, rel)
 		files = append(files, rec)
 	}
 	slices.SortFunc(files, func(a, b ManifestFile) int { return cmp.Compare(a.Path, b.Path) })
