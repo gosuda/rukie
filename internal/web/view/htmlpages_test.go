@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base32"
 	"encoding/base64"
 	"io"
@@ -30,6 +31,7 @@ import (
 type renderEnv struct {
 	server *op.Server
 	svc    *auth.Service
+	st     *store.Store
 }
 
 type htmlPage struct {
@@ -72,6 +74,9 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	if err := api.RegisterF12(table, deps); err != nil {
 		t.Fatalf("register f12: %v", err)
 	}
+	if err := api.RegisterSocial(table, deps); err != nil {
+		t.Fatalf("register social: %v", err)
+	}
 	fill, err := api.RegisterLLMS(table, "http://example.com")
 	if err != nil {
 		t.Fatalf("register llms: %v", err)
@@ -83,6 +88,7 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	api.RegisterAdminViews(views)
 	api.RegisterSearchViews(views)
 	api.RegisterF12Views(views)
+	api.RegisterSocialViews(views)
 	api.RegisterLLMSViews(views)
 	var key [32]byte
 	if _, rerr := rand.Read(key[:]); rerr != nil {
@@ -104,7 +110,40 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 		t.Fatalf("mount: %v", err)
 	}
 	fill(server.Document())
-	return &renderEnv{server: server, svc: svc}
+	return &renderEnv{server: server, svc: svc, st: st}
+}
+
+func renderSeedSocial(t *testing.T, e *renderEnv) {
+	t.Helper()
+	ada, aerr := e.st.LookupUserByName(t.Context(), "ada")
+	if aerr != nil {
+		t.Fatalf("lookup ada: %v", aerr)
+	}
+	bob, berr := e.st.LookupUserByName(t.Context(), "bob")
+	if berr != nil {
+		t.Fatalf("lookup bob: %v", berr)
+	}
+	now := time.Now()
+	err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		id, ierr := tx.InsertRepo(now, store.RepoInsert{
+			OwnerUserID:   sql.NullInt64{Int64: ada.ID, Valid: true},
+			Name:          "demo",
+			Visibility:    "public",
+			DefaultBranch: "main",
+			RukPath:       "ada/demo.git",
+		})
+		if ierr != nil {
+			return ierr
+		}
+		if serr := tx.AddStar(id, bob.ID, now); serr != nil {
+			return serr
+		}
+		_, ierr = tx.InsertOrg(now, store.OrgInsert{Name: "acme", Visibility: "public"})
+		return ierr
+	})
+	if err != nil {
+		t.Fatalf("seed social: %v", err)
+	}
 }
 
 func renderDoJSON(t *testing.T, e *renderEnv, method, target, cookie, body string) *httptest.ResponseRecorder {
@@ -450,6 +489,18 @@ func collectHTMLPages(t *testing.T, e *renderEnv) []htmlPage {
 	capturePOSTForm(t, e, &pages, "auth.login.page", "login-error.html", "/login", "/login", "", "username=&password=", http.StatusUnprocessableEntity, nil)
 	captureGET(t, e, &pages, "auth.logout.page", "logout.html", "/logout", "", http.StatusOK, nil)
 	captureGET(t, e, &pages, "user.get", "profile-ada.html", "/ada", "", http.StatusOK, nil)
+	renderSeedSocial(t, e)
+	captureGET(t, e, &pages, "explore.repos", "explore-repos-api.html", "/api/explore/repos", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "explore.users", "explore-users-api.html", "/api/explore/users", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "explore.orgs", "explore-orgs-api.html", "/api/explore/orgs", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "star.list", "stargazers-api.html", "/api/stars?repo=ada/demo", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "repo.fork.list", "forks-api.html", "/api/repos/ada/demo/forks", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "explore.repos.page", "explore-repos.html", "/-/explore/repos", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "explore.users.page", "explore-users.html", "/-/explore/users", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "explore.orgs.page", "explore-orgs.html", "/-/explore/orgs", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "star.list.page", "stargazers.html", "/ada/demo/stargazers", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "repo.forks.page", "forks.html", "/ada/demo/forks", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "repo.fork.page", "fork.html", "/ada/demo/fork", acookie, http.StatusOK, nil)
 	captureGET(t, e, &pages, "", "unknown-user.html", "/no-such-user-xyz", "", http.StatusNotFound, nil)
 	captureGET(t, e, &pages, "settings.page", "settings.html", "/settings", acookie, http.StatusOK, nil)
 	captureGET(t, e, &pages, "auth.session.list", "security.html", "/settings/security", acookie, http.StatusOK, nil)

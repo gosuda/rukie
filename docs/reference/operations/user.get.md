@@ -17,7 +17,9 @@ Public directory entry. Unknown or inactive users return 404.
 
 | Name | In | Required | Type |
 | --- | --- | --- | --- |
+| `cursor` | query | no | `string` |
 | `owner` | path | yes | `string` |
+| `tab` | query | no | `string` |
 
 ## Errors
 

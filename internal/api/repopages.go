@@ -74,6 +74,7 @@ func writeRepoHome(w io.Writer, c op.ViewCtx, out RepoGetOut) error {
 		_, err := io.WriteString(w, pageShell(out.Repo.Name, b.String()))
 		return err
 	}
+	b.WriteString(repoSocialRow(c, base, out))
 	if out.Empty {
 		b.WriteString("<p>This repository is empty. Push a branch to see it here.</p>\n")
 		b.WriteString("<p><a href=\"" + esc(base+"/branches") + "\">Branches</a> — " +

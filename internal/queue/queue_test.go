@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -474,5 +475,71 @@ func TestExpiredLeaseCannotCompleteAfterReclaim(t *testing.T) {
 	}
 	if done.State != "done" || done.Attempts != 0 {
 		t.Fatalf("job = %+v, want done exactly once with 0 attempts", done)
+	}
+}
+
+func TestDeadForkJobLeavesTerminalState(t *testing.T) {
+	now := time.UnixMilli(1700000000000)
+	q, st := openQueue(t, &now)
+	ctx := testCtx(t)
+	user, err := st.InsertAuthUser(ctx, store.AuthUserCreate{Name: "ada", Lower: "ada", Email: "ada@example.test", FullName: "Ada", Hash: "x", Algo: "test", Now: now.UnixMilli()})
+	if err != nil {
+		t.Fatalf("user: %v", err)
+	}
+	var source, fork int64
+	if err = st.Write(ctx, func(tx *store.WriteTx) error {
+		var ierr error
+		source, ierr = tx.InsertRepo(now, store.RepoInsert{OwnerUserID: sql.NullInt64{Int64: user.ID, Valid: true}, Name: "parent", Visibility: "public", DefaultBranch: "main", RukPath: "parent"})
+		if ierr != nil {
+			return ierr
+		}
+		fork, ierr = tx.CreateFork(store.ForkSpec{
+			SourceRepoID: source,
+			Repo:         store.RepoInsert{OwnerUserID: sql.NullInt64{Int64: user.ID, Valid: true}, Name: "dead-fork", Visibility: "public", DefaultBranch: "main", RukPath: "dead-fork"},
+			Job:          store.JobSpec{ID: "fork-poison", Payload: `{}`, At: now},
+		}, now)
+		return ierr
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for attempt := 1; attempt <= 10; attempt++ {
+		claimed, cerr := q.Claim(ctx, "w1", time.Minute, 1)
+		if cerr != nil {
+			t.Fatalf("claim %d: %v", attempt, cerr)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("claim %d returned %d jobs, want 1", attempt, len(claimed))
+		}
+		if ferr := q.Fail(ctx, "w1", "fork-poison", claimed[0].LeaseToken); ferr != nil {
+			t.Fatalf("fail %d: %v", attempt, ferr)
+		}
+		if job, jerr := q.Job(ctx, "fork-poison"); jerr == nil && job.State == "queued" {
+			now = time.UnixMilli(job.RunAfter + 1)
+		}
+	}
+	if job, jerr := q.Job(ctx, "fork-poison"); jerr != nil || job.State != "dead" {
+		t.Fatalf("job after ten failures = %+v (%v), want dead", job, jerr)
+	}
+	var deadRow store.RepoRow
+	if err = st.Read(ctx, func(tx *store.ReadTx) error {
+		var rerr error
+		deadRow, rerr = tx.GetRepo(fork)
+		return rerr
+	}); err != nil {
+		t.Fatalf("read fork row: %v", err)
+	}
+	if deadRow.State != "deleted" || !deadRow.DeletedAt.Valid {
+		t.Fatalf("dead fork row = state %q deleted_at %+v, want deleted with a timestamp", deadRow.State, deadRow.DeletedAt)
+	}
+	var parent store.RepoRow
+	if err = st.Read(ctx, func(tx *store.ReadTx) error {
+		var rerr error
+		parent, rerr = tx.GetRepo(source)
+		return rerr
+	}); err != nil {
+		t.Fatalf("read parent row: %v", err)
+	}
+	if parent.ForksCount != 0 {
+		t.Fatalf("parent forks_count = %d after dead fork, want 0", parent.ForksCount)
 	}
 }

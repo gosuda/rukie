@@ -337,6 +337,25 @@ WHERE id = ?3 AND state = 'leased' AND lease_owner = ?4 AND lease_token = ?5`,
 		if moved == 0 {
 			return fmt.Errorf("RequeueJob: %w: job is not leased to this owner", ErrStale)
 		}
+		// A dead repo_fork job leaves its fork row terminal: the row moves to
+		// deleted and the source counter gives the increment back, so a
+		// retry-exhausted fork cannot sit in forking forever.
+		if _, derr := execAffected(tx.ctx, inner,
+			`UPDATE repos SET state = 'deleted', deleted_at = ?1
+			 WHERE id = (SELECT repo_id FROM jobs WHERE id = ?2 AND kind = 'repo_fork')
+			   AND state = 'forking'`,
+			at, id); derr != nil {
+			return fmt.Errorf("RequeueJob: %w: dead fork cleanup: %w", mapErr(derr), derr)
+		}
+		if _, derr := execAffected(tx.ctx, inner,
+			`UPDATE repos SET forks_count = CASE WHEN forks_count > 0 THEN forks_count - 1 ELSE 0 END
+			 WHERE id = (SELECT fork_of_repo_id FROM repos
+			              WHERE id = (SELECT repo_id FROM jobs WHERE id = ?1 AND kind = 'repo_fork')
+			                AND state = 'deleted'
+			                AND fork_of_repo_id IS NOT NULL)`,
+			id); derr != nil {
+			return fmt.Errorf("RequeueJob: %w: dead fork counter: %w", mapErr(derr), derr)
+		}
 		return nil
 	}
 	wait := at + failBackoff(next, id).Milliseconds()

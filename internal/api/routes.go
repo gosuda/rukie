@@ -171,6 +171,15 @@ func Routes() []Route {
 		{Pattern: "GET /{owner}/{repo}/asks/{id}", Op: "ask.get"},
 		{Pattern: "POST /{owner}/{repo}/asks/{id}/answer", Op: "ask.answer.create"},
 		{Pattern: "POST /{owner}/{repo}/asks/{id}/cancel", Op: "ask.update"},
+		{Pattern: "GET /-/explore/repos", Op: "explore.repos"},
+		{Pattern: "GET /-/explore/users", Op: "explore.users"},
+		{Pattern: "GET /-/explore/orgs", Op: "explore.orgs"},
+		{Pattern: "GET /{owner}/{repo}/stargazers", Op: "star.list"},
+		{Pattern: "POST /{owner}/{repo}/star", Op: "star.add"},
+		{Pattern: "POST /{owner}/{repo}/unstar", Op: "star.remove"},
+		{Pattern: "GET /{owner}/{repo}/forks", Op: "repo.fork.list"},
+		{Pattern: "GET /{owner}/{repo}/fork", Op: "repo.fork.page"},
+		{Pattern: "POST /{owner}/{repo}/fork", Op: "repo.fork.create"},
 	}
 }
 

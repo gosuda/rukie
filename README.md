@@ -109,7 +109,9 @@ Next, [submit a change for review](docs/tutorials/first-review.md) or [give an a
 
 Create repositories, browse files and history, compare changes, and search code on the server. Repository reads and writes go through Ruk, including Smart HTTP and SSH access from stock Git clients.
 
-Use organizations and teams to manage access. Explore repositories, star projects, watch activity, and fork repositories for your work.
+Use organizations and teams to manage access. Browse repositories, people, and organizations at `/-/explore/repos`, `/-/explore/users`, and `/-/explore/orgs`. Lists show only what you can access. Star a repository to bookmark it; find your bookmarks on your profile's Stars tab. A private repository's stars stay private to its readers.
+
+Fork a repository from its Forks page. Ruk copies its history before rukie queues the fork for completion. A fork cannot be more public than its source. A token with `repo:create` can fork only into its owner's user namespace. Repository watch forms are not available until inbox watching is integrated.
 
 ### Review changes and stacks
 

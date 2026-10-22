@@ -354,8 +354,8 @@ type repoContext struct {
 	daemon   ruk.Repo
 	owner    string
 	name     string
-	row      store.RepoRow
 	request  requester
+	row      store.RepoRow
 }
 
 func (d Deps) resolveRepo(ctx context.Context, r requester, owner, name string, includeDeleted bool) (repoContext, error) {
@@ -366,28 +366,46 @@ func (d Deps) resolveRepo(ctx context.Context, r requester, owner, name string, 
 	if err := checkRepoName(name); err != nil {
 		return out, err
 	}
-	var user store.UserMeta
 	if d.Store == nil {
 		return out, op.Wrap(op.CodeInternal, errors.New("store is not configured"), "repository lookup failed")
 	}
 	umeta, uerr := d.Store.LookupUserByName(ctx, strings.ToLower(owner))
-	if uerr != nil {
-		return out, op.Errorf(op.CodeNotFound, "repository was not found")
+	if uerr != nil && !errors.Is(uerr, store.ErrNotFound) {
+		return out, op.Wrap(op.CodeInternal, uerr, "repository lookup failed")
 	}
-	user = umeta
+	var ownerUserID int64
+	ownerName := owner
+	if uerr == nil {
+		ownerUserID = umeta.ID
+		ownerName = umeta.Name
+	}
 	var row store.RepoRow
 	serr := d.Store.Read(ctx, func(tx *store.ReadTx) error {
 		var ferr error
+		if uerr == nil {
+			if includeDeleted {
+				row, ferr = tx.FindRepoWithDeleted(ownerUserID, 0, name)
+			} else {
+				row, ferr = tx.FindRepo(ownerUserID, 0, name)
+			}
+			return ferr
+		}
+		var org store.OrgRow
+		org, ferr = tx.FindOrgByName(strings.ToLower(owner))
+		if ferr != nil {
+			return ferr
+		}
+		ownerName = org.Name
 		if includeDeleted {
-			row, ferr = tx.FindRepoWithDeleted(user.ID, 0, name)
+			row, ferr = tx.FindRepoWithDeleted(0, org.ID, name)
 		} else {
-			row, ferr = tx.FindRepo(user.ID, 0, name)
+			row, ferr = tx.FindRepo(0, org.ID, name)
 		}
 		return ferr
 	})
 	if serr != nil {
 		if errors.Is(serr, store.ErrNotFound) {
-			if target, ok := d.followRedirect(ctx, user.ID, name); ok {
+			if target, ok := d.followRedirect(ctx, ownerUserID, name); ok {
 				row = target
 			} else {
 				return out, op.Errorf(op.CodeNotFound, "repository was not found")
@@ -397,7 +415,7 @@ func (d Deps) resolveRepo(ctx context.Context, r requester, owner, name string, 
 		}
 	}
 	out.row = row
-	out.owner = user.Name
+	out.owner = ownerName
 	out.name = row.Name
 	out.request = r
 	out.resolver = d.Store.Resolver()
