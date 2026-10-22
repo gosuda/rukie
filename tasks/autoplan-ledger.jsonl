@@ -140,3 +140,4 @@
 {"id": "ENG-65", "description": "Demote the Go render layer to fallback; delete internal/web/zerojs; keep trusted/htmlcheck and fix the CodeQL data: URL-scheme gap.", "phase": "engineering"}
 {"id": "ENG-66", "description": "Replace zero-JS gates with TestAllHTMLRoutesRenderWithoutJS, TestNoJSFallbackMutationsPost, TestEmbeddedAppBundle, TestNoJSAppSource.", "phase": "engineering"}
 {"id": "ENG-67", "description": "Defer dogfood until F1 to F14 all land (O40).", "phase": "engineering"}
+{"id": "ENG-68", "description": "Settle the CI scope override (D2): the settled answers supersede arch-sketch-monolith section 11 hedge; control-plane ci.toml matrix expansion, artifacts, and the content-addressed cache are in scope with a matrix-free runner.", "phase": "engineering"}
