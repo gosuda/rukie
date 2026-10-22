@@ -56,6 +56,7 @@ func buildRepoEnv(t *testing.T) *repoEnv {
 		func() error { return api.RegisterRepos(table, deps) },
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
+		func() error { return api.RegisterReview(table, deps) },
 	} {
 		if serr := step(); serr != nil {
 			t.Fatalf("register: %v", serr)
@@ -72,6 +73,7 @@ func buildRepoEnv(t *testing.T) *repoEnv {
 	api.RegisterReposViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
+	api.RegisterReviewViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()

@@ -415,6 +415,9 @@ func (d Deps) openDaemonRepo(ctx context.Context, row store.RepoRow) (ruk.Repo, 
 	if d.RepoRoot != "" && !isAbsPath(abs) {
 		abs = joinPath(d.RepoRoot, abs)
 	}
+	if !strings.HasSuffix(abs, ".ruk") {
+		abs = joinPath(abs, ".ruk")
+	}
 	repo, oerr := d.Ruk.OpenRepo(ctx, abs)
 	if oerr != nil {
 		return ruk.Repo{}, mapRukError(oerr)

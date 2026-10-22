@@ -675,6 +675,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	if regErr := api.RegisterReview(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	if regErr := api.RegisterOrgs(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
@@ -694,6 +698,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterReposViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
+	api.RegisterReviewViews(views)
 	api.RegisterOrgsViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
@@ -755,6 +760,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		RepoRoot:   cfg.Ruk.RepoRoot,
 		Limits:     wire.DefaultGitLimits(),
 		Feed:       events.OpenHookSink(st, spool, time.Now),
+		Store:      st,
 		Barrier:    holdBarrier,
 	})
 	if err != nil {

@@ -275,7 +275,7 @@ func seedDevHello(ctx context.Context, dir string, st *store.Store, userID int64
 		if ierr != nil {
 			return ierr
 		}
-		return tx.InsertDefaultRule(id, now, "main")
+		return tx.InsertDefaultRule(id, now, "refs/heads/main")
 	})
 	if serr != nil {
 		return false, fmt.Errorf("seedDevHello: %w", serr)

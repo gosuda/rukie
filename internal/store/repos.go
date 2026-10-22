@@ -346,6 +346,7 @@ type RepoUpdate struct {
 	DefaultBranch *string
 	Visibility    *string
 	Archived      *bool
+	RukPath       *string
 }
 
 func (tx *WriteTx) UpdateRepo(id int64, now time.Time, up RepoUpdate) error {
@@ -382,6 +383,10 @@ func (tx *WriteTx) UpdateRepo(id int64, now time.Time, up RepoUpdate) error {
 		}
 		query += `, archived = ?`
 		args = append(args, archived)
+	}
+	if up.RukPath != nil {
+		query += `, ruk_path = ?`
+		args = append(args, *up.RukPath)
 	}
 	query += ` WHERE id = ? AND deleted_at IS NULL`
 	args = append(args, id)
@@ -519,6 +524,8 @@ func (tx *WriteTx) DeleteGrant(repoID, userID int64) error {
 	return nil
 }
 
+const defaultLandRequired = `[{"kind":"review/approve","result":"approved","trusted":{},"min_signers":1}]`
+
 func (tx *WriteTx) InsertDefaultRule(repoID int64, now time.Time, pattern string) error {
 	inner, err := tx.live()
 	if err != nil {
@@ -526,8 +533,8 @@ func (tx *WriteTx) InsertDefaultRule(repoID int64, now time.Time, pattern string
 	}
 	_, merr := inner.ExecContext(tx.ctx, `INSERT INTO bookmark_rules
 (repo_id, pattern, mode, bypass_admin, push_allow, land_allow, required, version, created_at)
-VALUES (?, ?, 'Open', 0, '[]', '[]', '[]', 1, ?)`,
-		repoID, pattern, msOf(now))
+VALUES (?, ?, 'LandOnly', 0, '[]', '[]', ?, 1, ?)`,
+		repoID, pattern, defaultLandRequired, msOf(now))
 	return merr
 }
 
@@ -546,6 +553,106 @@ func (tx *WriteTx) PutBookmarkRule(repoID int64, pattern, mode string, now time.
 VALUES (?, ?, ?, 0, '[]', '[]', '[]', 1, ?)`,
 		repoID, pattern, mode, msOf(now))
 	return merr
+}
+
+// PolicyRuleInsert seeds one bookmark rule with every column populated; it is
+// the test fixture counterpart to UpdatePolicyRule.
+type PolicyRuleInsert struct {
+	Pattern     string
+	Mode        string
+	BypassAdmin bool
+	PushAllow   string
+	LandAllow   string
+	Required    string
+}
+
+func (tx *WriteTx) InsertPolicyRule(repoID int64, now time.Time, in PolicyRuleInsert) error {
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	switch in.Mode {
+	case "Open", "LandOnly":
+	default:
+		return fmt.Errorf("InsertPolicyRule: %w: unknown mode %q", ErrInvalid, in.Mode)
+	}
+	bypass := 0
+	if in.BypassAdmin {
+		bypass = 1
+	}
+	if in.PushAllow == "" {
+		in.PushAllow = "[]"
+	}
+	if in.LandAllow == "" {
+		in.LandAllow = "[]"
+	}
+	if in.Required == "" {
+		in.Required = "[]"
+	}
+	_, merr := inner.ExecContext(tx.ctx, `INSERT INTO bookmark_rules
+(repo_id, pattern, mode, bypass_admin, push_allow, land_allow, required, version, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+		repoID, in.Pattern, in.Mode, bypass, in.PushAllow, in.LandAllow, in.Required, msOf(now))
+	return merr
+}
+
+// PolicyRuleUpdate covers every writable column of one bookmark rule. Empty
+// JSON columns keep their existing values; a nil pointer leaves a column
+// untouched.
+type PolicyRuleUpdate struct {
+	Mode        *string
+	BypassAdmin *bool
+	PushAllow   *string
+	LandAllow   *string
+	Required    *string
+}
+
+func (tx *WriteTx) UpdatePolicyRule(repoID int64, pattern string, up PolicyRuleUpdate) error {
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	query := `UPDATE bookmark_rules SET version = version + 1`
+	args := []any{}
+	if up.Mode != nil {
+		switch *up.Mode {
+		case "Open", "LandOnly":
+		default:
+			return fmt.Errorf("UpdatePolicyRule: %w: unknown mode %q", ErrInvalid, *up.Mode)
+		}
+		query += `, mode = ?`
+		args = append(args, *up.Mode)
+	}
+	if up.BypassAdmin != nil {
+		bypass := 0
+		if *up.BypassAdmin {
+			bypass = 1
+		}
+		query += `, bypass_admin = ?`
+		args = append(args, bypass)
+	}
+	if up.PushAllow != nil {
+		query += `, push_allow = ?`
+		args = append(args, *up.PushAllow)
+	}
+	if up.LandAllow != nil {
+		query += `, land_allow = ?`
+		args = append(args, *up.LandAllow)
+	}
+	if up.Required != nil {
+		query += `, required = ?`
+		args = append(args, *up.Required)
+	}
+	query += ` WHERE repo_id = ? AND pattern = ?`
+	args = append(args, repoID, pattern)
+	moved, merr := execAffected(tx.ctx, inner, query, args...)
+	if merr != nil {
+		return merr
+	}
+	if moved == 0 {
+		return fmt.Errorf("UpdatePolicyRule: %w: %s", ErrNotFound, pattern)
+	}
+	return nil
 }
 
 func (tx *WriteTx) PutRedirect(oldOwner int64, oldName string, repoID int64, now time.Time) error {

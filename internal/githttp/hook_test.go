@@ -82,7 +82,7 @@ func judgeCommand() wire.HookCommand {
 func TestJudgeAcceptsLiveRepoPush(t *testing.T) {
 	repoID, st := openJudgeStore(t, false)
 	s := &Server{resolver: st.Resolver()}
-	if verdict := s.judge(judgeCaller(), repoID, wire.HookPreReceive, judgeCommand()); verdict.Kind != wire.HookAccept {
+	if verdict := s.judge(t.Context(), judgeCaller(), repoID, wire.HookPreReceive, judgeCommand()); verdict.Kind != wire.HookAccept {
 		t.Fatalf("live push verdict = %+v, want accept", verdict)
 	}
 }
@@ -90,7 +90,7 @@ func TestJudgeAcceptsLiveRepoPush(t *testing.T) {
 func TestJudgeRejectsArchivedRepoPush(t *testing.T) {
 	repoID, st := openJudgeStore(t, true)
 	s := &Server{resolver: st.Resolver()}
-	if verdict := s.judge(judgeCaller(), repoID, wire.HookPreReceive, judgeCommand()); verdict.Kind == wire.HookAccept {
+	if verdict := s.judge(t.Context(), judgeCaller(), repoID, wire.HookPreReceive, judgeCommand()); verdict.Kind == wire.HookAccept {
 		t.Fatalf("archived push verdict = %+v, want reject", verdict)
 	}
 }

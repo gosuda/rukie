@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +59,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterRepos(table, deps) },
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
+		func() error { return api.RegisterReview(table, deps) },
 	} {
 		if err := step(); err != nil {
 			t.Fatalf("register: %v", err)
@@ -74,6 +76,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterReposViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
+	api.RegisterReviewViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()
@@ -249,6 +252,43 @@ func waitRefUpdated(t *testing.T, s *stack, ref string, timeout time.Duration) {
 	}
 }
 
+func f2SeedRepoDirect(t *testing.T, s *stack, ada userRec, owner, name string, files map[string]string) {
+	t.Helper()
+	repoID := s.addRepo(t, owner, name, "private")
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	rukPath := owner + "/" + name + ".git"
+	if err := s.st.Write(ctx, func(tx *store.WriteTx) error {
+		if ierr := tx.InsertPolicyRule(repoID, time.Now(), store.PolicyRuleInsert{
+			Pattern:     "refs/heads/main",
+			Mode:        "LandOnly",
+			BypassAdmin: true,
+			PushAllow:   `[{"users":[` + strconv.FormatInt(ada.user.ID, 10) + `]}]`,
+			Required:    `[{"kind":"review/approve","result":"approved","trusted":{},"min_signers":1}]`,
+		}); ierr != nil {
+			return ierr
+		}
+		return tx.UpdateRepo(repoID, time.Now(), store.RepoUpdate{RukPath: &rukPath})
+	}); err != nil {
+		t.Fatalf("seed rule: %v", err)
+	}
+	work, _ := s.localRepo(t, files)
+	pushCtx, pushCancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer pushCancel()
+	if out, err := gitRun(pushCtx, t, work, "push", s.repoURL(owner, name, "ada", ada.token), "HEAD:refs/heads/main"); err != nil {
+		t.Fatalf("seed main: %v\n%s", err, out)
+	}
+	bypass := false
+	pushAllow := "[]"
+	if err := s.st.Write(ctx, func(tx *store.WriteTx) error {
+		return tx.UpdatePolicyRule(repoID, "refs/heads/main", store.PolicyRuleUpdate{
+			BypassAdmin: &bypass, PushAllow: &pushAllow,
+		})
+	}); err != nil {
+		t.Fatalf("tighten rule: %v", err)
+	}
+}
+
 func TestAgentFlow(t *testing.T) {
 	t.Run("create", func(t *testing.T) {
 		s := newStack(t, nil)
@@ -287,10 +327,104 @@ func TestAgentFlow(t *testing.T) {
 		pushURL := s.repoURL("ada", "hello", "ada", secret)
 		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 		defer cancel()
-		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err != nil {
-			t.Fatalf("push: %v\n%s", err, out)
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/main"); err == nil {
+			t.Fatalf("direct push to the protected default branch landed:\n%s", out)
+		} else if !strings.Contains(out, "protected:allowlist") {
+			t.Fatalf("direct push lacks the LandOnly denial:\n%s", out)
 		}
-		waitRefUpdated(t, s, "refs/heads/main", 2*time.Second)
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/heads/side"); err != nil {
+			t.Fatalf("side branch push: %v\n%s", err, out)
+		}
+		waitRefUpdated(t, s, "refs/heads/side", 2*time.Second)
+	})
+
+	t.Run("change", func(t *testing.T) {
+		s := newStack(t, nil)
+		h := mountAPI(t, s)
+		ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+		session := apiLogin(t, h, "ada", "long-test-password-01")
+		token := apiToken(t, h, session, "repo:read repo:write intents:read")
+		f2SeedRepoDirect(t, s, ada, "ada", "hello", map[string]string{"README.md": "hello\n"})
+		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		pushURL := s.repoURL("ada", "hello", "ada", ada.token)
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/for/main"); err != nil {
+			t.Fatalf("refs/for push: %v\n%s", err, out)
+		}
+		key := "main~" + strconv.FormatInt(ada.user.ID, 10)
+		if status, decoded := apiCall(t, h, "GET", "/ada/hello/changes/"+key, token, ""); status != http.StatusOK {
+			t.Fatalf("change.get = %d: %v", status, decoded)
+		}
+		if status, _ := apiCall(t, h, "POST", "/ada/hello/changes/"+key+"/comments", token, `{"path":"README.md","line":1,"body":"nit"}`); status != http.StatusCreated {
+			t.Fatalf("comment.create = %d", status)
+		}
+		t.Skip("needs-ruk-F2: comment remap needs served daemon diff")
+		second, _ := s.localRepo(t, map[string]string{"README.md": "hello\nsecond\n"})
+		if out, err := gitRun(ctx, t, second, "push", pushURL, "HEAD:refs/for/main"); err != nil {
+			t.Fatalf("rewrite push: %v\n%s", err, out)
+		}
+		status, listed := apiCall(t, h, "GET", "/ada/hello/changes/"+key+"/comments?unmatched=true", token, "")
+		if status != http.StatusOK {
+			t.Fatalf("comment.list = %d: %v", status, listed)
+		}
+		raw, _ := listed["comments"].([]any)
+		if len(raw) != 1 {
+			t.Fatalf("comments = %v, want the remapped row", listed)
+		}
+		row, _ := raw[0].(map[string]any)
+		if row["unmatched"] == true {
+			t.Fatalf("comment fell to the fallback bucket: %v", row)
+		}
+		if row["line"] != float64(1) {
+			t.Fatalf("comment line = %v, want 1", row["line"])
+		}
+	})
+
+	t.Run("land", func(t *testing.T) {
+		s := newStack(t, nil)
+		h := mountAPI(t, s)
+		ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+		session := apiLogin(t, h, "ada", "long-test-password-01")
+		token := apiToken(t, h, session, "repo:read repo:write intents:read")
+		f2SeedRepoDirect(t, s, ada, "ada", "hello", map[string]string{"README.md": "hello\n"})
+		_ = ada
+		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n"})
+		pushURL := s.repoURL("ada", "hello", "ada", strings.TrimPrefix(token, "Bearer "))
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		if out, err := gitRun(ctx, t, work, "push", pushURL, "HEAD:refs/for/main"); err != nil {
+			t.Fatalf("refs/for push: %v\n%s", err, out)
+		}
+		key := "main~" + strconv.FormatInt(ada.user.ID, 10)
+		planStatus, plan := apiCall(t, h, "POST", "/ada/hello/land/plans", token, `{"target_ref":"refs/heads/main","change":"`+key+`"}`)
+		if planStatus != http.StatusCreated {
+			t.Fatalf("land.plan.create = %d: %v", planStatus, plan)
+		}
+		planID, _ := plan["id"].(string)
+		if planID == "" {
+			if nested, ok := plan["plan"].(map[string]any); ok {
+				planID, _ = nested["id"].(string)
+			}
+		}
+		if planID == "" {
+			t.Fatalf("plan id missing: %v", plan)
+		}
+		runStatus, run := apiCall(t, h, "POST", "/ada/hello/land/plans/"+planID+"/runs", token, `{}`)
+		if runStatus != http.StatusConflict {
+			t.Fatalf("land.run.create = %d, want 409 requirements-unmet: %v", runStatus, run)
+		}
+		raw, _ := run["detail"].(string)
+		if !strings.Contains(raw, "requirements-unmet") {
+			t.Fatalf("conflict lacks requirements-unmet: %v", run)
+		}
+		if status, _ := apiCall(t, h, "POST", "/ada/hello/changes/"+key+"/comments", token, `{"body":"approve"}`); status != http.StatusCreated {
+			t.Fatalf("spoof comment.create = %d", status)
+		}
+		spoofStatus, _ := apiCall(t, h, "POST", "/ada/hello/land/plans/"+planID+"/runs", token, `{}`)
+		if spoofStatus != http.StatusConflict {
+			t.Fatalf("spoofed approval run = %d, want 409: ordinary comments never approve", spoofStatus)
+		}
 	})
 }
 

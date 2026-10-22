@@ -38,6 +38,7 @@ type Config struct {
 	Limiter     *access.Limiter
 	Client      *ruk.Client
 	Feed        *events.HookSink
+	Store       *store.Store
 	Clock       func() time.Time
 	Barrier     func() (release func(), ok bool)
 	RepoRoot    string
@@ -145,13 +146,20 @@ func New(cfg Config) (*Server, error) {
 	if clock == nil {
 		clock = time.Now
 	}
+	st := cfg.Store
+	if st == nil {
+		st = cfg.Auth.Store()
+	}
+	if st == nil {
+		return nil, errConfig("a store is required")
+	}
 	return &Server{
 		auth:        cfg.Auth,
 		limiter:     cfg.Limiter,
 		client:      cfg.Client,
 		feed:        cfg.Feed,
-		resolver:    cfg.Auth.Store().Resolver(),
-		store:       cfg.Auth.Store(),
+		resolver:    st.Resolver(),
+		store:       st,
 		repoRoot:    filepath.Clean(cfg.RepoRoot),
 		socketPath:  cfg.SocketPath,
 		limits:      cfg.Limits,

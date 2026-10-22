@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"database/sql"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -140,6 +139,7 @@ func newSSHStackWith(t *testing.T, idle, keepalive time.Duration) *sshStack {
 		Client:            client,
 		RepoRoot:          roots,
 		Limits:            wire.DefaultGitLimits(),
+		Store:             st,
 		HostKeys:          []ssh.Signer{hostSigner},
 		Clock:             time.Now,
 		IdleTimeout:       idle,
@@ -434,14 +434,14 @@ func TestSSHRefsForCreatesChange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	if out, err := sshGitRun(ctx, t, s, adaKey.file, work, "push", url, "HEAD:refs/for/main"); err != nil {
-		t.Fatalf("needs-F2: refs/for push: %v\n%s", err, out)
+		t.Fatalf("divert refs/for push: %v\n%s", err, out)
 	}
 	out, err := sshGitRun(ctx, t, s, adaKey.file, t.TempDir(), "ls-remote", url)
 	if err != nil {
 		t.Fatalf("ls-remote: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, oid+"\trefs/changes/") {
-		t.Fatalf("needs-F2: no change ref carries %s:\n%s", oid, out)
+		t.Fatalf("divert left no change ref carrying %s:\n%s", oid, out)
 	}
 }
 

@@ -2,6 +2,7 @@ package githttp
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"testing"
@@ -41,7 +42,7 @@ func TestCountReaderOverflowBeyondLimit(t *testing.T) {
 
 func TestJudgeUnauthorizedCommandRejected(t *testing.T) {
 	s := &Server{}
-	v := s.judge(access.Caller{Active: true}, 7, wire.HookPreReceive, wire.HookCommand{
+	v := s.judge(context.Background(), access.Caller{Active: true}, 7, wire.HookPreReceive, wire.HookCommand{
 		Name:       "refs/heads/main",
 		Authorized: false,
 	})
