@@ -5,25 +5,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/op"
 )
 
 type UserGetIn struct {
-	Owner string `path:"owner"`
+	Owner  string `path:"owner"`
+	Tab    string `query:"tab"`
+	Cursor string `query:"cursor"`
 }
 
 type UserGetOut struct {
-	DisplayName string `json:"display_name,omitempty"`
-	Description string `json:"description,omitempty"`
-	Website     string `json:"website,omitempty"`
-	Visibility  string `json:"visibility,omitempty"`
-	Name        string `json:"name"`
-	FullName    string `json:"full_name"`
-	Kind        string `json:"kind,omitempty"`
-	Role        string `json:"role,omitempty"`
-	UpdatedAt   int64  `json:"updated_at,omitzero"`
+	DisplayName   string      `json:"display_name,omitempty"`
+	Description   string      `json:"description,omitempty"`
+	Website       string      `json:"website,omitempty"`
+	Visibility    string      `json:"visibility,omitempty"`
+	Name          string      `json:"name"`
+	FullName      string      `json:"full_name"`
+	Kind          string      `json:"kind,omitempty"`
+	Role          string      `json:"role,omitempty"`
+	Tab           string      `json:"-"`
+	StarsNext     string      `json:"-"`
+	StarsNextHref string      `json:"-"`
+	Stars         []StarEntry `json:"stars,omitempty"`
+	UpdatedAt     int64       `json:"updated_at,omitzero"`
 }
 
 type SelfUpdateBody struct {
@@ -92,7 +99,7 @@ func RegisterUser(t *op.Table, deps Deps) error {
 			if out.Kind == "org" {
 				return fmt.Sprintf("org-%s-%d", out.Name, out.UpdatedAt)
 			}
-			return "user-" + out.Name
+			return "user-" + out.Name + userStarsETagSuffix(out)
 		},
 		Handler: func(ctx context.Context, p op.Principal, in UserGetIn) (UserGetOut, error) {
 			u, err := deps.Service.GetUser(ctx, in.Owner)
@@ -100,7 +107,16 @@ func RegisterUser(t *op.Table, deps Deps) error {
 				if !u.IsActive {
 					return UserGetOut{}, op.Errorf(op.CodeNotFound, "unknown user")
 				}
-				return UserGetOut{Name: u.Name, FullName: u.FullName}, nil
+				out := UserGetOut{Name: u.Name, FullName: u.FullName, Tab: in.Tab}
+				if in.Tab == "stars" {
+					stars, next, serr := listUserStars(ctx, deps, p, u.ID, in.Cursor)
+					if serr != nil {
+						return UserGetOut{}, serr
+					}
+					out.Stars, out.StarsNext = stars, next
+					out.StarsNextHref = socialHref(ctx, "/"+u.Name, url.Values{"tab": {"stars"}}, next)
+				}
+				return out, nil
 			}
 			if deps.Store == nil {
 				return UserGetOut{}, op.Errorf(op.CodeNotFound, "unknown user")
@@ -182,7 +198,10 @@ func RegisterUserViews(v *op.Views) {
 				Role: out.Role,
 			}})
 		}
-		body := heading(out.Name) + para(out.FullName)
+		body := heading(out.Name) + para(out.FullName) + writeUserTabs(out.Name, c.Input.Get("tab"))
+		if c.Input.Get("tab") == "stars" {
+			body += writeUserStars(out.Name, out.Stars, out.StarsNext, out.StarsNextHref)
+		}
 		_, err := io.WriteString(w, pageShell(out.Name, body))
 		return err
 	})

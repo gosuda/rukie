@@ -126,6 +126,15 @@ func Routes() []Route {
 		{Pattern: "POST /-/mcp"},
 		{Pattern: "GET /-/mcp"},
 		{Pattern: "DELETE /-/mcp"},
+		{Pattern: "GET /-/explore/repos", Op: "explore.repos"},
+		{Pattern: "GET /-/explore/users", Op: "explore.users"},
+		{Pattern: "GET /-/explore/orgs", Op: "explore.orgs"},
+		{Pattern: "GET /{owner}/{repo}/stargazers", Op: "star.list"},
+		{Pattern: "POST /{owner}/{repo}/star", Op: "star.add"},
+		{Pattern: "POST /{owner}/{repo}/unstar", Op: "star.remove"},
+		{Pattern: "GET /{owner}/{repo}/forks", Op: "repo.fork.list"},
+		{Pattern: "GET /{owner}/{repo}/fork", Op: "repo.fork.page"},
+		{Pattern: "POST /{owner}/{repo}/fork", Op: "repo.fork.create"},
 	}
 }
 

@@ -44,7 +44,7 @@ func repoJSON(owner string, row store.RepoRow) RepoJSON {
 		Website:       row.Website,
 		Visibility:    row.Visibility,
 		DefaultBranch: row.DefaultBranch,
-		State:         "active",
+		State:         cmp.Or(row.State, "active"),
 		CreatedAt:     row.CreatedAt,
 		UpdatedAt:     row.UpdatedAt,
 		Archived:      row.Archived,
@@ -66,9 +66,23 @@ func repoJSON(owner string, row store.RepoRow) RepoJSON {
 }
 
 func repoOwnerName(ctx context.Context, st *store.Store, row store.RepoRow) string {
-	if row.OwnerUserID.Valid && st != nil {
+	if st == nil {
+		return ""
+	}
+	if row.OwnerUserID.Valid {
 		if user, uerr := st.LookupUserByID(ctx, row.OwnerUserID.Int64); uerr == nil {
 			return user.Name
+		}
+		return ""
+	}
+	if row.OrgID != 0 {
+		var org store.OrgRow
+		if rerr := st.Read(ctx, func(tx *store.ReadTx) error {
+			var ferr error
+			org, ferr = tx.GetOrg(row.OrgID)
+			return ferr
+		}); rerr == nil {
+			return org.Name
 		}
 	}
 	return ""
@@ -107,12 +121,15 @@ type RepoReadmeJSON struct {
 }
 
 type RepoGetOut struct {
-	Readme *RepoReadmeJSON `json:"readme,omitempty"`
-	Commit string          `json:"commit,omitempty"`
-	Next   string          `json:"-"`
-	Tree   []TreeEntryJSON `json:"tree,omitempty"`
-	Repo   RepoJSON        `json:"repo"`
-	Empty  bool            `json:"empty"`
+	Readme  *RepoReadmeJSON `json:"readme,omitempty"`
+	Commit  string          `json:"commit,omitempty"`
+	Next    string          `json:"-"`
+	Tree    []TreeEntryJSON `json:"tree,omitempty"`
+	Repo    RepoJSON        `json:"repo"`
+	Empty   bool            `json:"empty"`
+	Starred bool            `json:"starred,omitzero"`
+	Stars   int64           `json:"stars,omitzero"`
+	Forks   int64           `json:"forks,omitzero"`
 }
 
 type RepoListIn struct {
@@ -610,6 +627,9 @@ func getRepoHandler(d Deps) func(context.Context, op.Principal, RepoGetIn) (Repo
 			return RepoGetOut{}, derr
 		}
 		out := RepoGetOut{Repo: repoJSON(rc.owner, rc.row)}
+		if serr := fillRepoSocial(ctx, d, rq, rc.row, &out); serr != nil {
+			return RepoGetOut{}, serr
+		}
 		if derr := d.fillRepoHome(ctx, rc, &out); derr != nil {
 			return RepoGetOut{}, derr
 		}
@@ -628,7 +648,7 @@ func (d Deps) fillRepoHome(ctx context.Context, rc repoContext, out *RepoGetOut)
 	rc.daemon = daemon
 	resolved, rerr := d.resolveRev(ctx, rc, rc.row.DefaultBranch)
 	if rerr != nil {
-		if oerr, ok := errors.AsType[*op.Error](rerr); ok && oerr.Code == op.CodeNotFound {
+		if oerr, ok := errors.AsType[*op.Error](rerr); ok && (oerr.Code == op.CodeNotFound || oerr.Code == op.CodeInvalid) {
 			out.Empty = true
 			return nil
 		}

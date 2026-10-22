@@ -25,6 +25,7 @@ import (
 	"github.com/gosuda/rukie/internal/cli"
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/events"
+	"github.com/gosuda/rukie/internal/forks"
 	"github.com/gosuda/rukie/internal/githttp"
 	"github.com/gosuda/rukie/internal/gitssh"
 	"github.com/gosuda/rukie/internal/logging"
@@ -320,6 +321,15 @@ func runServe(argv []string) int {
 			return app.jobs.RunKinds(ctx, repowatch.WorkerConfig("serve"), repowatch.PurgeKinds(), app.watcher.HandlePurge)
 		})
 	}()
+	forkDone := make(chan struct{})
+	go func() {
+		defer close(forkDone)
+		superviseWorker(workerCtx, time.Minute, func(err error) bool {
+			return errors.Is(err, store.ErrBackupInProgress)
+		}, func(ctx context.Context) error {
+			return app.forks.Run(ctx, "serve-fork")
+		})
+	}()
 	go func() {
 		defer close(sweepDone)
 		_ = app.watcher.RunSweeper(sweepCtx, time.Hour)
@@ -333,6 +343,7 @@ func runServe(argv []string) int {
 		workerStop()
 		sweepStop()
 		<-workerDone
+		<-forkDone
 		<-sweepDone
 		mirrorErr := <-mirrorDone
 		if mirrorErr != nil && !errors.Is(mirrorErr, context.Canceled) {
@@ -558,6 +569,7 @@ type app struct {
 	watcher *repowatch.Watcher
 	jobs    *queue.Queue
 	ssh     *gitssh.Server
+	forks   forks.Worker
 	mirror  mirror.Worker
 }
 
@@ -698,6 +710,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	if regErr := api.RegisterSocial(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	fillLLMS, regErr := api.RegisterLLMS(table, llmsBase(cfg))
 	if regErr != nil {
 		cleanup()
@@ -716,6 +732,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterReviewViews(views)
 	api.RegisterMirrorViews(views)
 	api.RegisterOrgsViews(views)
+	api.RegisterSocialViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
 	idem.StartSweeper(ctx, time.Minute)
@@ -792,7 +809,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, err
 	}
-	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}}, cleanup, nil
+	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {

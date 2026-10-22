@@ -299,8 +299,8 @@ type execution struct {
 
 type loadedRun struct {
 	run    store.MirrorRunRow
-	repo   store.RepoRow
 	mirror store.MirrorRow
+	repo   store.RepoRow
 }
 
 type runOutcome struct {
