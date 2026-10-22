@@ -34,15 +34,18 @@ import (
 type apiHarness struct {
 	server  *httptest.Server
 	watcher *repowatch.Watcher
+	queue   *queue.Queue
+	sealKey []byte
 }
 
 func mountAPI(t *testing.T, s *stack) *apiHarness {
 	t.Helper()
 	var sealKey [32]byte
 	_, _ = rand.Read(sealKey[:])
+	mirrorQueue := queue.Open(s.st, time.Now)
 	deps := api.Deps{
 		Service: s.auth, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(),
-		Store: s.st, Ruk: s.client, Queue: queue.Open(s.st, time.Now),
+		Store: s.st, Ruk: s.client, Queue: mirrorQueue,
 		RepoRoot: s.roots, RukBin: rukBin(t),
 		SealKey: sealKey[:],
 	}
@@ -101,7 +104,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	front := api.RawBytes{Deps: deps}.Wrap(mounted)
 	ts := httptest.NewServer(front)
 	t.Cleanup(ts.Close)
-	return &apiHarness{server: ts, watcher: watcher}
+	return &apiHarness{server: ts, watcher: watcher, queue: mirrorQueue, sealKey: sealKey[:]}
 }
 
 func apiCall(t *testing.T, h *apiHarness, method, target, authHeader, body string) (int, map[string]any) {

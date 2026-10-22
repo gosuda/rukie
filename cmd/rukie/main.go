@@ -29,6 +29,7 @@ import (
 	"github.com/gosuda/rukie/internal/gitssh"
 	"github.com/gosuda/rukie/internal/logging"
 	"github.com/gosuda/rukie/internal/mcp"
+	"github.com/gosuda/rukie/internal/mirror"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/repowatch"
@@ -323,12 +324,18 @@ func runServe(argv []string) int {
 		defer close(sweepDone)
 		_ = app.watcher.RunSweeper(sweepCtx, time.Hour)
 	}()
+	mirrorDone := make(chan struct{})
+	go func() {
+		defer close(mirrorDone)
+		_ = app.mirror.Scheduler(workerCtx, 10*time.Second, "serve-mirror")
+	}()
 	ownedDrainRunners["followers"] = app.watcher.StopAll
 	ownedDrainRunners["queue"] = func(context.Context) error {
 		workerStop()
 		sweepStop()
 		<-workerDone
 		<-sweepDone
+		<-mirrorDone
 		return nil
 	}
 	if app.ssh != nil {
@@ -549,6 +556,7 @@ type app struct {
 	watcher *repowatch.Watcher
 	jobs    *queue.Queue
 	ssh     *gitssh.Server
+	mirror  mirror.Worker
 }
 
 type gitFallback struct {
@@ -781,7 +789,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, err
 	}
-	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv}, cleanup, nil
+	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot}}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {
