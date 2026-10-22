@@ -37,11 +37,11 @@ func loadSnapshot(t *testing.T) (map[string]jsonv1.RawMessage, []wire.Method, []
 	if err := jsonv2.Unmarshal(raw, &doc, jsonv1.DefaultOptionsV1()); err != nil {
 		t.Fatalf("decode snapshot: %v", err)
 	}
-	if doc.SchemaVersion.Major != 1 || doc.SchemaVersion.Minor != 3 {
-		t.Fatalf("schema version = %d.%d, want 1.3", doc.SchemaVersion.Major, doc.SchemaVersion.Minor)
+	if doc.SchemaVersion.Major != 1 || doc.SchemaVersion.Minor != 4 {
+		t.Fatalf("schema version = %d.%d, want 1.4", doc.SchemaVersion.Major, doc.SchemaVersion.Minor)
 	}
-	if len(doc.Methods) != 61 {
-		t.Fatalf("methods = %d, want 61", len(doc.Methods))
+	if len(doc.Methods) != 63 {
+		t.Fatalf("methods = %d, want 63", len(doc.Methods))
 	}
 	if len(doc.ErrorCodes) != 30 {
 		t.Fatalf("error codes = %d, want 30", len(doc.ErrorCodes))

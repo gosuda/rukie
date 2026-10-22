@@ -185,6 +185,12 @@ var (
 
 	// MethodPolicySet names the policy.set method.
 	MethodPolicySet Method = "policy.set"
+
+	// MethodReleaseFreezeSet names the release.freeze.set method.
+	MethodReleaseFreezeSet Method = "release.freeze.set"
+
+	// MethodReleaseFreezeClear names the release.freeze.clear method.
+	MethodReleaseFreezeClear Method = "release.freeze.clear"
 )
 
 type MethodKind uint8
@@ -338,6 +344,10 @@ func (m Method) Kind() MethodKind {
 		return MethodMutation
 	case MethodPolicySet:
 		return MethodMutation
+	case MethodReleaseFreezeSet:
+		return MethodMutation
+	case MethodReleaseFreezeClear:
+		return MethodMutation
 	default:
 		return 0
 	}
@@ -406,6 +416,8 @@ func AllMethods() []Method {
 		MethodRemoteRefs,
 		MethodClaimRenew,
 		MethodPolicySet,
+		MethodReleaseFreezeSet,
+		MethodReleaseFreezeClear,
 	}
 }
 
