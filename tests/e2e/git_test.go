@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -24,13 +23,12 @@ import (
 
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/auth"
-	"github.com/gosuda/rukie/internal/events"
+	"github.com/gosuda/rukie/internal/e2estack"
 	"github.com/gosuda/rukie/internal/githttp"
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/rukproc"
 	"github.com/gosuda/rukie/internal/store"
-	"github.com/gosuda/rukie/internal/sysops"
 )
 
 type userRec struct {
@@ -39,7 +37,7 @@ type userRec struct {
 }
 
 type stack struct {
-	t       *testing.T
+	shared  *e2estack.Stack
 	server  *httptest.Server
 	auth    *auth.Service
 	st      *store.Store
@@ -53,329 +51,71 @@ type stack struct {
 	url     string
 }
 
-func gitBin(t *testing.T) string {
-	t.Helper()
-	if bin := os.Getenv("GIT_EXEC"); bin != "" {
-		return bin
-	}
-	return "git"
-}
+var gitBin = e2estack.GitBin
+var rukBin = e2estack.RukBin
+var gitEnv = e2estack.GitEnv
+var gitRun = e2estack.GitRun
+var httpGet = e2estack.HTTPGet
 
-func rukBin(t *testing.T) string {
+func adaptStack(t *testing.T, shared *e2estack.Stack) *stack {
 	t.Helper()
-	bin, err := rukproc.ResolveBinary("")
-	if err != nil {
-		t.Fatalf("ruk binary: %v", err)
-	}
-	return bin
+	return &stack{shared: shared, server: shared.Server, auth: shared.Auth,
+		st: shared.Store, client: shared.Client, child: shared.Child, handler: shared.Handler,
+		users: map[string]userRec{}, dir: shared.Dir, roots: shared.Roots, socket: shared.Socket, url: shared.URL}
 }
 
 func newStack(t *testing.T, limits *wire.GitLimits) *stack {
-	t.Helper()
-	return newStackWithConfig(t, limits, "", 0)
+	return adaptStack(t, e2estack.New(t, limits))
 }
 
 func newStackWithHTTPCap(t *testing.T, limits *wire.GitLimits, httpCap uint64) *stack {
-	t.Helper()
-	return newStackWithConfig(t, limits, "", httpCap)
+	return adaptStack(t, e2estack.NewWithHTTPCap(t, limits, httpCap))
 }
 
 func newStackNoAdmin(t *testing.T, limits *wire.GitLimits) *stack {
-	t.Helper()
-	return newStackSetup(t, limits, "", 0, "")
+	return adaptStack(t, e2estack.NewNoAdmin(t, limits))
 }
 
 func newStackWithConfig(t *testing.T, limits *wire.GitLimits, extraConfig string, httpCap uint64) *stack {
-	t.Helper()
-	return newStackSetup(t, limits, extraConfig, httpCap, fmt.Sprintf("admin_uids = [%d]\n", os.Getuid()))
+	return adaptStack(t, e2estack.NewWithConfig(t, limits, extraConfig, httpCap))
 }
 
-func newStackSetup(t *testing.T, limits *wire.GitLimits, extraConfig string, httpCap uint64, adminLine string) *stack {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	dir := t.TempDir()
-	roots := filepath.Join(dir, "roots")
-	if err := os.MkdirAll(roots, 0o755); err != nil {
-		t.Fatalf("roots: %v", err)
-	}
-	sqlite := filepath.Join(dir, "rukie.sqlite")
-	st, err := store.Open(ctx, store.Options{Path: sqlite})
-	if err != nil {
-		t.Fatalf("store open: %v", err)
-	}
-	svc := auth.New(st)
-	socket := filepath.Join(dir, "ruk.sock")
-	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 60000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n%s",
-		socket, roots, os.Getuid(), adminLine, extraConfig)
-	if strings.Contains(extraConfig, "retention_interval_ms") {
-		config = fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 60000\nhook_timeout_ms = 5000\n%s",
-			socket, roots, os.Getuid(), adminLine, extraConfig)
-	}
-	configPath := filepath.Join(dir, "daemon.toml")
-	if werr := os.WriteFile(configPath, []byte(config), 0o600); werr != nil {
-		t.Fatalf("daemon config: %v", werr)
-	}
-	var logs bytes.Buffer
-	child, err := rukproc.StartServe(rukBin(t), configPath, os.Environ(), &logs, &logs)
-	if err != nil {
-		t.Fatalf("daemon start: %v\n%s", err, logs.String())
-	}
-	s := &stack{t: t, dir: dir, roots: roots, socket: socket, auth: svc, st: st, child: child, users: map[string]userRec{}}
-	t.Cleanup(func() {
-		_ = child.Kill()
-		_ = st.Close(context.Background())
-	})
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, serr := os.Stat(socket); serr == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = child.Kill()
-			t.Fatalf("daemon socket never appeared\n%s", logs.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	dialCtx, dialCancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer dialCancel()
-	client, err := ruk.Dial(dialCtx, socket)
-	if err != nil {
-		t.Fatalf("dial daemon: %v", err)
-	}
-	t.Cleanup(func() { _ = client.Close() })
-	s.client = client
-	useLimits := wire.DefaultGitLimits()
-	if limits != nil {
-		useLimits = *limits
-	}
-	spool, err := events.OpenSpool(dir)
-	if err != nil {
-		t.Fatalf("spool: %v", err)
-	}
-	git, err := githttp.New(githttp.Config{
-		Auth:             svc,
-		Limiter:          access.NewLimiter(),
-		Client:           client,
-		Feed:             events.OpenHookSink(st, spool, time.Now),
-		Store:            st,
-		RepoRoot:         roots,
-		Limits:           useLimits,
-		MaxHTTPBodyBytes: httpCap,
-		Barrier: func() (func(), bool) {
-			return sysops.HoldSharedBarrier(dir)
-		},
-	})
-	if err != nil {
-		t.Fatalf("githttp: %v", err)
-	}
-	s.handler = git
-	s.server = httptest.NewServer(git)
-	t.Cleanup(s.server.Close)
-	s.url = s.server.URL
-	return s
-}
-
-func (s *stack) mintToken(t *testing.T, user auth.User, scopes ...string) userRec {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	parsed, err := auth.ParseScopeSet(scopes)
-	if err != nil {
-		t.Fatalf("scopes: %v", err)
-	}
-	secret, err := s.auth.CreateToken(ctx, auth.CreateTokenInput{
-		Name: "e2e", Scopes: parsed, UserID: user.ID,
-	})
-	if err != nil {
-		t.Fatalf("create token: %v", err)
-	}
-	rec := userRec{user: user, token: secret.Secret}
-	s.users[user.Name] = rec
-	return rec
+func (s *stack) record(rec e2estack.User) userRec {
+	user := userRec{token: rec.Token, user: rec.User}
+	s.users[user.user.Name] = user
+	return user
 }
 
 func (s *stack) addAdmin(t *testing.T, name string, scopes ...string) userRec {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	user, err := s.auth.BootstrapAdmin(ctx, name, "long-test-password-01", "127.0.0.1")
-	if err != nil {
-		t.Fatalf("bootstrap admin: %v", err)
-	}
-	return s.mintToken(t, user, scopes...)
+	return s.record(s.shared.AddAdmin(t, name, scopes...))
 }
 
 func (s *stack) addUser(t *testing.T, name string, scopes ...string) userRec {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	var adminID int64
-	for _, rec := range s.users {
-		adminID = rec.user.ID
-		break
-	}
-	if adminID == 0 {
-		t.Fatal("bootstrap an admin before adding users")
-	}
-	user, err := s.auth.CreateUser(ctx, adminID, auth.CreateUserInput{
-		Name: name, Email: name + "@example.test", Password: "long-test-password-01",
-	}, "127.0.0.1")
-	if err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-	return s.mintToken(t, user, scopes...)
+	return s.record(s.shared.AddUser(t, name, scopes...))
 }
 
 func (s *stack) addRepo(t *testing.T, owner, name, visibility string) int64 {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	rec, ok := s.users[owner]
-	if !ok {
-		t.Fatalf("unknown user %s", owner)
-	}
-	var repoID int64
-	err := s.st.Write(ctx, func(tx *store.WriteTx) error {
-		var ierr error
-		repoID, ierr = tx.InsertRepo(time.Now(), store.RepoInsert{
-			OwnerUserID:   sql.NullInt64{Int64: rec.user.ID, Valid: true},
-			Name:          name,
-			Visibility:    visibility,
-			DefaultBranch: "main",
-			RukPath:       owner + "/" + name + ".git",
-		})
-		return ierr
-	})
-	if err != nil {
-		t.Fatalf("insert repo: %v", err)
-	}
-	repoDir := filepath.Join(s.roots, owner, name+".git")
-	seedCtx, seedCancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer seedCancel()
-	if out, err := rukproc.Run(seedCtx, rukBin(t), []string{"git", "init", repoDir}, append(os.Environ(), "RUK_COORDINATOR=off")); err != nil {
-		t.Fatalf("ruk init: %v\n%s", err, out)
-	}
-	return repoID
+	return s.shared.AddRepo(t, owner, name, visibility)
 }
 
 func (s *stack) addRule(t *testing.T, repoID int64, pattern, mode string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	if err := s.st.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.PutBookmarkRule(repoID, pattern, mode, time.Now())
-	}); err != nil {
-		t.Fatalf("insert rule: %v", err)
-	}
+	s.shared.AddRule(t, repoID, pattern, mode)
+}
+
+func (s *stack) addGrant(t *testing.T, repoID, userID int64, role string) {
+	s.shared.AddGrant(t, repoID, userID, role)
 }
 
 func (s *stack) repoURL(owner, repo, username, token string) string {
-	creds := ""
-	if username != "" {
-		creds = username + ":" + token + "@"
-	}
-	plain, _ := strings.CutPrefix(s.url, "http://")
-	return "http://" + creds + plain + "/" + owner + "/" + repo + ".git"
-}
-
-func gitEnv(t *testing.T) []string {
-	t.Helper()
-	home := t.TempDir()
-	return []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + home,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=" + os.DevNull,
-		"GIT_CONFIG_SYSTEM=" + os.DevNull,
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_AUTHOR_NAME=e2e",
-		"GIT_AUTHOR_EMAIL=e2e@example.test",
-		"GIT_COMMITTER_NAME=e2e",
-		"GIT_COMMITTER_EMAIL=e2e@example.test",
-		"LANG=C",
-	}
-}
-
-func gitRun(ctx context.Context, t *testing.T, dir string, args ...string) (string, error) {
-	t.Helper()
-	cmd := exec.CommandContext(ctx, gitBin(t), args...)
-	cmd.Dir = dir
-	cmd.Env = gitEnv(t)
-	var combined bytes.Buffer
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
-	err := cmd.Run()
-	return combined.String(), err
+	return s.shared.RepoURL(owner, repo, username, token)
 }
 
 func (s *stack) localRepo(t *testing.T, files map[string]string) (string, string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	dir := t.TempDir()
-	if out, err := gitRun(ctx, t, dir, "init", "-b", "main", "."); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-	for name, content := range files {
-		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-	}
-	if out, err := gitRun(ctx, t, dir, "add", "-A"); err != nil {
-		t.Fatalf("git add: %v\n%s", err, out)
-	}
-	if out, err := gitRun(ctx, t, dir, "commit", "-m", "seed"); err != nil {
-		t.Fatalf("git commit: %v\n%s", err, out)
-	}
-	out, err := gitRun(ctx, t, dir, "rev-parse", "HEAD")
-	if err != nil {
-		t.Fatalf("rev-parse: %v\n%s", err, out)
-	}
-	return dir, strings.TrimSpace(out)
+	return s.shared.LocalRepo(t, files)
 }
 
-func (s *stack) lsRemote(t *testing.T, repoURL string) map[string]string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	out, err := gitRun(ctx, t, t.TempDir(), "ls-remote", repoURL)
-	if err != nil {
-		t.Fatalf("ls-remote: %v\n%s", err, out)
-	}
-	refs := map[string]string{}
-	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
-		oid, name, _ := strings.Cut(line, "\t")
-		refs[name] = oid
-	}
-	return refs
-}
-
-func httpGet(t *testing.T, url, username, token string) (int, http.Header, string) {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	if username != "" || token != "" {
-		req.SetBasicAuth(username, token)
-	}
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var body bytes.Buffer
-	_, _ = body.ReadFrom(resp.Body)
-	return resp.StatusCode, resp.Header, body.String()
+func (s *stack) lsRemote(t *testing.T, url string) map[string]string {
+	return s.shared.LsRemote(t, url)
 }
 
 func TestGitPushFetchRoundTrip(t *testing.T) {
@@ -563,17 +303,6 @@ func TestGitAnonymousReadInternalDenied(t *testing.T) {
 	status, _, _ = httpGet(t, s.url+"/ada/secret.git/info/refs?service=git-upload-pack", "mallory", mallory.token)
 	if status != http.StatusNotFound {
 		t.Fatalf("stranger on private status = %d, want 404", status)
-	}
-}
-
-func (s *stack) addGrant(t *testing.T, repoID, userID int64, role string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
-	if err := s.st.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.PutGrant(repoID, userID, role)
-	}); err != nil {
-		t.Fatalf("insert grant: %v", err)
 	}
 }
 
