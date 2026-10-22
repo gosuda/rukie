@@ -296,7 +296,7 @@ func TestSandboxP12EgressAdvertisedOnlyWhenConfigured(t *testing.T) {
 		t.Fatalf("disabled egress fails P12: %v", rerr)
 	}
 	cfg.Egress = true
-	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
+	env.Run = func(string, ...string) ([]byte, []byte, error) {
 		return nil, []byte("pasta missing"), os.ErrNotExist
 	}
 	c = &probeCtx{cfg: cfg, env: env, podman: "/usr/bin/podman"}

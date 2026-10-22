@@ -139,12 +139,12 @@ func linkOrCopyBinary(dir string) error {
 	if err := os.Link(self, target); err == nil {
 		return nil
 	}
-	raw, err := os.ReadFile(self)
-	if err != nil {
-		return fmt.Errorf("linkOrCopyBinary: %w", err)
+	raw, rerr := os.ReadFile(self)
+	if rerr != nil {
+		return fmt.Errorf("linkOrCopyBinary: %w", rerr)
 	}
-	if err := os.WriteFile(target, raw, 0755); err != nil {
-		return fmt.Errorf("linkOrCopyBinary: %w", err)
+	if werr := os.WriteFile(target, raw, 0755); werr != nil {
+		return fmt.Errorf("linkOrCopyBinary: %w", werr)
 	}
 	return nil
 }

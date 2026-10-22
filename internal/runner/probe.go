@@ -413,8 +413,8 @@ func SandboxProbe(cfg Config, env ProbeEnv, podman string) ([]ProbeFinding, *Fai
 		return nil, fail("SANDBOX_PROBE", err.Error(), "make temporary directories writable")
 	}
 	defer func() { _ = os.RemoveAll(rukieDir) }()
-	if err := linkOrCopyBinary(rukieDir); err != nil {
-		return nil, fail("SANDBOX_PROBE", err.Error(), "make temporary directories writable")
+	if lerr := linkOrCopyBinary(rukieDir); lerr != nil {
+		return nil, fail("SANDBOX_PROBE", lerr.Error(), "make temporary directories writable")
 	}
 	args := BuildPodmanArgs(podman, SandboxRun{
 		Name: "rukie-probe", Image: cfg.ProbeImage,

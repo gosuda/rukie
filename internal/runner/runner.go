@@ -180,9 +180,6 @@ func EnsureStateDir(stateDir string) error {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return fmt.Errorf("EnsureStateDir: %w", err)
 		}
-		if err := os.Chmod(dir, 0700); err != nil {
-			return fmt.Errorf("EnsureStateDir: %w", err)
-		}
 	}
 	return nil
 }
