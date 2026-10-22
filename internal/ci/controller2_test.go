@@ -1074,3 +1074,106 @@ func TestCIWritesRefuseAfterLeaseLoss(t *testing.T) {
 		t.Fatalf("late blob = %v, want E_LEASE_LOST", err)
 	}
 }
+
+func finishWithArtifact(t *testing.T, c *ci.Controller, lease *ci.Lease, name string, data []byte) {
+	t.Helper()
+	if err := c.PutBlob(t.Context(), lease.Attempt.ID, lease.Token, lease.Attempt.Fence, ci.Digest(data), data); err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+	mustFinish(t, c, lease, "passed", "", 0, []ci.Artifact{{Name: name, Digest: ci.Digest(data), Size: int64(len(data))}})
+}
+
+func TestCIRetryDependentWaitsForPrereq(t *testing.T) {
+	clk := startClock()
+	ctx := t.Context()
+	c, _ := openCI(t, clk)
+	run := mustCreateRun(t, c, mustDecode(t, baseSpecTOML()), "trusted", "change:rrw:tip")
+	runnerID, token := mustRunner(t, c, "trusted")
+	lease := mustLease(t, c, runnerID, token)
+	if lease.Job.Spec.Name != "lint" {
+		t.Fatalf("leased %q, want lint", lease.Job.Spec.Name)
+	}
+	driveToTerminal(t, c, lease, "passed", "", 0)
+	testLease := mustLease(t, c, runnerID, token)
+	if testLease.Job.Spec.Name != "test" {
+		t.Fatalf("leased %q, want test", testLease.Job.Spec.Name)
+	}
+	driveToTerminal(t, c, testLease, "failed", "script_failure", 1)
+	retry, err := c.RetryRun(ctx, run.ID, []string{"lint", "test"}, false)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	jobs := runJobs(t, c, retry)
+	if jobs["lint"].State != "queued" {
+		t.Fatalf("retried lint = %q, want queued", jobs["lint"].State)
+	}
+	// The dependent must wait for its prerequisite instead of racing it:
+	// lint is only queued here, so test may not be eligible yet.
+	if jobs["test"].State != "waiting" {
+		t.Fatalf("retried test = %q, want waiting", jobs["test"].State)
+	}
+}
+
+func TestCICacheHitPreservesArtifacts(t *testing.T) {
+	clk := startClock()
+	ctx := t.Context()
+	c, _ := openCI(t, clk)
+	spec := mustDecode(t, artifactSpecTOML())
+	prime := mustCreateRun(t, c, spec, "trusted", "push:main:artprime")
+	_ = prime
+	runnerID, token := mustRunner(t, c, "trusted")
+	lease := mustLease(t, c, runnerID, token)
+	mustStart(t, c, lease)
+	data := []byte("cached-bundle-bytes")
+	finishWithArtifact(t, c, lease, "bundle.zip", data)
+	second := mustCreateRun(t, c, spec, "trusted", "push:main:artsecond")
+	if second.ID == prime.ID {
+		t.Fatal("second run deduped against prime")
+	}
+	if lease2, err := c.Lease(ctx, runnerID, token); err != nil {
+		t.Fatalf("second lease: %v", err)
+	} else if lease2 != nil {
+		t.Fatal("cache hit still granted a lease")
+	}
+	jobs := runJobs(t, c, second)
+	cached, ok := jobs["solo"]
+	if !ok || cached.State != "cached" {
+		t.Fatalf("solo = %+v, want cached", cached)
+	}
+	arts, err := c.Artifacts(ctx, cached.ID)
+	if err != nil {
+		t.Fatalf("artifacts: %v", err)
+	}
+	if len(arts) != 1 || arts[0].Name != "bundle.zip" || arts[0].Digest != ci.Digest(data) {
+		t.Fatalf("cached artifacts = %+v, want the primed manifest", arts)
+	}
+}
+
+func TestCIRetryCarryPreservesArtifacts(t *testing.T) {
+	clk := startClock()
+	ctx := t.Context()
+	c, _ := openCI(t, clk)
+	spec := mustDecode(t, artifactSpecTOML())
+	run := mustCreateRun(t, c, spec, "trusted", "push:main:artcarry")
+	runnerID, token := mustRunner(t, c, "trusted")
+	lease := mustLease(t, c, runnerID, token)
+	mustStart(t, c, lease)
+	data := []byte("carried-bundle-bytes")
+	finishWithArtifact(t, c, lease, "bundle.zip", data)
+	retry, err := c.RetryRun(ctx, run.ID, nil, false)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	jobs := runJobs(t, c, retry)
+	carried, ok := jobs["solo"]
+	if !ok || carried.State != "carried" {
+		t.Fatalf("solo = %+v, want carried", carried)
+	}
+	arts, err := c.Artifacts(ctx, carried.ID)
+	if err != nil {
+		t.Fatalf("artifacts: %v", err)
+	}
+	if len(arts) != 1 || arts[0].Name != "bundle.zip" || arts[0].Digest != ci.Digest(data) {
+		t.Fatalf("carried artifacts = %+v, want the primed manifest", arts)
+	}
+}
