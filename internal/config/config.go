@@ -14,6 +14,10 @@ type LogConfig struct {
 	Source bool   `toml:"source"`
 }
 
+type GitConfig struct {
+	MaxBodyBytes uint64 `toml:"max_body_bytes"`
+}
+
 type HTTPConfig struct {
 	ExternalURL         string   `toml:"external_url"`
 	Listen              []string `toml:"listen"`
@@ -175,6 +179,7 @@ type Config struct {
 	CI            CIConfig        `toml:"ci"`
 	HTTP          HTTPConfig      `toml:"http"`
 	Ruk           RukConfig       `toml:"ruk"`
+	Git           GitConfig       `toml:"git"`
 	RateLimit     RateLimitConfig `toml:"rate_limit"`
 	Mirrors       MirrorsConfig   `toml:"mirrors"`
 }
@@ -208,6 +213,7 @@ func Defaults() Config {
 			MaxTargetsPerEvent: 64, DeliveryTimeoutMs: 10000, MaxRetries: 8,
 			MaxPayloadBytes: 1048576, QueueDepth: 4096, Enabled: true,
 		},
+		Git:       GitConfig{MaxBodyBytes: 256 << 20},
 		RateLimit: RateLimitConfig{RequestsPerMinute: 600, AnonymousPerMinute: 60, PushPerMinutePerRepo: 30, Burst: 50},
 		Telemetry: TelemetryConfig{OTLPProtocol: "http/protobuf", ServiceName: "rukie", Environment: "prod", TraceSampleRatio: 0.1},
 	}
@@ -299,6 +305,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.HTTP.Listen) == 0 {
 		return fmt.Errorf("config: http.listen requires at least one address")
+	}
+	if c.Git.MaxBodyBytes == 0 {
+		c.Git.MaxBodyBytes = 256 << 20
 	}
 	if c.HTTP.ReadTimeoutMs < 0 || c.HTTP.ReadHeaderTimeoutMs < 0 || c.HTTP.WriteTimeoutMs < 0 || c.HTTP.IdleTimeoutMs < 0 || c.HTTP.MaxRequestBodyBytes < 0 || c.HTTP.ShutdownDrainMs < 0 {
 		return fmt.Errorf("config: http timeouts and body limits must be non-negative")

@@ -19,6 +19,16 @@ func writeSocketConfig(t *testing.T, body string) string {
 	return path
 }
 
+func TestGitMaxBodyBytesConfig(t *testing.T) {
+	cfg, err := Load(writeSocketConfig(t, "[git]\nmax_body_bytes = 12345\n"))
+	if err != nil {
+		t.Fatalf("Load with [git].max_body_bytes: %v", err)
+	}
+	if cfg.Git.MaxBodyBytes != 12345 {
+		t.Fatalf("git.max_body_bytes = %d, want 12345", cfg.Git.MaxBodyBytes)
+	}
+}
+
 func TestRukSocketSelectsExternalDaemon(t *testing.T) {
 	cfg, err := Load(writeSocketConfig(t, "[ruk]\nsocket = \"/run/ruk-external.sock\"\n"))
 	if err != nil {

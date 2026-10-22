@@ -206,8 +206,12 @@ func runServe(argv []string) int {
 	}
 	supCtx, supStop := context.WithCancel(context.Background())
 	defer supStop()
-	supDone := make(chan error, 1)
-	go func() { supDone <- sup.Run(supCtx) }()
+	supExited := make(chan struct{})
+	var supFinal error
+	go func() {
+		supFinal = sup.Run(supCtx)
+		close(supExited)
+	}()
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -216,25 +220,21 @@ func runServe(argv []string) int {
 	halves := &halveRegistry{}
 	serveDone := make(chan struct{})
 	go watchShutdownSignals(sigCh, stop, halves, serveDone)
-	var supOnce sync.Once
-	var supFinal error
-	waitSupervisorOnce := func() error {
-		supOnce.Do(func() {
-			timer := time.NewTimer(supervisorWaitBackstop)
-			defer timer.Stop()
-			select {
-			case supFinal = <-supDone:
-			case <-timer.C:
-				supFinal = fmt.Errorf("serve: supervisor did not exit within 30s")
-			}
-		})
-		return supFinal
+	waitSupervisor := func() error {
+		timer := time.NewTimer(supervisorWaitBackstop)
+		defer timer.Stop()
+		select {
+		case <-supExited:
+			return supFinal
+		case <-timer.C:
+			return fmt.Errorf("serve: supervisor did not exit within 30s")
+		}
 	}
 	reloadLogLevelOnSIGHUP(configPath(*configFlag), levelVar)
-	if rerr := waitSupervisorReady(ctx, sup, waitSupervisorOnce, cfg); rerr != nil {
+	if rerr := waitSupervisorReady(ctx, sup, supExited, waitSupervisor, cfg); rerr != nil {
 		fmt.Fprintln(os.Stderr, rerr.Error())
 		supStop()
-		if serr := waitSupervisorOnce(); serr != nil {
+		if serr := waitSupervisor(); serr != nil {
 			fmt.Fprintln(os.Stderr, "serve:", serr.Error())
 		}
 		return 1
@@ -243,7 +243,7 @@ func runServe(argv []string) int {
 	if err != nil {
 		logger.Error("setup app", slog.Any("err", err))
 		supStop()
-		if serr := waitSupervisorOnce(); serr != nil {
+		if serr := waitSupervisor(); serr != nil {
 			logger.Error("supervisor wait", slog.Any("err", serr))
 		}
 		return 1
@@ -251,7 +251,7 @@ func runServe(argv []string) int {
 	if merr := leaveDowngradeMarkerWithoutDBOpen(cfg); merr != nil {
 		logger.Error("schema marker", slog.Any("err", merr))
 		supStop()
-		if serr := waitSupervisorOnce(); serr != nil {
+		if serr := waitSupervisor(); serr != nil {
 			logger.Error("supervisor wait", slog.Any("err", serr))
 		}
 		return 1
@@ -287,7 +287,7 @@ func runServe(argv []string) int {
 		"child": func(ctx context.Context) error {
 			supStop()
 			done := make(chan error, 1)
-			go func() { done <- waitSupervisorOnce() }()
+			go func() { done <- waitSupervisor() }()
 			select {
 			case err := <-done:
 				return err
@@ -303,7 +303,7 @@ func runServe(argv []string) int {
 	if serr := app.watcher.StartAll(ctx); serr != nil {
 		logger.Error("repo watchers", slog.Any("err", serr))
 		supStop()
-		if werr := waitSupervisorOnce(); werr != nil {
+		if werr := waitSupervisor(); werr != nil {
 			logger.Error("supervisor wait", slog.Any("err", werr))
 		}
 		return 1
@@ -344,7 +344,7 @@ func runServe(argv []string) int {
 		if _, err := serveSSHListeners(ctx, app.ssh, cfg.SSH.Listen); err != nil {
 			logger.Error("ssh listen", slog.Any("err", err))
 			supStop()
-			_ = waitSupervisorOnce()
+			_ = waitSupervisor()
 			return 78
 		}
 		for _, addr := range cfg.SSH.Listen {
@@ -356,17 +356,21 @@ func runServe(argv []string) int {
 	}
 	supervisorDeathStopsServing := make(chan error, 1)
 	go func() {
-		if err := waitSupervisorOnce(); err != nil {
-			select {
-			case supervisorDeathStopsServing <- err:
-			default:
+		select {
+		case <-supExited:
+			if supFinal != nil {
+				select {
+				case supervisorDeathStopsServing <- supFinal:
+				default:
+				}
 			}
+		case <-serveDone:
 		}
 	}()
 	code := serveHTTP(ctx, logger, app.handler, cfg.HTTP, halves, ownedDrainRunners, supervisorDeathStopsServing)
 	close(serveDone)
 	supStop()
-	if finalErr := waitSupervisorOnce(); finalErr != nil {
+	if finalErr := waitSupervisor(); finalErr != nil {
 		logger.Error("supervisor exited", slog.Any("err", finalErr))
 		return 1
 	}
@@ -506,7 +510,11 @@ func startupTimeout(cfg config.Config) (time.Duration, error) {
 	return time.Duration(ms) * time.Millisecond, nil
 }
 
-func waitSupervisorReady(ctx context.Context, sup *supervisor.Supervisor, waitSupervisorOnce func() error, cfg config.Config) error {
+type readyWaiter interface {
+	WaitReady(context.Context) error
+}
+
+func waitSupervisorReady(ctx context.Context, sup readyWaiter, supervisorExited <-chan struct{}, waitSupervisor func() error, cfg config.Config) error {
 	timeout, err := startupTimeout(cfg)
 	if err != nil {
 		return err
@@ -515,12 +523,9 @@ func waitSupervisorReady(ctx context.Context, sup *supervisor.Supervisor, waitSu
 	defer cancel()
 	readyErr := make(chan error, 1)
 	go func() { readyErr <- sup.WaitReady(readyCtx) }()
-	exited := make(chan error, 1)
-	go func() { exited <- waitSupervisorOnce() }()
 	select {
-	case err := <-exited:
-		cancel()
-		if err != nil {
+	case <-supervisorExited:
+		if err := waitSupervisor(); err != nil {
 			return err
 		}
 		return fmt.Errorf("serve: supervisor exited during startup")
@@ -770,14 +775,15 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		return nil, cleanup, fmt.Errorf("setupApp: %w", err)
 	}
 	git, err := githttp.New(githttp.Config{
-		Auth:       authSvc,
-		Limiter:    limiter,
-		SocketPath: cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath),
-		RepoRoot:   cfg.Ruk.RepoRoot,
-		Limits:     wire.DefaultGitLimits(),
-		Feed:       events.OpenHookSink(st, spool, time.Now),
-		Store:      st,
-		Barrier:    holdBarrier,
+		Auth:             authSvc,
+		Limiter:          limiter,
+		SocketPath:       cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath),
+		RepoRoot:         cfg.Ruk.RepoRoot,
+		Limits:           wire.DefaultGitLimits(),
+		MaxHTTPBodyBytes: cfg.Git.MaxBodyBytes,
+		Feed:             events.OpenHookSink(st, spool, time.Now),
+		Store:            st,
+		Barrier:          holdBarrier,
 	})
 	if err != nil {
 		cleanup()
