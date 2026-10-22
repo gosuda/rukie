@@ -94,17 +94,27 @@ func TestCompositeCursorRejects(t *testing.T) {
 
 func TestSearchFingerprint(t *testing.T) {
 	q := searchCodeQuery{q: "needle", globs: []string{"*.go", "*.md"}}
-	a := searchFingerprint(q, []int64{3, 1, 2})
-	b := searchFingerprint(q, []int64{2, 3, 1})
+	repos := []searchRepoRef{{name: "c", row: store.RepoRow{ID: 3}}, {name: "a", row: store.RepoRow{ID: 1}}, {name: "b", row: store.RepoRow{ID: 2}}}
+	a := searchFingerprint(q, repos)
+	b := searchFingerprint(q, []searchRepoRef{repos[1], repos[2], repos[0]})
 	if a != b {
 		t.Fatal("fingerprint depends on repo order")
 	}
 	other := q
 	other.q = "needle2"
-	if searchFingerprint(other, []int64{1, 2, 3}) == a {
+	if searchFingerprint(other, repos) == a {
 		t.Fatal("fingerprint ignores the query")
 	}
-	if searchFingerprint(q, []int64{1, 2, 4}) == a {
+	renamed := []searchRepoRef{{name: "c", row: store.RepoRow{ID: 3}}, {name: "a2", row: store.RepoRow{ID: 1}}, {name: "b", row: store.RepoRow{ID: 2}}}
+	if searchFingerprint(q, renamed) == a {
+		t.Fatal("fingerprint ignores renames")
+	}
+	revved := q
+	revved.rev = "side"
+	if searchFingerprint(revved, repos) == a {
+		t.Fatal("fingerprint ignores rev")
+	}
+	if searchFingerprint(q, repos[:2]) == a {
 		t.Fatal("fingerprint ignores the repo set")
 	}
 }
@@ -123,8 +133,7 @@ func fakeSearchRepos(n int) []searchRepoRef {
 func TestPlanFreshCoversFirstPage(t *testing.T) {
 	repos := fakeSearchRepos(3)
 	q := searchCodeQuery{q: "x", perPage: 10}
-	ids := []int64{1, 2, 3}
-	fp := searchFingerprint(q, ids)
+	fp := searchFingerprint(q, repos)
 	plan, err := planMultiPage(repos, compositeCursor{}, fp)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -140,11 +149,7 @@ func TestPlanFreshCoversFirstPage(t *testing.T) {
 func TestPlanCapsAndCarries(t *testing.T) {
 	repos := fakeSearchRepos(searchMaxRepos + 5)
 	q := searchCodeQuery{q: "x", perPage: 10}
-	var ids []int64
-	for _, r := range repos {
-		ids = append(ids, r.row.ID)
-	}
-	fp := searchFingerprint(q, ids)
+	fp := searchFingerprint(q, repos)
 	plan, err := planMultiPage(repos, compositeCursor{}, fp)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -154,11 +159,31 @@ func TestPlanCapsAndCarries(t *testing.T) {
 	}
 }
 
+func TestMergeTerminalTruncation(t *testing.T) {
+	repos := []searchRepoRef{{name: "a", row: store.RepoRow{ID: 1}}}
+	plan := multiPlan{slots: []multiSlot{{ref: repos[0], fresh: true}}, carried: map[string]verbatimCursor{}, after: "a", afterID: 1}
+	out, err := mergeMultiPage(plan, map[int64]multiResult{1: {
+		hits:      []searchHitReply{{Path: "f", Line: 1}},
+		truncated: true, exhausted: "none",
+	}}, "", repos)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if !out.Truncated {
+		t.Fatal("terminal truncated page lost its flag")
+	}
+	if out.Next != nil {
+		t.Fatalf("terminal page carries a continuation: %q", *out.Next)
+	}
+	if out.Exhausted != "none" {
+		t.Fatalf("terminal exhausted = %q, want none", out.Exhausted)
+	}
+}
+
 func TestPlanResumeAndMismatch(t *testing.T) {
 	repos := fakeSearchRepos(3)
 	q := searchCodeQuery{q: "x", perPage: 10}
-	ids := []int64{1, 2, 3}
-	fp := searchFingerprint(q, ids)
+	fp := searchFingerprint(q, repos)
 	resume, err := encodeComposite(compositeCursor{
 		Version: 1, Print: fp,
 		Cursors:   map[string]verbatimCursor{"2": verbatimCursor(`{"a":1}`)},

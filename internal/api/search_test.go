@@ -461,6 +461,82 @@ func itoaPad(n int) string {
 	return string(digits)
 }
 
+func decodeCursorName(t *testing.T, cursor string) string {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		t.Fatalf("cursor is not base64: %v", err)
+	}
+	name, _, ok := strings.Cut(string(raw), "\x1f")
+	if !ok {
+		t.Fatalf("cursor has no keyset shape: %q", raw)
+	}
+	return name
+}
+
+func TestSearchReposVisibilityCursor(t *testing.T) {
+	e := buildSearchEnv(t)
+	ada, _, _ := seedSearchUsers(t, e)
+	seedSearchRepo(t, e, ada.ID, "aaa-priv", "private", "solo-priv-term")
+	seedSearchRepo(t, e, ada.ID, "zzz-priv", "private", "solo-priv-term")
+	code, body, _ := searchJSON(t, e, http.MethodGet, "/search/repos?q=solo-priv-term&per_page=1", "")
+	if code != http.StatusOK {
+		t.Fatalf("anon private-only = %d (%v)", code, body)
+	}
+	if got := repoNames(body); len(got) != 0 {
+		t.Fatalf("anon sees private rows: %v", got)
+	}
+	if next, _ := body["next"].(string); next != "" {
+		t.Fatalf("private-only page carries a continuation: %q", next)
+	}
+	seedSearchRepo(t, e, ada.ID, "mmm-pub", "public", "shared-term")
+	seedSearchRepo(t, e, ada.ID, "zzz-pub2", "public", "shared-term")
+	seedSearchRepo(t, e, ada.ID, "aaa-deny", "private", "shared-term")
+	code, body, _ = searchJSON(t, e, http.MethodGet, "/search/repos?q=shared-term&per_page=1", "")
+	if code != http.StatusOK {
+		t.Fatalf("mixed page 1 = %d (%v)", code, body)
+	}
+	if got := repoNames(body); strings.Join(got, ",") != "ada/mmm-pub" {
+		t.Fatalf("mixed page 1 = %v, want [ada/mmm-pub]", got)
+	}
+	next, _ := body["next"].(string)
+	if next == "" {
+		t.Fatal("mixed page 1 has no continuation")
+	}
+	if name := decodeCursorName(t, next); name != "mmm-pub" {
+		t.Fatalf("continuation names %q, want the visible mmm-pub", name)
+	}
+	code, body, _ = searchJSON(t, e, http.MethodGet, "/search/repos?q=shared-term&per_page=1&next="+next, "")
+	if code != http.StatusOK {
+		t.Fatalf("mixed page 2 = %d (%v)", code, body)
+	}
+	if got := repoNames(body); strings.Join(got, ",") != "ada/zzz-pub2" {
+		t.Fatalf("mixed page 2 = %v, want [ada/zzz-pub2]", got)
+	}
+	if next2, _ := body["next"].(string); next2 != "" {
+		t.Fatalf("terminal page carries a continuation: %q", next2)
+	}
+}
+
+func TestSearchReposDeniedDoNotConsumeLimit(t *testing.T) {
+	e := buildSearchEnv(t)
+	ada, _, _ := seedSearchUsers(t, e)
+	seedSearchRepo(t, e, ada.ID, "aaa-d1", "private", "cap-term")
+	seedSearchRepo(t, e, ada.ID, "bbb-d2", "private", "cap-term")
+	seedSearchRepo(t, e, ada.ID, "mmm-v1", "public", "cap-term")
+	seedSearchRepo(t, e, ada.ID, "zzz-v2", "public", "cap-term")
+	code, body, _ := searchJSON(t, e, http.MethodGet, "/search/repos?q=cap-term&per_page=2", "")
+	if code != http.StatusOK {
+		t.Fatalf("page 1 = %d (%v)", code, body)
+	}
+	if got := repoNames(body); strings.Join(got, ",") != "ada/mmm-v1,ada/zzz-v2" {
+		t.Fatalf("page 1 = %v, want full visible page", got)
+	}
+	if next, _ := body["next"].(string); next != "" {
+		t.Fatalf("terminal page carries a continuation: %q", next)
+	}
+}
+
 func TestSearchNoLinkHeader(t *testing.T) {
 	e := buildSearchEnv(t)
 	ada, _, _ := seedSearchUsers(t, e)

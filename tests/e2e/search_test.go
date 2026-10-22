@@ -117,10 +117,22 @@ func searchSetup(t *testing.T) (*stack, *httptest.Server, userRec, userRec) {
 		"g01.txt": "needle-f9 second repo again\n",
 	})
 	ensureBranch(t, s, "ada", "codepub2", oid2)
+	sideWork, sideOid := s.localRepo(t, map[string]string{"side.txt": "needle-f9 side branch\n"})
+	pushCtx, pushCancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer pushCancel()
+	if out, err := gitRun(pushCtx, t, sideWork, "push", s.repoURL("ada", "codepub", "ada", ada.token), "HEAD:refs/heads/side"); err != nil {
+		t.Fatalf("side push: %v\n%s", err, out)
+	}
+	ensureRef(t, s, "ada", "codepub", sideOid, "refs/heads/side")
 	return s, mountSearchAPI(t, s), ada, bob
 }
 
 func ensureBranch(t *testing.T, s *stack, owner, repo, oid string) {
+	t.Helper()
+	ensureRef(t, s, owner, repo, oid, "refs/heads/main")
+}
+
+func ensureRef(t *testing.T, s *stack, owner, repo, oid, ref string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -129,7 +141,7 @@ func ensureBranch(t *testing.T, s *stack, owner, repo, oid string) {
 		t.Fatalf("open repo: %v", err)
 	}
 	if _, err := ruk.Call[map[string]any, map[string]any](ctx, s.client, handle, wire.MethodBookmarkSet, map[string]any{
-		"name":     "refs/heads/main",
+		"name":     ref,
 		"target":   map[string]any{"commit": map[string]any{"oid": oid}},
 		"expected": map[string]any{"present": map[string]any{"direct": oid}},
 	}); err != nil {
@@ -361,6 +373,42 @@ func TestSearchInvalidRegex(t *testing.T) {
 	code, body, _ := searchGet(t, srv, "/ada/codepub/search?q=%28unclosed&regex=true", ada.token)
 	if code != http.StatusBadRequest {
 		t.Fatalf("invalid regex = %d, want 400 (%v)", code, body)
+	}
+}
+
+func TestSearchCrossRevResumeForbidden(t *testing.T) {
+	_, srv, ada, _ := searchSetup(t)
+	first, body, _ := searchGet(t, srv, "/ada/codepub/search?q=needle-f9&per_page=5", ada.token)
+	if first != http.StatusOK {
+		t.Fatalf("page 1 = %d (%v)", first, body)
+	}
+	cursor := nextOf(body)
+	if cursor == "" {
+		t.Fatal("page 1 has no continuation")
+	}
+	code, expired, _ := searchGet(t, srv, "/ada/codepub/search?q=needle-f9&per_page=5&rev=side&next="+url.QueryEscape(cursor), ada.token)
+	if code != http.StatusForbidden {
+		t.Fatalf("cross-rev resume = %d, want 403 (%v)", code, expired)
+	}
+	typ, _ := expired["type"].(string)
+	if !strings.Contains(typ, "forbidden") {
+		t.Fatalf("cross-rev problem = %q, want the forbidden catalogue entry", typ)
+	}
+}
+
+func TestSearchCompositeRevMismatch(t *testing.T) {
+	_, srv, ada, _ := searchSetup(t)
+	first, body, _ := searchGet(t, srv, "/search?q=needle-f9&per_page=5", ada.token)
+	if first != http.StatusOK {
+		t.Fatalf("page 1 = %d (%v)", first, body)
+	}
+	cursor := nextOf(body)
+	if cursor == "" {
+		t.Fatal("page 1 has no continuation")
+	}
+	code, moved, _ := searchGet(t, srv, "/search?q=needle-f9&per_page=5&rev=side&next="+url.QueryEscape(cursor), ada.token)
+	if code != http.StatusBadRequest {
+		t.Fatalf("rev-changed resume = %d, want 400 (%v)", code, moved)
 	}
 }
 

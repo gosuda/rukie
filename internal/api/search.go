@@ -280,7 +280,7 @@ func decodeComposite(raw string) (compositeCursor, error) {
 	return out, nil
 }
 
-func searchFingerprint(q searchCodeQuery, ids []int64) string {
+func searchFingerprint(q searchCodeQuery, repos []searchRepoRef) string {
 	var b strings.Builder
 	b.WriteString(q.q)
 	b.WriteByte(0)
@@ -297,9 +297,15 @@ func searchFingerprint(q searchCodeQuery, ids []int64) string {
 	b.WriteString(strings.Join(q.excludeGlobs, "\x01"))
 	b.WriteByte(0)
 	b.WriteString(q.path)
-	for _, id := range slices.Sorted(slices.Values(ids)) {
+	b.WriteByte(0)
+	b.WriteString(q.rev)
+	pairs := make([]string, 0, len(repos))
+	for _, ref := range repos {
+		pairs = append(pairs, fmt.Sprintf("%d=%s", ref.row.ID, ref.name))
+	}
+	for _, pair := range slices.Sorted(slices.Values(pairs)) {
 		b.WriteByte(0)
-		fmt.Fprintf(&b, "%d", id)
+		b.WriteString(pair)
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
@@ -419,25 +425,31 @@ type multiResult struct {
 	dropped   bool
 }
 
-func (d Deps) runMultiPlan(ctx context.Context, rq requester, plan []multiSlot, q searchCodeQuery) []multiResult {
-	results := make([]multiResult, len(plan))
+func (d Deps) runMultiPlan(ctx context.Context, rq requester, plan []multiSlot, q searchCodeQuery) map[int64]multiResult {
+	var mu sync.Mutex
+	results := make(map[int64]multiResult, len(plan))
+	put := func(id int64, res multiResult) {
+		mu.Lock()
+		results[id] = res
+		mu.Unlock()
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, searchFanout)
-	for i, slot := range plan {
+	for _, slot := range plan {
 		wg.Go(func() {
+			id := slot.ref.row.ID
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
-				results[i] = multiResult{err: mapRukError(ctx.Err())}
+				put(id, multiResult{err: mapRukError(ctx.Err())})
 				return
 			}
 			defer func() { <-sem }()
 			daemon, oerr := d.openDaemonRepo(ctx, slot.ref.row)
 			if oerr != nil {
-				results[i] = multiResult{err: oerr}
-				cancel()
+				put(id, multiResult{err: oerr})
 				return
 			}
 			rev := q.rev
@@ -447,94 +459,132 @@ func (d Deps) runMultiPlan(ctx context.Context, rq requester, plan []multiSlot, 
 			rc, cerr := d.resolveRepo(ctx, rq, slot.ref.owner, slot.ref.name, false)
 			if cerr != nil {
 				if isSkippableSearchError(cerr) {
-					results[i] = multiResult{dropped: true}
+					put(id, multiResult{dropped: true})
 					return
 				}
-				results[i] = multiResult{err: cerr}
-				cancel()
+				put(id, multiResult{err: cerr})
 				return
 			}
 			if aerr := d.checkRepoAccess(rq, rc.row, "repo.view", ""); aerr != nil {
 				if isSkippableSearchError(aerr) {
-					results[i] = multiResult{dropped: true}
+					put(id, multiResult{dropped: true})
 					return
 				}
-				results[i] = multiResult{err: aerr}
-				cancel()
+				put(id, multiResult{err: aerr})
 				return
 			}
 			rc.daemon = daemon
 			resolved, rerr := d.resolveRev(ctx, rc, rev)
 			if rerr != nil {
 				if isSkippableSearchError(rerr) {
-					results[i] = multiResult{dropped: true}
+					put(id, multiResult{dropped: true})
 					return
 				}
-				results[i] = multiResult{err: rerr}
-				cancel()
+				put(id, multiResult{err: rerr})
 				return
 			}
 			got, serr := d.singleRepoSearch(ctx, daemon, resolved.commit, q, slot.cursor)
 			if serr != nil {
-				results[i] = multiResult{err: serr}
-				cancel()
+				put(id, multiResult{err: serr})
 				return
 			}
-			results[i] = multiResult{
+			put(id, multiResult{
 				hits: got.hits, next: got.next, truncated: got.truncated,
 				exhausted: got.exhausted, blobs: got.scannedBlobs,
 				bytes: got.scannedBytes, skipped: got.skippedBlobs,
-			}
+			})
 		})
 	}
 	wg.Wait()
 	return results
 }
 
-func mergeMultiPage(plan multiPlan, results []multiResult, fp string, repos []searchRepoRef) (SearchCodeOut, error) {
+func mergeMultiPage(plan multiPlan, results map[int64]multiResult, fp string, repos []searchRepoRef) (SearchCodeOut, error) {
 	out := SearchCodeOut{Type: "code", Hits: []SearchHitJSON{}, Repos: []RepoJSON{}, Users: []SearchUserJSON{}, ReposScanned: len(plan.slots)}
 	dropped := 0
-	for i := range results {
-		if results[i].err != nil {
-			return SearchCodeOut{}, results[i].err
+	var firstErr, firstCancelErr error
+	for _, slot := range plan.slots {
+		res, ok := results[slot.ref.row.ID]
+		if !ok {
+			return SearchCodeOut{}, op.Errorf(op.CodeInternal, "search fan-out lost repository %d", slot.ref.row.ID)
 		}
-		if results[i].dropped {
+		if err := res.err; err != nil {
+			if isCancelErr(err) {
+				if firstCancelErr == nil {
+					firstCancelErr = err
+				}
+			} else if firstErr == nil {
+				firstErr = err
+			}
+		}
+		if res.dropped {
 			dropped++
 			continue
 		}
 	}
+	if firstErr != nil {
+		return SearchCodeOut{}, firstErr
+	}
+	if firstCancelErr != nil {
+		return SearchCodeOut{}, firstCancelErr
+	}
 	if len(plan.slots) > 0 && dropped == len(plan.slots) {
 		return SearchCodeOut{}, op.Errorf(op.CodeInvalid, "revision resolves in no visible repository")
 	}
-	for i, slot := range plan.slots {
-		res := results[i]
+	type orderedHit struct {
+		name string
+		hit  SearchHitJSON
+		id   int64
+	}
+	var ordered []orderedHit
+	anomaly := ""
+	anyTruncated := false
+	for _, slot := range plan.slots {
+		res, ok := results[slot.ref.row.ID]
+		if !ok {
+			return SearchCodeOut{}, op.Errorf(op.CodeInternal, "search fan-out lost repository %d", slot.ref.row.ID)
+		}
 		if res.dropped {
 			continue
 		}
+		if res.truncated {
+			anyTruncated = true
+		}
+		if res.exhausted != "" && res.exhausted != "none" {
+			anomaly = worseExhaustion(anomaly, res.exhausted)
+		}
 		full := slot.ref.owner + "/" + slot.ref.name
 		for _, h := range res.hits {
-			out.Hits = append(out.Hits, SearchHitJSON{
-				Repo: full, Path: h.Path.String(), Line: h.Line, Column: h.Column,
-				Preview: h.Preview, Blob: h.Blob,
+			ordered = append(ordered, orderedHit{
+				hit: SearchHitJSON{
+					Repo: full, Path: h.Path.String(), Line: h.Line, Column: h.Column,
+					Preview: h.Preview, Blob: h.Blob,
+				},
+				name: slot.ref.name, id: slot.ref.row.ID,
 			})
 		}
 		out.ScannedBlobs += res.blobs
 		out.ScannedBytes += res.bytes
 		out.SkippedBlobs += res.skipped
 	}
-	slices.SortFunc(out.Hits, func(a, b SearchHitJSON) int {
-		return cmp.Or(strings.Compare(a.Repo, b.Repo), strings.Compare(a.Path, b.Path), cmp.Compare(a.Line, b.Line))
+	slices.SortFunc(ordered, func(a, b orderedHit) int {
+		return cmp.Or(strings.Compare(a.name, b.name), cmp.Compare(a.id, b.id),
+			strings.Compare(a.hit.Path, b.hit.Path), cmp.Compare(a.hit.Line, b.hit.Line))
 	})
+	for _, h := range ordered {
+		out.Hits = append(out.Hits, h.hit)
+	}
 	nextCursors := map[string]verbatimCursor{}
 	for idRaw, cursor := range plan.carried {
 		nextCursors[idRaw] = cursor
 	}
-	for i, slot := range plan.slots {
-		if results[i].dropped {
+	for _, slot := range plan.slots {
+		res, ok := results[slot.ref.row.ID]
+		if !ok || res.dropped {
 			continue
 		}
-		if len(results[i].next) > 0 {
-			nextCursors[fmt.Sprintf("%d", slot.ref.row.ID)] = results[i].next
+		if len(res.next) > 0 {
+			nextCursors[fmt.Sprintf("%d", slot.ref.row.ID)] = res.next
 		}
 	}
 	moreFresh := false
@@ -544,11 +594,12 @@ func mergeMultiPage(plan multiPlan, results []multiResult, fp string, repos []se
 			break
 		}
 	}
+	out.Truncated = anyTruncated || len(nextCursors) > 0
 	if len(nextCursors) == 0 && !moreFresh {
+		out.Exhausted = cmp.Or(anomaly, "none")
 		return out, nil
 	}
-	out.Truncated = true
-	out.Exhausted = "budget"
+	out.Exhausted = cmp.Or(anomaly, "budget")
 	encoded, merr := encodeComposite(compositeCursor{
 		Version: 1, Print: fp, Cursors: nextCursors,
 		AfterName: plan.after, AfterID: plan.afterID,
@@ -558,6 +609,27 @@ func mergeMultiPage(plan multiPlan, results []multiResult, fp string, repos []se
 	}
 	out.Next = &encoded
 	return out, nil
+}
+
+func worseExhaustion(a, b string) string {
+	rank := func(s string) int {
+		switch s {
+		case "deadline":
+			return 2
+		case "budget":
+			return 1
+		default:
+			return 0
+		}
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
+}
+
+func isCancelErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func isSkippableSearchError(err error) bool {
@@ -638,11 +710,7 @@ func (d Deps) multiPage(ctx context.Context, rq requester, q searchCodeQuery) (S
 	if verr != nil {
 		return SearchCodeOut{Type: "code"}, verr
 	}
-	ids := make([]int64, 0, len(repos))
-	for _, ref := range repos {
-		ids = append(ids, ref.row.ID)
-	}
-	fp := searchFingerprint(q, ids)
+	fp := searchFingerprint(q, repos)
 	plan, perr := planMultiPage(repos, resume, fp)
 	if perr != nil {
 		return SearchCodeOut{Type: "code"}, perr
@@ -712,33 +780,53 @@ func (d Deps) searchReposPage(ctx context.Context, rq requester, q, next string,
 		}
 		afterName, afterID = name, id
 	}
-	var rows []store.RepoRow
-	rderr := st.Read(ctx, func(tx *store.ReadTx) error {
-		var qerr error
-		rows, qerr = tx.SearchReposFTS(q, afterName, afterID, limit)
-		return qerr
-	})
-	if rderr != nil {
-		return out, op.Wrap(op.CodeInternal, rderr, "repository search failed")
-	}
-	hasMore := len(rows) > limit
-	if hasMore {
-		rows = rows[:limit]
-	}
-	var last store.RepoRow
-	for _, row := range rows {
-		last = row
-		owner := repoOwnerName(ctx, st, row)
-		if owner == "" {
-			continue
+	rawExhausted := false
+	var lastVisible store.RepoRow
+	haveVisible := false
+	for len(out.Repos) < limit && !rawExhausted {
+		window := limit - len(out.Repos) + 1
+		if window < 2 {
+			window = 2
 		}
-		if derr := d.checkRepoAccess(rq, row, "repo.view", ""); derr != nil {
-			continue
+		var rows []store.RepoRow
+		rderr := st.Read(ctx, func(tx *store.ReadTx) error {
+			var qerr error
+			rows, qerr = tx.SearchReposFTS(q, afterName, afterID, window-1)
+			return qerr
+		})
+		if rderr != nil {
+			return out, op.Wrap(op.CodeInternal, rderr, "repository search failed")
 		}
-		out.Repos = append(out.Repos, repoJSON(owner, row))
+		if len(rows) == 0 {
+			rawExhausted = true
+			break
+		}
+		hasMoreRaw := len(rows) == window
+		examined := rows
+		if hasMoreRaw {
+			examined = rows[:window-1]
+		}
+		for _, row := range examined {
+			afterName, afterID = row.Name, row.ID
+			owner := repoOwnerName(ctx, st, row)
+			if owner == "" {
+				continue
+			}
+			if derr := d.checkRepoAccess(rq, row, "repo.view", ""); derr != nil {
+				continue
+			}
+			out.Repos = append(out.Repos, repoJSON(owner, row))
+			lastVisible, haveVisible = row, true
+			if len(out.Repos) == limit {
+				break
+			}
+		}
+		if !hasMoreRaw {
+			rawExhausted = true
+		}
 	}
-	if hasMore {
-		encoded := encodeSearchCursor(last.Name, last.ID)
+	if !rawExhausted && haveVisible {
+		encoded := encodeSearchCursor(lastVisible.Name, lastVisible.ID)
 		out.Next = &encoded
 	}
 	return out, nil
