@@ -6,17 +6,21 @@ package mirror
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	cryptorand "crypto/rand"
+	"crypto/sha256"
 
 	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
-	"math/rand/v2"
 
 	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/ruk"
@@ -38,12 +42,13 @@ const (
 // spin. Mirror scheduling state lives in the store mirror rows owned by the
 // store slice; this worker only consumes that surface.
 type Worker struct {
-	Store    *store.Store
-	Queue    *queue.Queue
-	Ruk      *ruk.Client
-	SealKey  []byte
-	Clock    func() time.Time
-	RepoRoot string
+	Store       *store.Store
+	Queue       *queue.Queue
+	Ruk         *ruk.Client
+	Clock       func() time.Time
+	RepoRoot    string
+	SealKey     []byte
+	WorkerCount uint
 }
 
 func (w Worker) now() time.Time {
@@ -98,15 +103,43 @@ func (w Worker) Scheduler(ctx context.Context, interval time.Duration, owner str
 }
 
 func (w Worker) drain(ctx context.Context, owner string) error {
-	for {
-		again, derr := w.DriveOnce(ctx, owner)
-		if derr != nil {
-			return derr
-		}
-		if !again {
-			return nil
-		}
+	workers := int(w.WorkerCount)
+	if workers <= 0 {
+		workers = MaxMirrorWorkers
 	}
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for {
+				again, derr := w.DriveOnce(workCtx, owner)
+				if derr != nil {
+					select {
+					case errs <- derr:
+					default:
+					}
+					cancel()
+					return
+				}
+				if !again {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (w Worker) scheduleOnce(ctx context.Context) error {
@@ -186,6 +219,8 @@ func (w Worker) drive(ctx context.Context, owner string, job store.Job) error {
 		return e.run(ctx, runPub)
 	case payloadKindTouch:
 		return w.touch(ctx, owner, job, repoID)
+	case payloadKindUnknown:
+		return w.complete(ctx, owner, job)
 	default:
 		return w.complete(ctx, owner, job)
 	}
@@ -235,39 +270,37 @@ func (w Worker) touch(ctx context.Context, owner string, job store.Job, repoID i
 }
 
 type trackedRef struct {
+	confirmed *string
 	plan      RefPlan
 	status    string
 	reason    string
 	class     string
 	planID    string
 	requestID string
-	confirmed *string
 }
 
 type execution struct {
-	worker        Worker
-	owner         string
-	job           store.Job
 	start         time.Time
-	loaded        loadedRun
-	cfg           Mirror
-	username      string
-	token         []byte
+	priorDiverged map[string]string
 	auth          wire.TransportAuth
 	repo          ruk.Repo
-	plans         []string
-	tracked       []*trackedRef
-	observed      bool
 	remoteDefault string
-	// priorDiverged holds refs whose pre-run uncertain outcome re-observed
-	// as moved: they stay out of this attempt's push and land diverged.
-	priorDiverged map[string]string
+	username      string
+	owner         string
+	plans         []string
+	token         []byte
+	tracked       []*trackedRef
+	worker        Worker
+	cfg           Mirror
+	job           store.Job
+	loaded        loadedRun
+	observed      bool
 }
 
 type loadedRun struct {
 	run    store.MirrorRunRow
-	mirror store.MirrorRow
 	repo   store.RepoRow
+	mirror store.MirrorRow
 }
 
 type runOutcome struct {
@@ -386,8 +419,15 @@ func (e *execution) guard(ctx context.Context) (bool, error) {
 			summary: "mirror credential is missing", mirror: "needs_attention",
 		}, nil, nil)
 	}
+	keyVersion, kerr := CheckedUint32(cred.KeyVersion)
+	if kerr != nil {
+		return e.finish(ctx, runOutcome{
+			runState: "failed", class: "secret",
+			summary: "mirror credential version is not usable", mirror: "needs_attention",
+		}, nil, nil)
+	}
 	token, oerr := Open(e.worker.SealKey, SealedCredential{
-		KeyVersion: uint32(cred.KeyVersion),
+		KeyVersion: keyVersion,
 		Nonce:      cred.Nonce,
 		Ciphertext: cred.Ciphertext,
 		Last4:      cred.Last4,
@@ -472,7 +512,7 @@ func (e *execution) sync(ctx context.Context) (bool, error) {
 			class:    "uncertain",
 			summary:  "some refs uncertain; will re-observe",
 			mirror:   "failing",
-			delay:    BackoffDelay(int(e.loaded.mirror.ConsecutiveFailures)+1, BaseBackoff, MaxBackoff, rand.Float64()),
+			delay:    BackoffDelay(int(e.loaded.mirror.ConsecutiveFailures)+1, BaseBackoff, MaxBackoff, jitterFraction()),
 		}
 	}
 	count := remote.count
@@ -503,8 +543,8 @@ func (e *execution) collectLocal(ctx context.Context) (map[string]string, error)
 
 type remoteSnapshot struct {
 	refs          map[string]string
-	count         int
 	defaultBranch string
+	count         int
 }
 
 func (e *execution) collectRemote(ctx context.Context) (remoteSnapshot, error) {
@@ -551,6 +591,8 @@ func (e *execution) trackPlanned(plan Plan) {
 			add(rp, "blocked_df", string(ClassRefOther), orDefault(rp.Reason, "file/directory conflict"))
 		case ActionCreate, ActionForceUpdate:
 			e.tracked = append(e.tracked, &trackedRef{plan: rp})
+		case ActionUpdate, ActionDelete, ActionPrune, ActionDiverged, ActionIgnoredHidden:
+			add(rp, "blocked_df", string(ClassRefOther), orDefault(rp.Reason, "unsupported plan action"))
 		default:
 			add(rp, "blocked_df", string(ClassRefOther), orDefault(rp.Reason, "unsupported plan action"))
 		}
@@ -578,11 +620,6 @@ func (e *execution) trackPlanned(plan Plan) {
 	}
 }
 
-// reconcilePriorUncertain re-observes refs left uncertain by earlier runs
-// against the freshly collected remote, before any new push (S7). Applied
-// refs resolve ok and the new plan naturally shows them in sync; refs the
-// remote never applied stay plannable; refs a third party moved land in
-// priorDiverged so this attempt never overwrites them.
 func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[string]string) error {
 	var rows []store.RefStateRow
 	if rerr := e.worker.Store.Read(ctx, func(tx *store.ReadTx) error {
@@ -610,13 +647,8 @@ func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[stri
 		want := row.LocalOid
 		switch {
 		case !ok && want == "":
-			// Desired deletion is visible: remote no longer has the ref.
-			// It resolves in the fresh plan as absent; nothing to carry.
 		case ok && want != "" && observed == want:
-			// Desired value is visible: applied.
 		case (ok && observed == row.RemoteOid) || (!ok && want != ""):
-			// Remote still shows the pre-push value, or lacks a desired
-			// value: not applied, replannable. Nothing to carry.
 		default:
 			e.priorDiverged[row.Ref] = "remote moved since the uncertain push"
 		}
@@ -639,6 +671,12 @@ func updateFor(rp RefPlan, force bool) ruk.PushUpdate {
 	case ActionForceUpdate:
 		expect := ruk.PresentExpect(rp.Old)
 		return ruk.PushUpdate{RemoteRef: rp.Ref, Source: ruk.CommitSource(rp.New), ExpectedOld: &expect, Force: force}
+	case ActionCreate, ActionUpdate:
+		absent := ruk.AbsentExpect()
+		return ruk.PushUpdate{RemoteRef: rp.Ref, Source: ruk.CommitSource(rp.New), ExpectedOld: &absent}
+	case ActionDiverged, ActionIgnoredHidden, ActionBlockedDF, ActionInSync:
+		absent := ruk.AbsentExpect()
+		return ruk.PushUpdate{RemoteRef: rp.Ref, Source: ruk.CommitSource(rp.New), ExpectedOld: &absent}
 	default:
 		absent := ruk.AbsentExpect()
 		return ruk.PushUpdate{RemoteRef: rp.Ref, Source: ruk.CommitSource(rp.New), ExpectedOld: &absent}
@@ -649,9 +687,22 @@ func updateForExact(rp RefPlan) ruk.PushUpdate {
 	return updateFor(rp, true)
 }
 
-// forceCheckedFor reports whether a ref must skip forcing even in exact
-// mode: a protected default branch only ever fast-forwards, so the daemon
-// isolates it per ref instead of forcing it.
+func jitterFraction() float64 {
+	var b [8]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		return 1
+	}
+	const unit = 1 << 20
+	return float64(binary.BigEndian.Uint64(b[:])%unit) / unit
+}
+
+func mirrorRequestID(runPub string, attempt int64, seq int) string {
+	sum := sha256.Sum256([]byte("mirror-push\x00" + runPub + "\x00" + strconv.FormatInt(attempt, 10) + "\x00" + strconv.Itoa(seq)))
+	sum[6] = sum[6]&0x0f | 0x50
+	sum[8] = sum[8]&0x3f | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+}
+
 func forceCheckedFor(cfg Mirror, ref, defaultBranch string) bool {
 	return cfg.ProtectDefaultBranch && defaultBranch != "" && ref == "refs/heads/"+defaultBranch
 }
@@ -678,6 +729,10 @@ func (e *execution) pushDeletesFirst(ctx context.Context) error {
 				upserts = append(upserts, updateForChecked(t.plan))
 			}
 			upsertRefs = append(upsertRefs, t)
+		case ActionUpdate, ActionDiverged, ActionIgnoredHidden, ActionBlockedDF, ActionInSync:
+			t.status = "blocked_df"
+			t.class = string(ClassRefOther)
+			t.reason = orDefault(t.reason, "unsupported plan action")
 		default:
 			t.status = "blocked_df"
 			t.class = string(ClassRefOther)
@@ -690,7 +745,7 @@ func (e *execution) pushDeletesFirst(ctx context.Context) error {
 			return nil
 		}
 		seq++
-		id := "mirror:" + e.loaded.run.PublicID + ":" + strconv.Itoa(seq)
+		id := mirrorRequestID(e.loaded.run.PublicID, e.loaded.run.AttemptNo+1, seq)
 		reply, perr := ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, id, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: updates}, e.auth)
 		if perr != nil {
 			return perr
@@ -881,14 +936,17 @@ func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, r
 	case ClassAuth, ClassRepoMoved, ClassTooLarge, ClassPolicy, ClassSecret, ClassRefPolicy:
 		return e.finish(ctx, runOutcome{
 			runState: "failed", class: string(verdict.Class), summary: summary,
-			mirror: "needs_attention", http: int64(detail.Status),
+			mirror: verdict.State, http: int64(detail.Status),
 		}, plan, remoteCount)
 	case ClassRateLimited:
-		delay := RateLimitDelay(retryAfterDuration(detail), retryAfterPresent(detail), rand.Float64())
+		delay := RateLimitDelay(retryAfterDuration(detail), retryAfterPresent(detail), jitterFraction())
 		return e.finish(ctx, runOutcome{
 			runState: "failing", class: string(verdict.Class), summary: summary,
 			mirror: "failing", http: int64(detail.Status), delay: delay, requeue: true,
 		}, plan, remoteCount)
+	case ClassRepoMissing, ClassServer, ClassNetwork, ClassUncertain, ClassRefHidden,
+		ClassRefProtected, ClassRefHook, ClassRefOther, ClassProtocol, ClassDiverged,
+		ClassBusy, ClassOK:
 	}
 	retry, state := ShouldRetry(verdict, consecutive, protectedRepeat(e.loaded.mirror, verdict))
 	if !retry {
@@ -900,7 +958,7 @@ func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, r
 	return e.finish(ctx, runOutcome{
 		runState: "failed", class: string(verdict.Class), summary: summary,
 		mirror: "failing", http: int64(detail.Status),
-		delay: BackoffDelay(consecutive+1, BaseBackoff, MaxBackoff, rand.Float64()),
+		delay: BackoffDelay(consecutive+1, BaseBackoff, MaxBackoff, jitterFraction()),
 	}, plan, remoteCount)
 }
 
@@ -911,32 +969,44 @@ func protectedRepeat(row store.MirrorRow, verdict Verdict) int {
 	return 0
 }
 
-func describeCallError(err error) (string, ruk.HttpDetail, string) {
-	var detail ruk.HttpDetail
+func describeCallError(err error) (string, ruk.HTTPDetail, string) {
+	var detail ruk.HTTPDetail
 	callErr, ok := errors.AsType[*ruk.Error](err)
 	if !ok || callErr == nil {
 		return "", detail, err.Error()
 	}
-	detail, _ = ruk.HttpDetailOf(err)
+	detail, _ = ruk.HTTPDetailOf(err)
 	return string(callErr.Code), detail, callErr.Message
 }
 
-func retryAfterString(detail ruk.HttpDetail) string {
+func retryAfterString(detail ruk.HTTPDetail) string {
 	if detail.RetryAfterSeconds == nil {
 		return ""
 	}
 	return strconv.FormatUint(*detail.RetryAfterSeconds, 10)
 }
 
-func retryAfterPresent(detail ruk.HttpDetail) bool {
+func retryAfterPresent(detail ruk.HTTPDetail) bool {
 	return detail.RetryAfterSeconds != nil
 }
 
-func retryAfterDuration(detail ruk.HttpDetail) time.Duration {
+func retryAfterDuration(detail ruk.HTTPDetail) time.Duration {
 	if detail.RetryAfterSeconds == nil {
 		return 0
 	}
-	return time.Duration(*detail.RetryAfterSeconds) * time.Second
+	d, err := durationSeconds(*detail.RetryAfterSeconds)
+	if err != nil {
+		return RateLimitMax
+	}
+	return d
+}
+
+func durationSeconds(s uint64) (time.Duration, error) {
+	d, err := time.ParseDuration(strconv.FormatUint(s, 10) + "s")
+	if err != nil {
+		return 0, fmt.Errorf("mirror schedule: invalid second count: %w", err)
+	}
+	return d, nil
 }
 
 func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, remoteCount *int) (bool, error) {
@@ -981,7 +1051,7 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	if outcome.delay > 0 {
 		nextRunAt = endMs + outcome.delay.Milliseconds()
 	}
-	if outcome.mirror == "needs_attention" || outcome.mirror == "disabled" {
+	if outcome.mirror == "needs_attention" || outcome.mirror == "disabled" || outcome.mirror == "auth_failed" {
 		nextRunAt = 0
 	}
 	eventCursor := mirrorRow.EventCursor
@@ -1003,7 +1073,7 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 		LastErrorClass:      outcome.class,
 		LastError:           summary,
 		Adopted:             adopted,
-		ClearDirty:          outcome.mirror == "ok" || outcome.mirror == "partial" || outcome.mirror == "needs_attention" || outcome.mirror == "disabled",
+		ClearDirty:          outcome.mirror == "ok" || outcome.mirror == "partial" || outcome.mirror == "needs_attention" || outcome.mirror == "disabled" || outcome.mirror == "auth_failed",
 	}
 	if outcome.mirror == "ok" {
 		result.LastSuccessAt = endMs
@@ -1143,11 +1213,11 @@ func countsOf(tracked []*trackedRef) string {
 }
 
 type syncCompletedBody struct {
-	MirrorID int64      `json:"mirror_id"`
 	JobID    string     `json:"job_id"`
 	State    string     `json:"state"`
-	Counts   syncCounts `json:"counts"`
 	Errors   []syncErr  `json:"errors"`
+	MirrorID int64      `json:"mirror_id"`
+	Counts   syncCounts `json:"counts"`
 }
 
 type syncCounts struct {
@@ -1198,14 +1268,14 @@ func mirrorSyncBody(mirrorID int64, jobID, state string, tracked []*trackedRef, 
 	return jsontext.Value(raw), nil
 }
 
-func truncateMiddle(s string, max int) string {
-	if max <= 0 {
+func truncateMiddle(s string, maxLen int) string {
+	if maxLen <= 0 {
 		return ""
 	}
-	if len(s) <= max {
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max]
+	return s[:maxLen]
 }
 
 func scrubSecrets(s, username string, secrets ...string) string {
@@ -1251,7 +1321,11 @@ func mirrorConfigOf(row store.MirrorRow) (Mirror, error) {
 }
 
 func reconcileInterval(row store.MirrorRow) time.Duration {
-	return time.Duration(row.ReconcileIntervalSeconds) * time.Second
+	d, err := durationSeconds(row.ReconcileIntervalSeconds)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 func parseGlobs(raw string) ([]string, error) {

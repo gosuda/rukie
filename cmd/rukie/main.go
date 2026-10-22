@@ -324,10 +324,9 @@ func runServe(argv []string) int {
 		defer close(sweepDone)
 		_ = app.watcher.RunSweeper(sweepCtx, time.Hour)
 	}()
-	mirrorDone := make(chan struct{})
+	mirrorDone := make(chan error, 1)
 	go func() {
-		defer close(mirrorDone)
-		_ = app.mirror.Scheduler(workerCtx, 10*time.Second, "serve-mirror")
+		mirrorDone <- app.mirror.Scheduler(workerCtx, 10*time.Second, "serve-mirror")
 	}()
 	ownedDrainRunners["followers"] = app.watcher.StopAll
 	ownedDrainRunners["queue"] = func(context.Context) error {
@@ -335,7 +334,10 @@ func runServe(argv []string) int {
 		sweepStop()
 		<-workerDone
 		<-sweepDone
-		<-mirrorDone
+		mirrorErr := <-mirrorDone
+		if mirrorErr != nil && !errors.Is(mirrorErr, context.Canceled) {
+			return mirrorErr
+		}
 		return nil
 	}
 	if app.ssh != nil {
@@ -790,7 +792,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, err
 	}
-	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot}}, cleanup, nil
+	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {

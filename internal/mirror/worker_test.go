@@ -3,6 +3,9 @@ package mirror
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -189,20 +192,20 @@ func TestSplitPayload(t *testing.T) {
 	cases := []struct {
 		name   string
 		raw    string
-		kind   payloadKind
 		runPub string
+		kind   payloadKind
 		repoID int64
 	}{
-		{"touch", `{"invocation":"evt-1","repo":7}`, payloadKindTouch, "", 7},
-		{"run", `{"run":"pub-1","mirror":3}`, payloadKindRun, "pub-1", 0},
-		{"run beats touch", `{"run":"pub-2","mirror":3,"invocation":"evt-1","repo":7}`, payloadKindRun, "pub-2", 0},
-		{"unknown shape", `{"bogus":1}`, payloadKindUnknown, "", 0},
-		{"empty object", `{}`, payloadKindUnknown, "", 0},
-		{"empty string", ``, payloadKindUnknown, "", 0},
-		{"malformed", `{nope`, payloadKindUnknown, "", 0},
-		{"empty run", `{"run":"","mirror":3}`, payloadKindRun, "", 0},
-		{"touch without repo", `{"invocation":"evt-1"}`, payloadKindUnknown, "", 0},
-		{"touch repo zero", `{"invocation":"evt-1","repo":0}`, payloadKindTouch, "", 0},
+		{"touch", `{"invocation":"evt-1","repo":7}`, "", payloadKindTouch, 7},
+		{"run", `{"run":"pub-1","mirror":3}`, "pub-1", payloadKindRun, 0},
+		{"run beats touch", `{"run":"pub-2","mirror":3,"invocation":"evt-1","repo":7}`, "pub-2", payloadKindRun, 0},
+		{"unknown shape", `{"bogus":1}`, "", payloadKindUnknown, 0},
+		{"empty object", `{}`, "", payloadKindUnknown, 0},
+		{"empty string", ``, "", payloadKindUnknown, 0},
+		{"malformed", `{nope`, "", payloadKindUnknown, 0},
+		{"empty run", `{"run":"","mirror":3}`, "", payloadKindRun, 0},
+		{"touch without repo", `{"invocation":"evt-1"}`, "", payloadKindUnknown, 0},
+		{"touch repo zero", `{"invocation":"evt-1","repo":0}`, "", payloadKindTouch, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -271,6 +274,70 @@ func TestDriveUnknownPayloadCompletes(t *testing.T) {
 	}
 	if again {
 		t.Fatal("DriveOnce reported work with an empty queue")
+	}
+}
+
+func TestDrainCompletesBoundedPool(t *testing.T) {
+	w, st, q, now := openWorker(t)
+	repoID := insertRepo(t, st, now, "drainrepo")
+	const jobs = 8
+	for i := range jobs {
+		enqueueMirrorJob(t, q, fmt.Sprintf("mirror-run:poison-%d", i), repoID, `{"bogus":1}`)
+	}
+	w.WorkerCount = 3
+	if err := w.drain(testCtx(t), "drain-test"); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	for i := range jobs {
+		jobDone(t, q, fmt.Sprintf("mirror-run:poison-%d", i))
+	}
+}
+
+func TestMirrorRequestIDFormat(t *testing.T) {
+	matched, err := regexp.MatchString(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, mirrorRequestID("run-1", 1, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matched {
+		t.Fatalf("request id is not a UUID: %q", mirrorRequestID("run-1", 1, 1))
+	}
+	if again := mirrorRequestID("run-1", 1, 1); again != mirrorRequestID("run-1", 1, 1) {
+		t.Fatalf("unstable id: %q", again)
+	}
+	seen := map[string]bool{}
+	for _, id := range []string{mirrorRequestID("run-1", 1, 1), mirrorRequestID("run-1", 1, 2), mirrorRequestID("run-1", 2, 1), mirrorRequestID("run-2", 1, 1)} {
+		if seen[id] {
+			t.Fatalf("duplicate id: %q", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestComputePlanCoversDefaultBranchOnce(t *testing.T) {
+	m := Mirror{Name: "m", TargetURL: "https://example.com/r.git", HostKind: HostGeneric, Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}
+	local := map[string]string{"refs/heads/main": "new", "refs/heads/feat": "new"}
+	remote := map[string]string{"refs/heads/main": "old", "refs/heads/gone": "old", "refs/pull/1/head": "old"}
+	p, err := ComputePlan(local, remote, m, "main", "")
+	if !errors.Is(err, ErrNeedsConfirmation) {
+		t.Fatalf("ComputePlan err = %v, want confirmation", err)
+	}
+	p, err = ComputePlan(local, remote, m, "main", p.Digest)
+	if err != nil {
+		t.Fatalf("confirmed ComputePlan: %v", err)
+	}
+	seen := map[string]int{}
+	for _, list := range [][]RefPlan{p.Updates, p.Deletes, p.Diverged, p.Ignored} {
+		for _, rp := range list {
+			seen[rp.Ref]++
+		}
+	}
+	for ref, n := range seen {
+		if n != 1 {
+			t.Fatalf("ref %q planned %d times", ref, n)
+		}
+	}
+	if got := seen["refs/heads/main"]; got != 1 {
+		t.Fatalf("default branch coverage = %d, want exactly one plan entry", got)
 	}
 }
 
@@ -525,23 +592,23 @@ func TestRemoteDefaultBranch(t *testing.T) {
 	trunk := "refs/heads/trunk"
 	cases := []struct {
 		name    string
-		entries []ruk.RefEntry
 		want    string
+		entries []ruk.RefEntry
 	}{
-		{"no refs", nil, "main"},
-		{"direct only", []ruk.RefEntry{{Name: "refs/heads/main", Target: ruk.DirectTarget("abc")}}, "main"},
+		{name: "no refs", want: "main"},
+		{name: "direct only", want: "main", entries: []ruk.RefEntry{{Name: "refs/heads/main", Target: ruk.DirectTarget("abc")}}},
 		{
-			"symbolic head",
-			[]ruk.RefEntry{
+			name: "symbolic head",
+			want: "trunk",
+			entries: []ruk.RefEntry{
 				{Name: "HEAD", Target: ruk.RefTarget{Symbolic: &trunk}},
 				{Name: "refs/heads/trunk", Target: ruk.DirectTarget("abc")},
 			},
-			"trunk",
 		},
 		{
-			"symbolic non-head ignored",
-			[]ruk.RefEntry{{Name: "refs/heads/main", Target: ruk.RefTarget{Symbolic: &main}}},
-			"main",
+			name:    "symbolic non-head ignored",
+			want:    "main",
+			entries: []ruk.RefEntry{{Name: "refs/heads/main", Target: ruk.RefTarget{Symbolic: &main}}},
 		},
 	}
 	for _, tc := range cases {
@@ -608,16 +675,16 @@ func TestForceCheckedFor(t *testing.T) {
 	plain := Mirror{Mode: ModeExact}
 	rows := []struct {
 		name string
-		cfg  Mirror
 		ref  string
 		def  string
+		cfg  Mirror
 		want bool
 	}{
-		{"protected default skips force", prot, "refs/heads/main", "main", true},
-		{"protected other ref still forces", prot, "refs/heads/feat", "main", false},
-		{"protected tag still forces", prot, "refs/tags/v1", "main", false},
-		{"unprotected default still forces", plain, "refs/heads/main", "main", false},
-		{"empty default branch never matches", prot, "refs/heads/main", "", false},
+		{"protected default skips force", "refs/heads/main", "main", prot, true},
+		{"protected other ref still forces", "refs/heads/feat", "main", prot, false},
+		{"protected tag still forces", "refs/tags/v1", "main", prot, false},
+		{"unprotected default still forces", "refs/heads/main", "main", plain, false},
+		{"empty default branch never matches", "refs/heads/main", "", prot, false},
 	}
 	for _, r := range rows {
 		if got := forceCheckedFor(r.cfg, r.ref, r.def); got != r.want {

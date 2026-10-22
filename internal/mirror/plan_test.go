@@ -7,25 +7,26 @@ import (
 
 func TestComputePlan(t *testing.T) {
 	cases := []struct {
-		name          string
-		local, remote map[string]string
-		m             Mirror
-		def           string
-		wantErr       bool
-		confirm       bool
+		local   map[string]string
+		remote  map[string]string
+		name    string
+		def     string
+		m       Mirror
+		wantErr bool
+		confirm bool
 	}{
-		{"exact prune hidden untouched", map[string]string{"refs/heads/main": "new", "refs/tags/v1": "t", "refs/pull/1/head": "x"}, map[string]string{"refs/heads/main": "old", "refs/tags/old": "oldtag", "refs/pull/2/head": "hidden"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", true, false},
-		{"ff only", map[string]string{"refs/heads/main": "b"}, map[string]string{"refs/heads/main": "a", "refs/tags/old": "x"}, Mirror{Mode: ModeFastForward, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", false, false},
-		{"globs", map[string]string{"refs/heads/main": "1", "refs/tags/v1": "2"}, nil, Mirror{Mode: ModeExact, RefSelection: RefSelectionGlobs, Globs: []string{"refs/heads/*"}, AdoptExistingRefs: true}, "", false, false},
-		{"reconcile", map[string]string{"refs/heads/main": "x"}, map[string]string{"refs/heads/main": "x"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", false, false},
-		{"adopt denied", map[string]string{"refs/heads/main": "n"}, map[string]string{"refs/heads/main": "o"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll}, "", true, false},
-		{"adopt confirmed", map[string]string{"refs/heads/main": "n"}, map[string]string{"refs/heads/main": "o"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll}, "", false, true},
-		{"D F", map[string]string{"refs/heads/a/b": "new"}, map[string]string{"refs/heads/a": "old"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", true, false},
-		{"opaque tag", map[string]string{"refs/tags/v": "object:tag"}, nil, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", false, false},
-		{"ff only nonempty target", map[string]string{"refs/heads/main": "n"}, map[string]string{"refs/heads/main": "o"}, Mirror{Mode: ModeFastForward, RefSelection: RefSelectionAll}, "", false, false},
-		{"exact adopt delete denied", map[string]string{"refs/heads/main": "n"}, map[string]string{"refs/heads/main": "o", "refs/tags/gone": "t"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", true, false},
-		{"exact adopt delete confirmed", map[string]string{"refs/heads/main": "n"}, map[string]string{"refs/heads/main": "o", "refs/tags/gone": "t"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", false, true},
-		{"never prunes default", map[string]string{}, map[string]string{"refs/heads/main": "m", "refs/tags/gone": "t"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "main", true, false},
+		{local: map[string]string{"refs/heads/main": "new", "refs/tags/v1": "t", "refs/pull/1/head": "x"}, remote: map[string]string{"refs/heads/main": "old", "refs/tags/old": "oldtag", "refs/pull/2/head": "hidden"}, name: "exact prune hidden untouched", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, wantErr: true},
+		{local: map[string]string{"refs/heads/main": "b"}, remote: map[string]string{"refs/heads/main": "a", "refs/tags/old": "x"}, name: "ff only", m: Mirror{Mode: ModeFastForward, RefSelection: RefSelectionAll, AdoptExistingRefs: true}},
+		{local: map[string]string{"refs/heads/main": "1", "refs/tags/v1": "2"}, name: "globs", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionGlobs, Globs: []string{"refs/heads/*"}, AdoptExistingRefs: true}},
+		{local: map[string]string{"refs/heads/main": "x"}, remote: map[string]string{"refs/heads/main": "x"}, name: "reconcile", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}},
+		{local: map[string]string{"refs/heads/main": "n"}, remote: map[string]string{"refs/heads/main": "o"}, name: "adopt denied", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll}, wantErr: true},
+		{local: map[string]string{"refs/heads/main": "n"}, remote: map[string]string{"refs/heads/main": "o"}, name: "adopt confirmed", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll}, confirm: true},
+		{local: map[string]string{"refs/heads/a/b": "new"}, remote: map[string]string{"refs/heads/a": "old"}, name: "D F", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, wantErr: true},
+		{local: map[string]string{"refs/tags/v": "object:tag"}, name: "opaque tag", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}},
+		{local: map[string]string{"refs/heads/main": "n"}, remote: map[string]string{"refs/heads/main": "o"}, name: "ff only nonempty target", m: Mirror{Mode: ModeFastForward, RefSelection: RefSelectionAll}},
+		{local: map[string]string{"refs/heads/main": "n"}, remote: map[string]string{"refs/heads/main": "o", "refs/tags/gone": "t"}, name: "exact adopt delete denied", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, wantErr: true},
+		{local: map[string]string{"refs/heads/main": "n"}, remote: map[string]string{"refs/heads/main": "o", "refs/tags/gone": "t"}, name: "exact adopt delete confirmed", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, confirm: true},
+		{local: map[string]string{}, remote: map[string]string{"refs/heads/main": "m", "refs/tags/gone": "t"}, name: "never prunes default", def: "main", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -31,10 +31,12 @@ type RefPlan struct {
 	Reason        string
 }
 type Plan struct {
-	Updates, Deletes  []RefPlan
-	Diverged, Ignored []RefPlan
-	Digest            string
-	TargetNonEmpty    bool
+	Digest         string
+	Updates        []RefPlan
+	Deletes        []RefPlan
+	Diverged       []RefPlan
+	Ignored        []RefPlan
+	TargetNonEmpty bool
 }
 
 var ErrNeedsConfirmation = errors.New("mirror plan needs confirmation")
@@ -95,6 +97,9 @@ func ComputePlan(local, remote map[string]string, m Mirror, remoteDefaultBranch,
 	if m.Mode == ModeExact {
 		for ref, oid := range remote {
 			if !selected(ref) {
+				continue
+			}
+			if _, ok := local[ref]; ok {
 				continue
 			}
 			if ref == defaultRef {
