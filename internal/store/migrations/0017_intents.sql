@@ -31,7 +31,7 @@ CREATE TABLE intent_changes_v17 (
  FOREIGN KEY(intent_id, repo_id) REFERENCES intents(id, repo_id) ON DELETE CASCADE ON UPDATE CASCADE
 ) STRICT;
 INSERT INTO intent_changes_v17(intent_id, repo_id, change_id, head_oid, added_by, created_at, public_id)
-SELECT ic.intent_id, i.repo_id, c.change_key, NULLIF(ic.head_oid, ''), i.reporter_id, i.created_at, printf('%026X', ic.rowid)
+SELECT ic.intent_id, i.repo_id, c.change_key, NULLIF(ic.head_oid, ''), i.reporter_id, i.created_at, printf('%026d', ic.rowid)
 FROM intent_changes ic JOIN intents i ON i.id=ic.intent_id JOIN changes c ON c.id=ic.change_id;
 DROP TABLE intent_changes;
 ALTER TABLE intent_changes_v17 RENAME TO intent_changes;
@@ -118,12 +118,3 @@ FROM asks_v13 a JOIN intents i ON i.id=a.intent_id;
 DROP TABLE asks_v13;
 CREATE INDEX idx_asks_intent ON asks(intent_id,state,deadline_ms);
 CREATE INDEX idx_asks_deadline ON asks(state,deadline_ms) WHERE state='asked';
-INSERT INTO facets(public_id,repo_id,key,value_type,allowed,required,created_at)
-SELECT substr(lower(hex(randomblob(16))),1,26), id, 'risk', 'enum', '["low","medium","high"]', 0, CAST(strftime('%s','now') AS INTEGER)*1000 FROM repos WHERE true
-ON CONFLICT(repo_id,key) DO NOTHING;
-INSERT INTO facets(public_id,repo_id,key,value_type,allowed,required,created_at)
-SELECT substr(lower(hex(randomblob(16))),1,26), id, 'area', 'enum', '["backend","frontend","docs","infra"]', 0, CAST(strftime('%s','now') AS INTEGER)*1000 FROM repos WHERE true
-ON CONFLICT(repo_id,key) DO NOTHING;
-INSERT INTO facets(public_id,repo_id,key,value_type,allowed,required,created_at)
-SELECT substr(lower(hex(randomblob(16))),1,26), id, 'size', 'enum', '["xs","s","m","l"]', 0, CAST(strftime('%s','now') AS INTEGER)*1000 FROM repos WHERE true
-ON CONFLICT(repo_id,key) DO NOTHING;
