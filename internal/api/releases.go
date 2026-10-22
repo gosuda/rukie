@@ -274,7 +274,7 @@ func (d Deps) loadReleaseForWrite(ctx context.Context, rq requester, owner, repo
 	if cerr != nil {
 		return repoContext{}, store.ReleaseRow{}, cerr
 	}
-	if derr := d.checkRepoAccess(rq, rc.row, "repo.push", ""); derr != nil {
+	if derr := d.checkRepoAccess(rq, rc.row, "release.publish", ""); derr != nil {
 		return repoContext{}, store.ReleaseRow{}, derr
 	}
 	if rc.row.Archived {
@@ -343,9 +343,11 @@ func releaseListHandler(d Deps) func(context.Context, op.Principal, ReleaseListI
 			return ReleaseListOut{}, op.Wrap(op.CodeInternal, rerr, "release list failed")
 		}
 		out := ReleaseListOut{Releases: []ReleaseJSON{}}
-		for i, row := range rows {
-			if i == limit {
-				out.Next = fmt.Sprintf("%d:%d", row.CreatedAt.Unix(), row.ID)
+		var last store.ReleaseRow
+		truncated := false
+		for _, row := range rows {
+			if len(out.Releases) == limit {
+				truncated = true
 				break
 			}
 			item, jerr := d.releaseRowJSON(ctx, rc, row)
@@ -353,6 +355,10 @@ func releaseListHandler(d Deps) func(context.Context, op.Principal, ReleaseListI
 				return ReleaseListOut{}, jerr
 			}
 			out.Releases = append(out.Releases, item)
+			last = row
+		}
+		if truncated {
+			out.Next = fmt.Sprintf("%d:%d", last.CreatedAt.Unix(), last.ID)
 		}
 		return out, nil
 	}
@@ -411,7 +417,7 @@ func releaseCreateHandler(d Deps) func(context.Context, op.Principal, ReleaseCre
 		if cerr != nil {
 			return ReleaseCreateOut{}, cerr
 		}
-		if derr := d.checkRepoAccess(rq, rc.row, "repo.push", ""); derr != nil {
+		if derr := d.checkRepoAccess(rq, rc.row, "release.publish", ""); derr != nil {
 			return ReleaseCreateOut{}, derr
 		}
 		if rc.row.Archived {
@@ -736,6 +742,7 @@ func releaseAssetListHandler(d Deps) func(context.Context, op.Principal, Release
 		}
 		out := ReleaseAssetListOut{Assets: []ReleaseAssetJSON{}}
 		started := in.Cursor == ""
+		truncated := false
 		for _, asset := range assets {
 			if !started {
 				if asset.Name == in.Cursor {
@@ -744,10 +751,13 @@ func releaseAssetListHandler(d Deps) func(context.Context, op.Principal, Release
 				continue
 			}
 			if len(out.Assets) == limit {
-				out.Next = asset.Name
+				truncated = true
 				break
 			}
 			out.Assets = append(out.Assets, releaseAssetJSON(rc, row.TagName, asset))
+		}
+		if truncated {
+			out.Next = out.Assets[len(out.Assets)-1].Name
 		}
 		return out, nil
 	}
@@ -995,7 +1005,7 @@ func RegisterReleases(t *op.Table, deps Deps) error {
 	}
 	if err := op.Register(t, op.Op[ReleaseCreateIn, ReleaseCreateOut]{
 		Name: "release.create", Kind: op.KindMutation, Method: http.MethodPost, Path: "/{owner}/{repo}/releases/new",
-		Scope: op.ScopeRepoWrite, Summary: "Create a release",
+		Scope: op.ScopeReleasesWrite, Summary: "Create a release",
 		Description: "Create a draft, or publish at once when draft is false. Publishing pins the tag through the released-tag freeze.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeArchived, op.CodeUnavailable},
 		ETag:        func(out ReleaseCreateOut) string { return out.Release.ETag },
@@ -1006,7 +1016,7 @@ func RegisterReleases(t *op.Table, deps Deps) error {
 	}
 	if err := op.Register(t, op.Op[ReleaseUpdateIn, ReleaseUpdateOut]{
 		Name: "release.update", Kind: op.KindMutation, Method: http.MethodPost, Path: "/{owner}/{repo}/releases/edit/{tag...}",
-		Scope: op.ScopeRepoWrite, Summary: "Update or publish a draft release",
+		Scope: op.ScopeReleasesWrite, Summary: "Update or publish a draft release",
 		Description: "Drafts stay mutable until publish. Publishing pins the tag through the released-tag freeze.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq, op.CodeArchived, op.CodeUnavailable},
 		Concurrency: op.ConcurrencyIfMatchRequired,
@@ -1019,7 +1029,7 @@ func RegisterReleases(t *op.Table, deps Deps) error {
 	}
 	if err := op.Register(t, op.Op[ReleaseDeleteIn, ReleaseDeleteOut]{
 		Name: "release.delete", Kind: op.KindMutation, Method: http.MethodPost, Path: "/{owner}/{repo}/releases/delete/{tag...}",
-		Scope: op.ScopeRepoWrite, Summary: "Delete a release",
+		Scope: op.ScopeReleasesWrite, Summary: "Delete a release",
 		Description: "Published releases soft-delete and clear the freeze marker with an owner check. Drafts discard.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeStale, op.CodePreconditionReq, op.CodeArchived, op.CodeUnavailable},
 		Concurrency: op.ConcurrencyIfMatchRequired,
@@ -1050,7 +1060,7 @@ func RegisterReleases(t *op.Table, deps Deps) error {
 	}
 	if err := op.Register(t, op.Op[ReleaseAssetCreateIn, ReleaseAssetCreateOut]{
 		Name: "release.asset.create", Kind: op.KindMutation, Method: http.MethodPut, Path: "/{owner}/{repo}/releases/assets/{tag}/{name}",
-		Scope: op.ScopeRepoWrite, Summary: "Upload a release asset",
+		Scope: op.ScopeReleasesWrite, Summary: "Upload a release asset",
 		Description: "Streams asset bytes for a draft release with digest verification. The byte upload adapter serves this route.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq, op.CodeArchived, op.CodeUnsupportedMedia},
 		Concurrency: op.ConcurrencyIfMatchOptional,
@@ -1073,7 +1083,7 @@ func RegisterReleases(t *op.Table, deps Deps) error {
 	}
 	if err := op.Register(t, op.Op[ReleaseAssetDeleteIn, ReleaseAssetDeleteOut]{
 		Name: "release.asset.delete", Kind: op.KindMutation, Method: http.MethodDelete, Path: "/{owner}/{repo}/releases/assets/{tag}/{name}",
-		Scope: op.ScopeRepoWrite, Summary: "Delete a draft release asset",
+		Scope: op.ScopeReleasesWrite, Summary: "Delete a draft release asset",
 		Description: "Draft assets delete. Published assets refuse.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq, op.CodeArchived},
 		Concurrency: op.ConcurrencyIfMatchRequired,
