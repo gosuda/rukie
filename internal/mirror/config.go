@@ -109,5 +109,8 @@ func (m Mirror) Validate(_ time.Time) error {
 	if m.MaxDelaySeconds != 0 && m.DebounceSeconds != 0 && m.MaxDelaySeconds < m.DebounceSeconds {
 		return fmt.Errorf("Mirror.Validate: max delay is less than debounce")
 	}
+	if m.ReconcileIntervalSeconds > 86400 {
+		return fmt.Errorf("Mirror.Validate: reconcile interval exceeds 24 hours")
+	}
 	return nil
 }

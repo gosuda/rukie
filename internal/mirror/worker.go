@@ -30,8 +30,6 @@ const (
 
 	maxStoredErrorLen = 512
 
-	defaultReconcileInterval = 10 * time.Minute
-
 	outboxKindMirrorSyncCompleted = "mirror.sync.completed"
 )
 
@@ -402,10 +400,14 @@ func (e *execution) guard(ctx context.Context) (bool, error) {
 	}
 	e.token = token
 	if e.worker.Ruk == nil {
+		delay := reconcileInterval(e.loaded.mirror)
+		if delay <= 0 {
+			delay = BaseBackoff
+		}
 		return e.finish(ctx, runOutcome{
 			runState: "failed", class: "unavailable",
 			summary: "mirror daemon client is unavailable", mirror: "failing",
-			delay: reconcileInterval(e.loaded.mirror),
+			delay: delay,
 		}, nil, nil)
 	}
 	if e.loaded.repo.RukPath == "" {
@@ -556,12 +558,15 @@ func (e *execution) trackPlanned(plan Plan) {
 	for _, rp := range plan.Deletes {
 		e.tracked = append(e.tracked, &trackedRef{plan: rp})
 	}
-	seen := make(map[string]bool, len(e.tracked))
+	byRef := make(map[string]*trackedRef, len(e.tracked))
 	for _, t := range e.tracked {
-		seen[t.plan.Ref] = true
+		byRef[t.plan.Ref] = t
 	}
 	for ref, reason := range e.priorDiverged {
-		if seen[ref] {
+		if t, ok := byRef[ref]; ok {
+			t.status = "diverged"
+			t.class = string(ClassDiverged)
+			t.reason = reason
 			continue
 		}
 		e.tracked = append(e.tracked, &trackedRef{
@@ -967,7 +972,11 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	nextRunAt := endMs
 	adopted := false
 	if outcome.mirror == "ok" || outcome.mirror == "partial" {
-		nextRunAt = endMs + reconcileInterval(mirrorRow).Milliseconds()
+		if iv := reconcileInterval(mirrorRow); iv > 0 {
+			nextRunAt = endMs + iv.Milliseconds()
+		} else {
+			nextRunAt = 0
+		}
 	}
 	if outcome.delay > 0 {
 		nextRunAt = endMs + outcome.delay.Milliseconds()
@@ -1242,10 +1251,7 @@ func mirrorConfigOf(row store.MirrorRow) (Mirror, error) {
 }
 
 func reconcileInterval(row store.MirrorRow) time.Duration {
-	if row.ReconcileIntervalSeconds > 0 {
-		return time.Duration(row.ReconcileIntervalSeconds) * time.Second
-	}
-	return defaultReconcileInterval
+	return time.Duration(row.ReconcileIntervalSeconds) * time.Second
 }
 
 func parseGlobs(raw string) ([]string, error) {

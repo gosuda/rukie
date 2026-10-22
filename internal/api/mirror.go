@@ -435,7 +435,7 @@ type MirrorCreateBody struct {
 	SyncOnRefUpdate          *bool    `json:"sync_on_ref_update,omitzero"`
 	DebounceSeconds          uint64   `json:"debounce_seconds,omitzero"`
 	MaxDelaySeconds          uint64   `json:"max_delay_seconds,omitzero"`
-	ReconcileIntervalSeconds uint64   `json:"reconcile_interval_seconds,omitzero"`
+	ReconcileIntervalSeconds *uint64  `json:"reconcile_interval_seconds,omitzero"`
 	CreateIfMissing          bool     `json:"create_if_missing,omitzero"`
 	PolicyAck                bool     `json:"policy_ack,omitzero"`
 	AdoptExistingRefs        bool     `json:"adopt_existing_refs,omitzero"`
@@ -480,6 +480,10 @@ func mirrorCreateHandler(d Deps) func(context.Context, op.Principal, MirrorCreat
 		if syncOnRef && debounce == 0 {
 			debounce = 10
 		}
+		reconcileInterval := uint64(28800)
+		if in.Body.ReconcileIntervalSeconds != nil {
+			reconcileInterval = *in.Body.ReconcileIntervalSeconds
+		}
 		cfg := mirror.Mirror{
 			Name: in.Body.Name, TargetURL: in.Body.TargetURL,
 			HostKind: mirror.HostKind(in.Body.HostKind), Username: in.Body.Username,
@@ -488,7 +492,7 @@ func mirrorCreateHandler(d Deps) func(context.Context, op.Principal, MirrorCreat
 			ProtectDefaultBranch: in.Body.ProtectDefaultBranch, Enabled: enabled,
 			SyncOnRefUpdate: syncOnRef, DebounceSeconds: debounce,
 			MaxDelaySeconds:          in.Body.MaxDelaySeconds,
-			ReconcileIntervalSeconds: in.Body.ReconcileIntervalSeconds,
+			ReconcileIntervalSeconds: reconcileInterval,
 			CreateIfMissing:          in.Body.CreateIfMissing, PolicyAck: in.Body.PolicyAck,
 			AdoptExistingRefs: in.Body.AdoptExistingRefs,
 		}

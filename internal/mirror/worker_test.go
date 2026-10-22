@@ -594,6 +594,15 @@ func TestSummarizeTracked(t *testing.T) {
 	}
 }
 
+func TestReconcileInterval(t *testing.T) {
+	if got := reconcileInterval(store.MirrorRow{ReconcileIntervalSeconds: 3600}); got != time.Hour {
+		t.Fatalf("3600s = %v, want 1h", got)
+	}
+	if got := reconcileInterval(store.MirrorRow{}); got != 0 {
+		t.Fatalf("zero interval = %v, want commit-only zero", got)
+	}
+}
+
 func TestForceCheckedFor(t *testing.T) {
 	prot := Mirror{Mode: ModeExact, ProtectDefaultBranch: true}
 	plain := Mirror{Mode: ModeExact}
@@ -647,5 +656,17 @@ func TestReconcilePriorUncertain(t *testing.T) {
 	}
 	if reason := e.priorDiverged["refs/heads/moved"]; reason == "" {
 		t.Fatalf("moved ref lacks reason: %v", e.priorDiverged)
+	}
+}
+
+func TestPriorDivergedOverridesPlan(t *testing.T) {
+	w, _, _, _ := openWorker(t)
+	e := &execution{worker: *w, cfg: Mirror{Mode: ModeExact}, priorDiverged: map[string]string{"refs/heads/main": "remote moved since the uncertain push"}}
+	e.trackPlanned(Plan{Updates: []RefPlan{{Ref: "refs/heads/main", Old: "o", New: "n", Action: ActionForceUpdate}}})
+	if len(e.tracked) != 1 {
+		t.Fatalf("tracked = %+v, want one entry", e.tracked)
+	}
+	if e.tracked[0].status != "diverged" || e.tracked[0].class != string(ClassDiverged) {
+		t.Fatalf("tracked = %+v, want diverged override", e.tracked[0])
 	}
 }
