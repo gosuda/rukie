@@ -517,6 +517,7 @@ Bold rows are the only deviations from Ruk's exit codes. `E_INVALID` is an input
 | 5 | integrity: corrupt |
 | 64 | CLI usage error (bad flags or `--input`); never sent to the server (sysexits `EX_USAGE`) |
 | 65 | server rejected input: invalid, validation, too large, unsupported media (sysexits `EX_DATAERR`) |
+| 78 | config unavailable: runner sandbox missing (podman), do not restart (sysexits `EX_CONFIG`) |
 
 ### 4.5 Error values
 

@@ -55,12 +55,16 @@ func stdIO() cli.IO {
 
 func run(argv []string) int {
 	if len(argv) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rukie <command> [flags]\ncommands: serve, bootstrap, dev, mcp, auth, user, admin, api")
+		fmt.Fprintln(os.Stderr, "usage: rukie <command> [flags]\ncommands: serve, bootstrap, dev, mcp, auth, user, admin, api, runner")
 		return 64
 	}
 	switch argv[0] {
 	case "serve":
 		return runServe(argv[1:])
+	case "runner":
+		return runRunner(argv[1:])
+	case "job-exec":
+		return runJobExec(argv[1:])
 	case "dev":
 		return runDev(argv[1:])
 	case "bootstrap":
@@ -864,7 +868,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		return nil, cleanup, err
 	}
 	raw := api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server})
-	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.CIRaw(raw))), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}}, cleanup, nil
+	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.CIRunnerV1(repoDeps.CIRaw(raw)))), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {
