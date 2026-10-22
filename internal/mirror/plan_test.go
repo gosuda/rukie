@@ -25,6 +25,7 @@ func TestComputePlan(t *testing.T) {
 		{"ff only nonempty target", map[string]string{"refs/heads/main": "n"}, map[string]string{"refs/heads/main": "o"}, Mirror{Mode: ModeFastForward, RefSelection: RefSelectionAll}, "", false, false},
 		{"exact adopt delete denied", map[string]string{"refs/heads/main": "n"}, map[string]string{"refs/heads/main": "o", "refs/tags/gone": "t"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", true, false},
 		{"exact adopt delete confirmed", map[string]string{"refs/heads/main": "n"}, map[string]string{"refs/heads/main": "o", "refs/tags/gone": "t"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "", false, true},
+		{"never prunes default", map[string]string{}, map[string]string{"refs/heads/main": "m", "refs/tags/gone": "t"}, Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, "main", true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,6 +71,25 @@ func TestComputePlan(t *testing.T) {
 			}
 			if tc.name == "exact prune hidden untouched" && (p.Deletes[0].Action != ActionPrune || p.Digest == "") {
 				t.Fatalf("plan=%+v", p)
+			}
+			if tc.name == "never prunes default" {
+				for _, d := range p.Deletes {
+					if d.Ref == "refs/heads/main" {
+						t.Fatalf("default branch pruned: %+v", p)
+					}
+				}
+				if len(p.Deletes) != 1 || p.Deletes[0].Ref != "refs/tags/gone" {
+					t.Fatalf("tag not pruned: %+v", p)
+				}
+				kept := false
+				for _, r := range p.Ignored {
+					if r.Ref == "refs/heads/main" && r.Reason == "default branch is never pruned" {
+						kept = true
+					}
+				}
+				if !kept {
+					t.Fatalf("default branch not kept as ignored: %+v", p)
+				}
 			}
 		})
 	}

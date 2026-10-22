@@ -88,9 +88,17 @@ func ComputePlan(local, remote map[string]string, m Mirror, remoteDefaultBranch,
 			p.Updates = append(p.Updates, RefPlan{Ref: ref, Old: old, New: oid, Action: ActionForceUpdate})
 		}
 	}
+	defaultRef := ""
+	if remoteDefaultBranch != "" {
+		defaultRef = "refs/heads/" + remoteDefaultBranch
+	}
 	if m.Mode == ModeExact {
 		for ref, oid := range remote {
 			if !selected(ref) {
+				continue
+			}
+			if ref == defaultRef {
+				p.Ignored = append(p.Ignored, RefPlan{Ref: ref, Old: oid, Action: ActionIgnoredHidden, Reason: "default branch is never pruned"})
 				continue
 			}
 			if hidden(ref) {
