@@ -82,6 +82,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterReview(table, deps) },
 		func() error { return api.RegisterMirror(table, deps) },
 		func() error { return api.RegisterCI(table, deps) },
+		func() error { return api.RegisterIntents(table, deps) },
 	} {
 		if err := step(); err != nil {
 			t.Fatalf("register: %v", err)
@@ -101,6 +102,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterReviewViews(views)
 	api.RegisterMirrorViews(views)
 	api.RegisterCIViews(views)
+	api.RegisterIntentsViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()
@@ -452,6 +454,7 @@ func TestAgentFlow(t *testing.T) {
 	})
 	t.Run("mirror", mirrorAgentFlow)
 	t.Run("ci_attest", ciAttestAgentFlow)
+	t.Run("intent", intentAgentFlow)
 }
 
 func TestAdminMethodsRefusedForNonAdminPeer(t *testing.T) {
