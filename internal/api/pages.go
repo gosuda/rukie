@@ -30,6 +30,7 @@ type Deps struct {
 	Clock         func() time.Time
 	RepoRoot      string
 	RukBin        string
+	DataDir       string
 	SealKey       []byte
 }
 

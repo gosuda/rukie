@@ -22,6 +22,7 @@ linters:
       - path: ^internal/op/mount_huma\.go$
         text: G705
         linters: [gosec]
+# refused_by: statement_fold · collision: none (1 contested hunk(s), neither side deleted the other's lines)
       # The CI artifact log/blob handler serves store bytes with a sniffed
       # content type, like the raw-blob handler above; the sink is the
       # content-addressed artifact store, never reflected markup.
@@ -32,6 +33,10 @@ linters:
       # already held in memory; no field approaches 4 GiB.
       - path: ^internal/ci/signature\.go$
         text: G115
+      # Release notes render through goldmark with no unsafe mode into
+      # trusted.HTML; releases_views.go only emits that checked markup.
+      - path: ^internal/api/releases_views\.go$
+        text: G705
         linters: [gosec]
       # RFC 6238 mandates HMAC-SHA-1 for TOTP; totp.go is its only user here.
       - path: ^internal/auth/totp\.go$
