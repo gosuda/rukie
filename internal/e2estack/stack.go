@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -348,14 +349,18 @@ func GitEnv(t testing.TB) []string {
 	}
 }
 
-// GitRun executes git with args in dir and returns its combined output.
+// GitRun executes git with args in dir and returns its combined output,
+// including on failure, so refusal tests can match on the server message.
 func GitRun(ctx context.Context, t testing.TB, dir string, args ...string) (string, error) {
 	t.Helper()
-	out, err := rukproc.RunInDir(ctx, GitBin(t), dir, args, GitEnv(t))
-	if err != nil {
-		return string(out), err
-	}
-	return string(out), nil
+	cmd := exec.CommandContext(ctx, GitBin(t), args...)
+	cmd.Dir = dir
+	cmd.Env = GitEnv(t)
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	err := cmd.Run()
+	return combined.String(), err
 }
 
 // LocalRepo creates a git working copy with files and returns its path and HEAD.
