@@ -561,6 +561,14 @@ func (d Deps) forkCreateCore(ctx context.Context, p op.Principal, owner, repo st
 		if isUniqueViolation(werr) {
 			return ForkCreateOut{}, op.Errorf(op.CodeConflict, "repository name is already taken")
 		}
+		// Forking a still-forking parent is a client timing conflict, not a
+		// server failure: the source row fails the active-state gate with
+		// ErrInvalid, and every other ErrInvalid here is unreachable
+		// because the visibility and job spec were validated above.
+		if errors.Is(werr, store.ErrInvalid) {
+			d.deleteForkStore(ctx, destAbs)
+			return ForkCreateOut{}, op.Errorf(op.CodeConflict, "source repository is not ready to fork")
+		}
 		d.deleteForkStore(ctx, destAbs)
 		return ForkCreateOut{}, op.Wrap(op.CodeInternal, werr, "fork record failed")
 	}

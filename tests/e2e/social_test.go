@@ -296,6 +296,14 @@ func TestForkAndStarE2E(t *testing.T) {
 		t.Fatalf("fork state before the worker ran = %q, want forking", got)
 	}
 
+	// A fork of the still-forking parent is a timing conflict, not a server
+	// failure: the metadata fork gate refuses the inactive source.
+	if status, _, body := socialDo(t, h, "POST", forksPath("bob", "hello-fork"), bobSession, `{"name":"hello-fork-of-fork"}`); status != http.StatusConflict {
+		t.Fatalf("fork of a forking parent = %d, want 409: %s", status, body)
+	} else if !strings.Contains(body, "conflict") {
+		t.Fatalf("fork of a forking parent misses the conflict code: %s", body)
+	}
+
 	active := waitRepoActive(t, s, h, "bob", "hello-fork", bobSession)
 	if got := starCount(t, active); got != 0 {
 		t.Fatalf("fresh fork star count = %d, want 0", got)
