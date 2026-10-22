@@ -273,6 +273,52 @@ func (d Deps) listRepoStarsCore(ctx context.Context, rq requester, owner, name, 
 	return out, nil
 }
 
+// collectTokenVisible pages a keyset store listing past rows the requester's
+// token repository selector denies, following the search lane's
+// visibility-safe frontier pattern: the fetch cursor advances past every raw
+// row, including denied ones, so pages fill, while the emitted continuation
+// seals only the last visible row, so cursors never name hidden
+// repositories. Callers without a repository-scoped token observe the
+// store's own pages unchanged.
+func collectTokenVisible[R any](
+	limit int,
+	cursor string,
+	allow func(R) bool,
+	seal func(R) string,
+	fetch func(cursor string, limit int) ([]R, string, error),
+) ([]R, string, error) {
+	visible := make([]R, 0, limit)
+	var last R
+	haveVisible := false
+	fetchCursor := cursor
+	lastRaw := ""
+	for len(visible) < limit {
+		rows, rawNext, ferr := fetch(fetchCursor, limit-len(visible))
+		if ferr != nil {
+			return nil, "", ferr
+		}
+		lastRaw = rawNext
+		for _, row := range rows {
+			if !allow(row) {
+				continue
+			}
+			visible = append(visible, row)
+			last, haveVisible = row, true
+			if len(visible) >= limit {
+				break
+			}
+		}
+		if rawNext == "" {
+			break
+		}
+		fetchCursor = rawNext
+	}
+	if lastRaw == "" || !haveVisible {
+		return visible, "", nil
+	}
+	return visible, seal(last), nil
+}
+
 func starListHandler(d Deps) func(context.Context, op.Principal, StarListIn) (StarListOut, error) {
 	return func(ctx context.Context, p op.Principal, in StarListIn) (StarListOut, error) {
 		st, serr := d.requireSocialStore()
@@ -305,13 +351,25 @@ func starListHandler(d Deps) func(context.Context, op.Principal, StarListIn) (St
 			return StarListOut{}, op.Errorf(op.CodeNotFound, "user was not found")
 		}
 		filter.UserID = umeta.ID
-		var rows []store.StarRow
-		var next string
-		rderr := st.Read(ctx, func(tx *store.ReadTx) error {
-			var lerr error
-			rows, next, lerr = tx.ListStars(filter)
-			return lerr
-		})
+		limit := clampLimit(in.Limit, store.SocialDefaultLimit, store.SocialMaxLimit)
+		fetch := func(fetchCursor string, window int) ([]store.StarRow, string, error) {
+			var rows []store.StarRow
+			var rawNext string
+			rerr := st.Read(ctx, func(tx *store.ReadTx) error {
+				var lerr error
+				rows, rawNext, lerr = tx.ListStars(store.StarFilter{
+					UserID:       filter.UserID,
+					ViewerUserID: viewer,
+					Cursor:       fetchCursor,
+					Limit:        window,
+				})
+				return lerr
+			})
+			return rows, rawNext, rerr
+		}
+		rows, next, rderr := collectTokenVisible(limit, in.Cursor,
+			func(row store.StarRow) bool { return rq.tokenAllows(row.RepoID) },
+			store.StarUserPageCursor, fetch)
 		if rderr != nil {
 			if errors.Is(rderr, store.ErrInvalid) {
 				return StarListOut{}, op.Errorf(op.CodeInvalid, "star cursor is not valid")
@@ -603,19 +661,28 @@ func exploreReposHandler(d Deps) func(context.Context, op.Principal, ExploreRepo
 		default:
 			return ExploreReposOut{}, op.Errorf(op.CodeValidation, "sort must be stars, updated, created, or name")
 		}
-		var rows []store.RepoRow
-		var next string
-		rderr := st.Read(ctx, func(tx *store.ReadTx) error {
-			var lerr error
-			rows, next, lerr = tx.ExploreRepos(store.ExploreRepoFilter{
-				ViewerUserID: starViewerID(rq),
-				Sort:         in.Sort,
-				Topic:        in.Topic,
-				Cursor:       in.Cursor,
-				Limit:        in.Limit,
+		sort := cmp.Or(in.Sort, "updated")
+		limit := clampLimit(in.Limit, store.SocialDefaultLimit, store.SocialMaxLimit)
+		viewer := starViewerID(rq)
+		fetch := func(fetchCursor string, window int) ([]store.RepoRow, string, error) {
+			var rows []store.RepoRow
+			var rawNext string
+			rerr := st.Read(ctx, func(tx *store.ReadTx) error {
+				var lerr error
+				rows, rawNext, lerr = tx.ExploreRepos(store.ExploreRepoFilter{
+					ViewerUserID: viewer,
+					Sort:         sort,
+					Topic:        in.Topic,
+					Cursor:       fetchCursor,
+					Limit:        window,
+				})
+				return lerr
 			})
-			return lerr
-		})
+			return rows, rawNext, rerr
+		}
+		rows, next, rderr := collectTokenVisible(limit, in.Cursor,
+			func(row store.RepoRow) bool { return rq.tokenAllows(row.ID) },
+			func(row store.RepoRow) string { return store.ExplorePageCursor(sort, row) }, fetch)
 		if rderr != nil {
 			if errors.Is(rderr, store.ErrInvalid) {
 				return ExploreReposOut{}, op.Errorf(op.CodeInvalid, "explore cursor is not valid")

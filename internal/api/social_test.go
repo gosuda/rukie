@@ -3,8 +3,10 @@ package api_test
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -335,6 +337,173 @@ func TestSocialExploreUsersAndOrgs(t *testing.T) {
 	rec = rdo(t, e.repoEnv, http.MethodGet, "/api/explore/repos?sort=bogus", "", "")
 	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("bogus sort = %d, want a validation problem", rec.Code)
+	}
+}
+
+// socialNextLink returns the rel=next target from a paginated API response,
+// or "" when the page is terminal.
+func socialNextLink(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	for _, part := range strings.Split(rec.Header().Get("Link"), ",") {
+		start := strings.Index(part, "<")
+		end := strings.Index(part, ">")
+		if start < 0 || end < 0 || end <= start+1 {
+			continue
+		}
+		if !strings.Contains(part[end:], `rel="next"`) {
+			continue
+		}
+		return part[start+1 : end]
+	}
+	return ""
+}
+
+// socialRawCursor decodes the framework-signed continuation back to the raw
+// store cursor it seals, so tests can prove a cursor names no hidden row.
+func socialRawCursor(t *testing.T, link string) string {
+	t.Helper()
+	parsed, perr := url.Parse(link)
+	if perr != nil {
+		t.Fatalf("next link %q does not parse: %v", link, perr)
+	}
+	signed := parsed.Query().Get("cursor")
+	if signed == "" {
+		t.Fatalf("next link %q carries no cursor", link)
+	}
+	sealed := signed
+	if encoded, _, ok := strings.Cut(signed, "."); ok {
+		raw, derr := base64.RawURLEncoding.DecodeString(encoded)
+		if derr != nil {
+			t.Fatalf("continuation payload is not base64: %q", signed)
+		}
+		var payload struct {
+			Sort string `json:"sort"`
+			Last string `json:"last"`
+		}
+		if uerr := jsonv2.Unmarshal(raw, &payload, jsonv1.DefaultOptionsV1()); uerr != nil {
+			t.Fatalf("continuation payload does not decode: %v", uerr)
+		}
+		if payload.Sort == "" {
+			t.Fatalf("continuation seals an empty cursor: %q", link)
+		}
+		sealed = payload.Sort
+	}
+	decoded, derr := base64.RawURLEncoding.DecodeString(sealed)
+	if derr != nil {
+		t.Fatalf("store cursor is not base64: %q", sealed)
+	}
+	return string(decoded)
+}
+
+func TestSocialTokenRepoSelectorFiltersAggregates(t *testing.T) {
+	e := buildSocialEnv(t)
+	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
+	ada, gerr := e.svc.GetUser(t.Context(), "ada")
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	bob := ruser(t, e.repoEnv, ada.ID, "bob")
+	bobCookie := rlogin(t, e.repoEnv, "bob", "long-test-password-01")
+	keep1 := socialSeed(t, e, bob.ID, "keep-1", "private")
+	keep2 := socialSeed(t, e, bob.ID, "keep-2", "private")
+	socialSeed(t, e, bob.ID, "hide-a", "private")
+	socialSeed(t, e, bob.ID, "hide-b", "private")
+	for _, name := range []string{"keep-1", "keep-2", "hide-a", "hide-b"} {
+		rec := rdo(t, e.repoEnv, http.MethodPut, "/api/user/stars/bob/"+name, bobCookie, "")
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("star.add %s = %d: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	parsed, perr := auth.ParseScopeSet([]string{"repo:read"})
+	if perr != nil {
+		t.Fatalf("scopes: %v", perr)
+	}
+	secret, serr := e.svc.CreateToken(t.Context(), auth.CreateTokenInput{
+		Name: "scoped", Scopes: parsed, UserID: bob.ID, Repos: []int64{keep1, keep2},
+	})
+	if serr != nil {
+		t.Fatalf("scoped token: %v", serr)
+	}
+	scoped := "Bearer " + secret.Secret
+	allowed := map[string]bool{"bob/keep-1": true, "bob/keep-2": true}
+
+	seen := map[string]bool{}
+	target := "/api/stars?user=bob&limit=1"
+	for {
+		rec := rdo(t, e.repoEnv, http.MethodGet, target, scoped, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("star.list %s = %d: %s", target, rec.Code, rec.Body.String())
+		}
+		var listed struct {
+			Stars []api.StarEntry `json:"stars"`
+		}
+		socialJSON(t, rec, &listed)
+		for _, entry := range listed.Stars {
+			full := entry.Owner + "/" + entry.Repo
+			if !allowed[full] {
+				t.Fatalf("token saw a star on %s, outside its repository selector", full)
+			}
+			seen[full] = true
+		}
+		link := socialNextLink(t, rec)
+		if link == "" {
+			break
+		}
+		if raw := socialRawCursor(t, link); strings.Contains(raw, "hide") {
+			t.Fatalf("star continuation names a hidden repository: %q", raw)
+		}
+		target = link
+	}
+	if len(seen) != len(allowed) {
+		t.Fatalf("token star walk saw %v, want %v", seen, allowed)
+	}
+
+	seen = map[string]bool{}
+	target = "/api/explore/repos?sort=name&limit=1"
+	for {
+		rec := rdo(t, e.repoEnv, http.MethodGet, target, scoped, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("explore %s = %d: %s", target, rec.Code, rec.Body.String())
+		}
+		var out struct {
+			Repos []api.RepoJSON `json:"repos"`
+		}
+		socialJSON(t, rec, &out)
+		for _, repo := range out.Repos {
+			full := repo.Owner + "/" + repo.Name
+			if !allowed[full] {
+				t.Fatalf("token explored %s, outside its repository selector", full)
+			}
+			seen[full] = true
+		}
+		link := socialNextLink(t, rec)
+		if link == "" {
+			break
+		}
+		if raw := socialRawCursor(t, link); strings.Contains(raw, "hide") {
+			t.Fatalf("explore continuation names a hidden repository: %q", raw)
+		}
+		target = link
+	}
+	if len(seen) != len(allowed) {
+		t.Fatalf("token explore walk saw %v, want %v", seen, allowed)
+	}
+
+	rec := rdo(t, e.repoEnv, http.MethodGet, "/bob?tab=stars", scoped, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("user stars tab = %d: %s", rec.Code, rec.Body.String())
+	}
+	var profile struct {
+		Stars []api.StarEntry `json:"stars"`
+	}
+	socialJSON(t, rec, &profile)
+	if len(profile.Stars) != len(allowed) {
+		t.Fatalf("user stars tab = %+v, want only the selector repositories", profile.Stars)
+	}
+	for _, entry := range profile.Stars {
+		if full := entry.Owner + "/" + entry.Repo; !allowed[full] {
+			t.Fatalf("user stars tab shows %s, outside the token repository selector", full)
+		}
 	}
 }
 
