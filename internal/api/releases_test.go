@@ -174,7 +174,7 @@ func rseedRelease(t *testing.T, e *releaseEnv, owner, repo, tag, title string, d
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := rreleaseToken(t, e, user, "repo:read", "repo:write")
+	token := rreleaseToken(t, e, user, "repo:read", "repo:write", "releases:write")
 	body := `{"tag":"` + tag + `","title":"` + title + `","draft":` + map[bool]string{true: "true", false: "false"}[draft] + `}`
 	rec := relpost(t, e, "/"+owner+"/"+repo+"/releases/new", token, body)
 	if rec.Code != http.StatusCreated {
@@ -194,7 +194,7 @@ func TestReleaseDraftLifecycle(t *testing.T) {
 	e := buildReleaseEnv(t)
 	ada := rreleaseAdmin(t, e, "ada")
 	rreleaseRepo(t, e, ada.ID, "ships", "public")
-	token := rreleaseToken(t, e, ada, "repo:read", "repo:write")
+	token := rreleaseToken(t, e, ada, "repo:read", "repo:write", "releases:write")
 
 	rec := relpost(t, e, "/ada/ships/releases/new", token, `{"tag":"v1","title":"First","notes":"hello","draft":true}`)
 	if rec.Code != http.StatusCreated {
@@ -254,7 +254,7 @@ func TestReleasePreconditions(t *testing.T) {
 	e := buildReleaseEnv(t)
 	ada := rreleaseAdmin(t, e, "ada")
 	rreleaseRepo(t, e, ada.ID, "ships", "public")
-	token := rreleaseToken(t, e, ada, "repo:read", "repo:write")
+	token := rreleaseToken(t, e, ada, "repo:read", "repo:write", "releases:write")
 	etag := rseedRelease(t, e, "ada", "ships", "v9", "Nine", true)
 
 	if rec := dorel(t, e, relcall{method: http.MethodPost, target: "/ada/ships/releases/edit/v9", auth: token, accept: "application/json", body: `{"title":"x"}`}); rec.Code != 428 {
@@ -270,7 +270,7 @@ func TestReleasePublishedImmutableSeeded(t *testing.T) {
 	e := buildReleaseEnv(t)
 	ada := rreleaseAdmin(t, e, "ada")
 	rreleaseRepo(t, e, ada.ID, "ships", "public")
-	token := rreleaseToken(t, e, ada, "repo:read", "repo:write")
+	token := rreleaseToken(t, e, ada, "repo:read", "repo:write", "releases:write")
 	rseedRelease(t, e, "ada", "ships", "v3", "Three", true)
 
 	now := time.Now()
@@ -315,7 +315,7 @@ func TestReleaseAssetUploadDownload(t *testing.T) {
 	e := buildReleaseEnv(t)
 	ada := rreleaseAdmin(t, e, "ada")
 	rreleaseRepo(t, e, ada.ID, "ships", "public")
-	token := rreleaseToken(t, e, ada, "repo:read", "repo:write")
+	token := rreleaseToken(t, e, ada, "repo:read", "repo:write", "releases:write")
 	rseedRelease(t, e, "ada", "ships", "v4", "Four", true)
 
 	payload := "asset-bytes-fixture-0123456789"
@@ -391,12 +391,195 @@ func TestReleaseAssetUploadDownload(t *testing.T) {
 	}
 }
 
+func TestReleaseMutationsRequireReleaseScope(t *testing.T) {
+	e := buildReleaseEnv(t)
+	ada := rreleaseAdmin(t, e, "ada")
+	rreleaseRepo(t, e, ada.ID, "ships", "public")
+	writerOnly := rreleaseToken(t, e, ada, "repo:read", "repo:write")
+	if rec := relpost(t, e, "/ada/ships/releases/new", writerOnly, `{"tag":"v1","title":"First","draft":true}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("repo:write create = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	relOnly := rreleaseToken(t, e, ada, "releases:write")
+	if rec := relpost(t, e, "/ada/ships/releases/new", relOnly, `{"tag":"v1","title":"First","draft":true}`); rec.Code != http.StatusCreated {
+		t.Fatalf("releases:write create = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+	mallory, merr := e.svc.CreateUser(t.Context(), ada.ID, auth.CreateUserInput{
+		Name: "mallory", Email: "mallory@example.test", Password: "long-test-password-01",
+	}, "127.0.0.1")
+	if merr != nil {
+		t.Fatalf("create writer: %v", merr)
+	}
+	var repoID int64
+	if rerr := e.st.Read(t.Context(), func(tx *store.ReadTx) error {
+		row, gerr := tx.FindRepo(ada.ID, 0, "ships")
+		if gerr != nil {
+			return gerr
+		}
+		repoID = row.ID
+		return nil
+	}); rerr != nil {
+		t.Fatalf("find repo: %v", rerr)
+	}
+	if gerr := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		return tx.PutGrant(repoID, mallory.ID, "write")
+	}); gerr != nil {
+		t.Fatalf("grant write: %v", gerr)
+	}
+	writerToken := rreleaseToken(t, e, mallory, "repo:read", "repo:write", "releases:write")
+	if rec := relpost(t, e, "/ada/ships/releases/new", writerToken, `{"tag":"v2","title":"Second","draft":true}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("writer create = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	upload := func(token, name string) *httptest.ResponseRecorder {
+		return dorel(t, e, relcall{method: http.MethodPut, target: "/ada/ships/releases/assets/v1/" + name, auth: token, accept: "application/json",
+			headers: map[string]string{"If-None-Match": "*", "Content-Type": "application/octet-stream"}, body: "bytes-" + name})
+	}
+	if rec := upload(writerToken, "w.bin"); rec.Code != http.StatusForbidden {
+		t.Fatalf("writer byte upload = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	if rec := upload(relOnly, "r.bin"); rec.Code != http.StatusCreated {
+		t.Fatalf("releases:write byte upload = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReleaseListCursorPaginatesAll(t *testing.T) {
+	e := buildReleaseEnv(t)
+	ada := rreleaseAdmin(t, e, "ada")
+	rreleaseRepo(t, e, ada.ID, "ships", "public")
+	token := rreleaseToken(t, e, ada, "repo:read", "repo:write", "releases:write")
+	for _, tag := range []string{"v1", "v2", "v3"} {
+		rseedRelease(t, e, "ada", "ships", tag, "Title "+tag, true)
+	}
+	seen := map[string]bool{}
+	target := "/ada/ships/releases?include_drafts=true&limit=2"
+	for range 10 {
+		got := relget(t, e, target, token)
+		if got.Code != http.StatusOK {
+			t.Fatalf("page %s = %d: %s", target, got.Code, got.Body.String())
+		}
+		decoded := reldecode(t, got)
+		items, _ := decoded["releases"].([]any)
+		for _, item := range items {
+			row, _ := item.(map[string]any)
+			tag, _ := row["tag"].(string)
+			if seen[tag] {
+				t.Fatalf("tag %q returned twice across pages", tag)
+			}
+			seen[tag] = true
+		}
+		link := got.Header().Get("Link")
+		if !strings.Contains(link, `rel="next"`) {
+			break
+		}
+		target = nextLinkTarget(t, link)
+	}
+	for _, tag := range []string{"v1", "v2", "v3"} {
+		if !seen[tag] {
+			t.Fatalf("tag %q skipped by pagination, saw %v", tag, seen)
+		}
+	}
+}
+
+func nextLinkTarget(t *testing.T, link string) string {
+	t.Helper()
+	start := strings.Index(link, "<")
+	end := strings.Index(link, ">")
+	if start < 0 || end < 0 || end <= start+1 {
+		t.Fatalf("malformed next link: %q", link)
+	}
+	target := link[start+1 : end]
+	if strings.HasPrefix(target, "http") {
+		if idx := strings.Index(target[len("https://"):], "/"); idx >= 0 {
+			target = target[len("https://")+idx:]
+		}
+	}
+	return target
+}
+
+func TestReleaseAssetListCursorPaginatesAll(t *testing.T) {
+	e := buildReleaseEnv(t)
+	ada := rreleaseAdmin(t, e, "ada")
+	rreleaseRepo(t, e, ada.ID, "ships", "public")
+	token := rreleaseToken(t, e, ada, "repo:read", "repo:write", "releases:write")
+	rseedRelease(t, e, "ada", "ships", "v4", "Four", true)
+	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
+		put := dorel(t, e, relcall{method: http.MethodPut, target: "/ada/ships/releases/assets/v4/" + name, auth: token, accept: "application/json",
+			headers: map[string]string{"If-None-Match": "*", "Content-Type": "application/octet-stream"}, body: "payload-" + name})
+		if put.Code != http.StatusCreated {
+			t.Fatalf("upload %s = %d: %s", name, put.Code, put.Body.String())
+		}
+	}
+	seen := map[string]bool{}
+	target := "/ada/ships/releases/assets/v4?limit=2"
+	for range 10 {
+		got := relget(t, e, target, token)
+		if got.Code != http.StatusOK {
+			t.Fatalf("page %s = %d: %s", target, got.Code, got.Body.String())
+		}
+		decoded := reldecode(t, got)
+		items, _ := decoded["assets"].([]any)
+		for _, item := range items {
+			row, _ := item.(map[string]any)
+			name, _ := row["name"].(string)
+			if seen[name] {
+				t.Fatalf("asset %q returned twice across pages", name)
+			}
+			seen[name] = true
+		}
+		link := got.Header().Get("Link")
+		if !strings.Contains(link, `rel="next"`) {
+			break
+		}
+		target = nextLinkTarget(t, link)
+	}
+	for _, name := range []string{"a.bin", "b.bin", "c.bin"} {
+		if !seen[name] {
+			t.Fatalf("asset %q skipped by pagination, saw %v", name, seen)
+		}
+	}
+}
+
+func TestReleaseAssetUploadToPublishedRefused(t *testing.T) {
+	e := buildReleaseEnv(t)
+	ada := rreleaseAdmin(t, e, "ada")
+	rreleaseRepo(t, e, ada.ID, "ships", "public")
+	token := rreleaseToken(t, e, ada, "repo:read", "repo:write", "releases:write")
+	rseedRelease(t, e, "ada", "ships", "v6", "Six", true)
+	now := time.Now()
+	var row store.ReleaseRow
+	if err := e.st.Read(t.Context(), func(tx *store.ReadTx) error {
+		var gerr error
+		row, gerr = tx.GetRelease(1, "v6")
+		return gerr
+	}); err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		if perr := tx.PublishRelease(row.ID, "abc", "lightweight", "<p>Six</p>", now); perr != nil {
+			return perr
+		}
+		return tx.PublishAssets(row.ID, now)
+	}); err != nil {
+		t.Fatalf("seed publish: %v", err)
+	}
+	put := dorel(t, e, relcall{method: http.MethodPut, target: "/ada/ships/releases/assets/v6/late.bin", auth: token, accept: "application/json",
+		headers: map[string]string{"If-None-Match": "*", "Content-Type": "application/octet-stream"}, body: "late-bytes"})
+	if put.Code != http.StatusConflict {
+		t.Fatalf("upload to published = %d, want 409: %s", put.Code, put.Body.String())
+	}
+}
+
 func TestReleasePagesZeroJS(t *testing.T) {
 	e := buildReleaseEnv(t)
 	ada := rreleaseAdmin(t, e, "ada")
 	rreleaseRepo(t, e, ada.ID, "ships", "public")
-	token := rreleaseToken(t, e, ada, "repo:read", "repo:write")
+	token := rreleaseToken(t, e, ada, "repo:read", "repo:write", "releases:write")
 	rseedRelease(t, e, "ada", "ships", "v5", "Five", true)
+	meta := reldecode(t, relget(t, e, "/ada/ships/releases/tag/v5", token))
+	release, _ := meta["release"].(map[string]any)
+	bodyETag, _ := release["etag"].(string)
+	if bodyETag == "" {
+		t.Fatal("release body carries no entity tag")
+	}
 
 	for _, target := range []string{"/ada/ships/releases", "/ada/ships/releases/tag/v5"} {
 		rec := dorel(t, e, relcall{method: http.MethodGet, target: target, auth: token, accept: "text/html"})
@@ -406,5 +589,10 @@ func TestReleasePagesZeroJS(t *testing.T) {
 		if err := htmlcheck.Check(rec.Body.Bytes()); err != nil {
 			t.Fatalf("page %s fails zero-JS: %v", target, err)
 		}
+	}
+	page := dorel(t, e, relcall{method: http.MethodGet, target: "/ada/ships/releases/tag/v5", auth: token, accept: "text/html"})
+	want := `name="_etag" value="` + strings.ReplaceAll(bodyETag, `"`, "&#34;") + `"`
+	if !strings.Contains(page.Body.String(), want) {
+		t.Fatalf("release page lacks the entity tag in its forms: want %s", want)
 	}
 }

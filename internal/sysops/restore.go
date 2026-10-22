@@ -109,6 +109,15 @@ func resolveRestoreDst(cfg config.Config, manifestPath string) (string, error) {
 	if manifestPath == "meta.sqlite" {
 		return cfg.Store.SQLite.Path, nil
 	}
+	if rel, ok := strings.CutPrefix(manifestPath, "releases/"); ok {
+		if rel == "" || strings.Contains(rel, "..") {
+			return "", fmt.Errorf("sysops: manifest path %q is outside the restore set", manifestPath)
+		}
+		if filepath.IsAbs(rel) {
+			return "", fmt.Errorf("sysops: manifest path %q is outside the restore set", manifestPath)
+		}
+		return filepath.Join(cfg.DataDir, "releases", filepath.FromSlash(rel)), nil
+	}
 	rel, ok := strings.CutPrefix(manifestPath, "repos/")
 	if !ok || rel == "" || strings.Contains(rel, "..") {
 		return "", fmt.Errorf("sysops: manifest path %q is outside the restore set", manifestPath)

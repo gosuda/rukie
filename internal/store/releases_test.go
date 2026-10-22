@@ -36,6 +36,48 @@ func seedReleaseRepo(t *testing.T, st *Store) int64 {
 	return repoID
 }
 
+func TestInsertAssetRefusesNonDraftParent(t *testing.T) {
+	st := openReleaseTestStore(t)
+	repoID := seedReleaseRepo(t, st)
+	now := time.Now()
+	var releaseID int64
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		var ierr error
+		releaseID, ierr = tx.InsertRelease(ReleaseInsert{RepoID: repoID, AuthorID: 1, PublicID: "rel-guard", Tag: "guarded", Title: "guarded", CreatedAt: now})
+		return ierr
+	}); err != nil {
+		t.Fatalf("insert release: %v", err)
+	}
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		if perr := tx.PublishRelease(releaseID, "abc", "lightweight", "<p>guarded</p>", now); perr != nil {
+			return perr
+		}
+		return tx.PublishAssets(releaseID, now)
+	}); err != nil {
+		t.Fatalf("seed publish: %v", err)
+	}
+	late := AssetRow{PublicID: "asset-late", ReleaseID: releaseID, UploaderID: 1, Name: "late.bin", SHA256: "abc", Size: 3, ContentType: "application/octet-stream", State: "draft", Path: "sha256/ab/cd/abc", CreatedAt: now}
+	if err := st.Write(t.Context(), func(tx *WriteTx) error { return tx.InsertAsset(late) }); !errors.Is(err, ErrConflict) {
+		t.Fatalf("insert into published release = %v, want conflict", err)
+	}
+	var doomed int64
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		var ierr error
+		doomed, ierr = tx.InsertRelease(ReleaseInsert{RepoID: repoID, AuthorID: 1, PublicID: "rel-doomed", Tag: "doomed", Title: "doomed", CreatedAt: now})
+		return ierr
+	}); err != nil {
+		t.Fatalf("insert draft: %v", err)
+	}
+	if err := st.Write(t.Context(), func(tx *WriteTx) error { return tx.DeleteRelease(doomed, now) }); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	late.PublicID = "asset-doomed"
+	late.ReleaseID = doomed
+	if err := st.Write(t.Context(), func(tx *WriteTx) error { return tx.InsertAsset(late) }); !errors.Is(err, ErrConflict) {
+		t.Fatalf("insert into deleted release = %v, want conflict", err)
+	}
+}
+
 func TestReleaseLiveTagPartialUniqueness(t *testing.T) {
 	st := openReleaseTestStore(t)
 	repoID := seedReleaseRepo(t, st)

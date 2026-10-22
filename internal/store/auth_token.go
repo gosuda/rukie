@@ -45,14 +45,13 @@ func scanTokenRecord(row interface{ Scan(dest ...any) error }, out *TokenRecord)
 	return nil
 }
 
-//nolint:govet // field order mirrors the token record; packing savings are noise here
 type TokenCreate struct {
-	RepoIDs    []int64
 	Hash       string
 	Prefix     string
 	Name       string
 	Scopes     string
 	IP         string
+	RepoIDs    []int64
 	UserID     int64
 	ExpiresAt  int64
 	CreatedAt  int64

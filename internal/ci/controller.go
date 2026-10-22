@@ -734,7 +734,8 @@ func (c *Controller) Lease(ctx context.Context, runnerID, token string) (*Lease,
 		})
 		for _, j := range candidates {
 			if j.Spec.Pure {
-				if _, hit := state.Cache[j.ActionDigest]; hit {
+				if hit, ok := state.Cache[j.ActionDigest]; ok {
+					state.Artifacts[j.ID] = slices.Clone(hit.Artifacts)
 					j.State = "cached"
 					j.WaitReason = ""
 					state.Jobs[j.ID] = j
@@ -1713,7 +1714,7 @@ func (c *Controller) RetryRun(ctx context.Context, runID string, jobs []string, 
 				return ferr
 			}
 			state.Sequence++
-			next := Job{ID: fresh, RunID: id, Spec: job.Spec, SpecDigest: job.SpecDigest, ActionDigest: job.ActionDigest, State: "queued", QueuedSeq: state.Sequence, ReadyAt: now}
+			next := Job{ID: fresh, RunID: id, Spec: job.Spec, SpecDigest: job.SpecDigest, ActionDigest: job.ActionDigest, State: "waiting", QueuedSeq: state.Sequence, ReadyAt: now}
 			rerun := only[job.Spec.Name]
 			if len(jobs) == 0 {
 				rerun = !jobSuccess(job.State)
@@ -1721,6 +1722,7 @@ func (c *Controller) RetryRun(ctx context.Context, runID string, jobs []string, 
 			if job.State == "passed" || job.State == "cached" {
 				if !rerun {
 					next.State = "carried"
+					state.Artifacts[fresh] = slices.Clone(state.Artifacts[jobID])
 				}
 			} else if job.Spec.Effects == "exclusive" && !acknowledge && rerun {
 				return problem("E_FORBIDDEN")

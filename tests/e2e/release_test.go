@@ -163,7 +163,7 @@ func relSetup(t *testing.T, name string) (*stack, *apiHarness, string) {
 	h := mountReleaseAPI(t, s)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")
 	session := apiLogin(t, h, "ada", "long-test-password-01")
-	token := apiToken(t, h, session, "repo:read repo:write")
+	token := apiToken(t, h, session, "repo:read repo:write releases:write")
 	seedF1Repo(t, s, "ada", name, "private")
 	return s, h, token
 }
