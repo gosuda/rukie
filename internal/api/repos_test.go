@@ -2,7 +2,9 @@ package api_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"io"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/api"
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
 	"github.com/gosuda/rukie/internal/web/zerojs"
@@ -47,6 +50,14 @@ func buildRepoEnv(t *testing.T) *repoEnv {
 		Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(),
 		Store: st, Ruk: nil, RepoRoot: t.TempDir(),
 	}
+	ciSeed := sha256.Sum256([]byte("test-ci-attest"))
+	deps.CI = ci.NewController(st, ci.Config{
+		Now: time.Now, SignKey: ed25519.NewKeyFromSeed(ciSeed[:]), SealKey: make([]byte, 32),
+		Deliver: func(context.Context, ci.Outbox, string) (string, error) { return "live", nil },
+	})
+	if rerr := deps.CI.Recover(t.Context()); rerr != nil {
+		t.Fatalf("ci recover: %v", rerr)
+	}
 	table := op.NewTable()
 	for _, step := range []func() error{
 		func() error { return api.RegisterAll(table, &api.DocStore{}) },
@@ -57,6 +68,7 @@ func buildRepoEnv(t *testing.T) *repoEnv {
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
 		func() error { return api.RegisterReview(table, deps) },
+		func() error { return api.RegisterCI(table, deps) },
 	} {
 		if serr := step(); serr != nil {
 			t.Fatalf("register: %v", serr)
@@ -74,6 +86,7 @@ func buildRepoEnv(t *testing.T) *repoEnv {
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
+	api.RegisterCIViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()

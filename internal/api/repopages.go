@@ -84,6 +84,7 @@ func writeRepoHome(w io.Writer, c op.ViewCtx, out RepoGetOut) error {
 	b.WriteString("<p><a href=\"" + esc(pageLink(base, "/log/"+out.Repo.DefaultBranch)) + "\">Log</a> — " +
 		"<a href=\"" + esc(pageLink(base, "/branches")) + "\">Branches</a> — " +
 		"<a href=\"" + esc(pageLink(base, "/tags")) + "\">Tags</a> — " +
+		"<a href=\"" + esc(pageLink(base, "/ci")) + "\">CI</a> — " +
 		"<a href=\"" + esc(pageLink(base, "/settings")) + "\">Settings</a></p>\n")
 	b.WriteString("<h2>Files</h2>\n<ul>\n")
 	for _, entry := range out.Tree {

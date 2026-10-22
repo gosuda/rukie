@@ -3,7 +3,9 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/api"
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/cli"
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/events"
@@ -328,12 +331,18 @@ func runServe(argv []string) int {
 	go func() {
 		mirrorDone <- app.mirror.Scheduler(workerCtx, 10*time.Second, "serve-mirror")
 	}()
+	relayDone := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		app.ci.RelayLoop(workerCtx, 5*time.Second)
+	}()
 	ownedDrainRunners["followers"] = app.watcher.StopAll
 	ownedDrainRunners["queue"] = func(context.Context) error {
 		workerStop()
 		sweepStop()
 		<-workerDone
 		<-sweepDone
+		<-relayDone
 		mirrorErr := <-mirrorDone
 		if mirrorErr != nil && !errors.Is(mirrorErr, context.Canceled) {
 			return mirrorErr
@@ -549,8 +558,8 @@ func reloadLogLevelOnSIGHUP(path string, levelVar *slog.LevelVar) {
 }
 
 type app struct {
-	server  *op.Server
 	handler http.Handler
+	server  *op.Server
 	store   *store.Store
 	auth    *auth.Service
 	docs    *api.DocStore
@@ -558,6 +567,7 @@ type app struct {
 	watcher *repowatch.Watcher
 	jobs    *queue.Queue
 	ssh     *gitssh.Server
+	ci      *ci.Controller
 	mirror  mirror.Worker
 }
 
@@ -694,6 +704,22 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	ciSeed := sha256.Sum256(append([]byte("rukie-ci-attest-v1"), key...))
+	ciCtrl := ci.NewController(st, ci.Config{
+		Now: time.Now, SignKey: ed25519.NewKeyFromSeed(ciSeed[:]), SealKey: key,
+		Deliver: func(ctx context.Context, row ci.Outbox, signature string) (string, error) {
+			return repoDeps.CIDeliver()(ctx, row, signature)
+		},
+	})
+	if rerr := ciCtrl.Recover(ctx); rerr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", rerr)
+	}
+	repoDeps.CI = ciCtrl
+	if regErr := api.RegisterCI(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	if regErr := api.RegisterOrgs(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
@@ -715,6 +741,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
 	api.RegisterMirrorViews(views)
+	api.RegisterCIViews(views)
 	api.RegisterOrgsViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
@@ -792,7 +819,8 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, err
 	}
-	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}}, cleanup, nil
+	raw := api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server})
+	return &app{server: server, handler: repoDeps.CIRaw(raw), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {
