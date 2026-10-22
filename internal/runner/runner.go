@@ -111,6 +111,7 @@ func LoadConfig(path string) (Config, error) {
 type Credential struct {
 	RunnerID string `json:"runner_id"`
 	Token    string `json:"token"`
+	RotFence int64  `json:"rotation_fence"`
 }
 
 func credentialPath(stateDir string) string {

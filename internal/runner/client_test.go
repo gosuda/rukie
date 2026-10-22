@@ -51,6 +51,17 @@ func stubServer(t *testing.T, grant stubGrant, seen *map[string]string) *httptes
 		(*seen)["artifact-digest"] = r.PathValue("digest")
 		write(w, `{"digest":"`+r.PathValue("digest")+`","size":4}`)
 	})
+	mux.HandleFunc("POST /-/ci/v1/register", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		(*seen)["register-body"] = string(raw)
+		write(w, `{"token":"tok-reg","runner":{"id":"rnr_9"}}`)
+	})
+	mux.HandleFunc("POST /-/ci/v1/runners/{id}/rotate", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		(*seen)["rotate-auth"] = r.Header.Get("Authorization")
+		(*seen)["rotate-body"] = string(raw)
+		write(w, `{"token":"tok-rot","fence":3}`)
+	})
 	mux.HandleFunc("POST /-/ci/v1/attempts/{id}/finish", func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		(*seen)["finish-body"] = string(raw)
@@ -139,6 +150,43 @@ func TestClientArtifactPut(t *testing.T) {
 	}
 	if seen["artifact-digest"] != Digest([]byte("data")) {
 		t.Fatalf("artifact digest = %q", seen["artifact-digest"])
+	}
+}
+
+func TestClientRegisterConsumesToken(t *testing.T) {
+	seen := map[string]string{}
+	server := stubServer(t, stubGrant{attempt: "att_1", fence: 7, token: "tok"}, &seen)
+	defer server.Close()
+	client := NewClient(server.URL, "", "")
+	id, token, err := client.Register("rkt_test")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if id != "rnr_9" || token != "tok-reg" {
+		t.Fatalf("register = %s %s", id, token)
+	}
+	if !strings.Contains(seen["register-body"], "rkt_test") {
+		t.Fatalf("register misses the token: %s", seen["register-body"])
+	}
+}
+
+func TestClientRotateFences(t *testing.T) {
+	seen := map[string]string{}
+	server := stubServer(t, stubGrant{attempt: "att_1", fence: 7, token: "tok"}, &seen)
+	defer server.Close()
+	client := NewClient(server.URL, "rnr_1", "tok-old")
+	token, fence, err := client.Rotate(2)
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if token != "tok-rot" || fence != 3 {
+		t.Fatalf("rotate = %s %d", token, fence)
+	}
+	if seen["rotate-auth"] != "Bearer tok-old" {
+		t.Fatalf("rotate auth = %q", seen["rotate-auth"])
+	}
+	if !strings.Contains(seen["rotate-body"], `"fence":2`) {
+		t.Fatalf("rotate misses the fence: %s", seen["rotate-body"])
 	}
 }
 

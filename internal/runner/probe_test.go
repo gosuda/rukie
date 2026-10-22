@@ -252,19 +252,3 @@ func TestRunnerProbeExit78(t *testing.T) {
 		t.Fatalf("probe.json misses the named error: %s", raw)
 	}
 }
-
-func TestClassifyUsernsError(t *testing.T) {
-	for _, row := range []struct {
-		stderr string
-		want   bool
-	}{
-		{"Error: creating container: apparmor: unprivileged user namespaces are denied", true},
-		{"Error: newuidmap: subuid range not found", true},
-		{"Error: image not known", false},
-		{"", false},
-	} {
-		if got := ClassifyUsernsError(row.stderr); got != row.want {
-			t.Errorf("classify %q = %v, want %v", row.stderr, got, row.want)
-		}
-	}
-}

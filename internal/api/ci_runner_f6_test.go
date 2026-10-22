@@ -265,6 +265,128 @@ func TestRunnerF6AcceptsEmptyArtifact(t *testing.T) {
 	}
 }
 
+func TestRunnerF6MintRegisterRotate(t *testing.T) {
+	e := buildRepoEnv(t)
+	rbootstrap(t, e, "ada", "long-test-password-01")
+	admin, _ := e.svc.GetUser(t.Context(), "ada")
+	rseedRepo(t, e, admin.ID, "hello", "private")
+	trigger := rtoken(t, e, admin, "repo:read", "repo:write", "ci:read", "ci:trigger")
+	adminToken := rtoken(t, e, admin, "repo:read", "repo:write", "admin:write")
+	f6CreateRun(t, e, trigger, ciTestSubject)
+	h := f6Handler(e)
+	mint := f6do(t, h, f6JSON("POST", "/-/ci/v1/registration-tokens", adminToken, `{"scope":"untrusted","labels":["linux-amd64"],"capacity":2}`))
+	if mint.Code != http.StatusOK {
+		t.Fatalf("mint = %d: %s", mint.Code, mint.Body.String())
+	}
+	var minted struct {
+		Token string `json:"token"`
+	}
+	if err := jsonv2.Unmarshal(mint.Body.Bytes(), &minted); err != nil || !strings.HasPrefix(minted.Token, "rkt_") {
+		t.Fatalf("minted token = %q, %v", minted.Token, err)
+	}
+	register := f6do(t, h, f6JSON("POST", "/-/ci/v1/register", "", `{"token":"`+minted.Token+`"}`))
+	if register.Code != http.StatusOK {
+		t.Fatalf("register = %d: %s", register.Code, register.Body.String())
+	}
+	var registered struct {
+		Token  string `json:"token"`
+		Runner struct {
+			ID string `json:"id"`
+		} `json:"runner"`
+	}
+	if err := jsonv2.Unmarshal(register.Body.Bytes(), &registered); err != nil || registered.Token == "" {
+		t.Fatalf("register body = %s, %v", register.Body.String(), err)
+	}
+	reuse := f6do(t, h, f6JSON("POST", "/-/ci/v1/register", "", `{"token":"`+minted.Token+`"}`))
+	if reuse.Code != http.StatusUnauthorized || !strings.Contains(reuse.Body.String(), "E_UNAUTHENTICATED") {
+		t.Fatalf(" reused token = %d: %s, want 401 E_UNAUTHENTICATED", reuse.Code, reuse.Body.String())
+	}
+	runnerToken := "Bearer " + registered.Token
+	runnerID := registered.Runner.ID
+	lease := f6do(t, h, f6JSON("POST", "/-/ci/v1/lease", runnerToken, `{"runner_id":"`+runnerID+`","wait_ms":1000}`))
+	if lease.Code != http.StatusOK {
+		t.Fatalf("lease = %d: %s", lease.Code, lease.Body.String())
+	}
+	rotated := f6do(t, h, f6JSON("POST", "/-/ci/v1/runners/"+runnerID+"/rotate", runnerToken, `{"fence":0}`))
+	if rotated.Code != http.StatusOK {
+		t.Fatalf("rotate = %d: %s", rotated.Code, rotated.Body.String())
+	}
+	var rotation struct {
+		Token string `json:"token"`
+		Fence int64  `json:"fence"`
+	}
+	if err := jsonv2.Unmarshal(rotated.Body.Bytes(), &rotation); err != nil || rotation.Fence != 1 {
+		t.Fatalf("rotation = %s, %v", rotated.Body.String(), err)
+	}
+	oldLease := f6do(t, h, f6JSON("POST", "/-/ci/v1/lease", runnerToken, `{"runner_id":"`+runnerID+`","wait_ms":10}`))
+	if oldLease.Code != http.StatusOK && oldLease.Code != http.StatusNoContent {
+		t.Fatalf("old token lease = %d: %s, want accepted during the window", oldLease.Code, oldLease.Body.String())
+	}
+	stale := f6do(t, h, f6JSON("POST", "/-/ci/v1/runners/"+runnerID+"/rotate", "Bearer "+rotation.Token, `{"fence":0}`))
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "E_LEASE_LOST") {
+		t.Fatalf("stale rotate = %d: %s, want 409 E_LEASE_LOST", stale.Code, stale.Body.String())
+	}
+	fresh := f6do(t, h, f6JSON("POST", "/-/ci/v1/runners/"+runnerID+"/rotate", "Bearer "+rotation.Token, `{"fence":1}`))
+	if fresh.Code != http.StatusOK {
+		t.Fatalf("second rotate = %d: %s", fresh.Code, fresh.Body.String())
+	}
+}
+
+func TestRunnerF6CancelRefusesPassed(t *testing.T) {
+	spec := `schema = "rukie.ci/v1"
+
+[triggers]
+change = true
+
+[[job]]
+name = "solo"
+runs_on = ["linux-amd64"]
+image = "` + ciTestImage + `"
+interruptible = true
+steps = [{ name = "s", run = "echo hi" }]
+`
+	e := buildRepoEnv(t)
+	rbootstrap(t, e, "ada", "long-test-password-01")
+	admin, _ := e.svc.GetUser(t.Context(), "ada")
+	rseedRepo(t, e, admin.ID, "hello", "private")
+	trigger := rtoken(t, e, admin, "repo:read", "repo:write", "ci:read", "ci:trigger")
+	adminToken := rtoken(t, e, admin, "repo:read", "repo:write", "admin:write")
+	runnerID, runnerToken := f6CreateRunner(t, e, adminToken)
+	escaped, _ := jsonv2.Marshal(map[string]string{"subject": ciTestSubject, "tree": "tree-one", "spec": spec})
+	created := rdo(t, e, "POST", "/ada/hello/ci/runs", trigger, string(escaped))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("run create = %d: %s", created.Code, created.Body.String())
+	}
+	var runOut map[string]any
+	if err := jsonv2.Unmarshal(created.Body.Bytes(), &runOut); err != nil {
+		t.Fatalf("run decode: %v", err)
+	}
+	runID, _ := runOut["run"].(map[string]any)["id"].(string)
+	h := f6Handler(e)
+	grant := f6Lease(t, h, runnerID, runnerToken)
+	attemptID, attemptToken, fence := f6Attempt(grant)
+	hb := f6do(t, h, f6JSON("POST", "/-/ci/v1/attempts/"+attemptID+"/heartbeat", attemptToken, f6Fence(fence)))
+	if hb.Code != http.StatusOK {
+		t.Fatalf("heartbeat = %d: %s", hb.Code, hb.Body.String())
+	}
+	if err := e.deps.CI.Cancel(t.Context(), runID, "test-cancel"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	cancelled := f6do(t, h, f6JSON("POST", "/-/ci/v1/attempts/"+attemptID+"/heartbeat", attemptToken, f6Fence(fence)))
+	if cancelled.Code != http.StatusOK || !strings.Contains(cancelled.Body.String(), "test-cancel") {
+		t.Fatalf("cancel heartbeat = %d: %s, want the reason", cancelled.Code, cancelled.Body.String())
+	}
+	emptyDigest := "sha256:" + f6DigestHex(nil)
+	passed := f6do(t, h, f6JSON("POST", "/-/ci/v1/attempts/"+attemptID+"/finish", attemptToken, `{"outcome":"passed","class":"","exit_code":0,"fence":`+strconv.FormatInt(fence, 10)+`,"log":{"sha256":"`+emptyDigest+`","last_seq":-1,"end_offset":0},"artifacts":[]}`))
+	if passed.Code != http.StatusUnprocessableEntity || !strings.Contains(passed.Body.String(), "E_INVALID") {
+		t.Fatalf("passed after cancel = %d: %s, want 422 E_INVALID", passed.Code, passed.Body.String())
+	}
+	done := f6do(t, h, f6JSON("POST", "/-/ci/v1/attempts/"+attemptID+"/finish", attemptToken, `{"outcome":"errored","class":"cancelled","exit_code":143,"fence":`+strconv.FormatInt(fence, 10)+`,"log":{"sha256":"`+emptyDigest+`","last_seq":-1,"end_offset":0},"artifacts":[]}`))
+	if done.Code != http.StatusOK {
+		t.Fatalf("cancelled finish = %d: %s", done.Code, done.Body.String())
+	}
+}
+
 func TestRunnerF6RejectsStaleFence(t *testing.T) {
 	_, h, runnerID, runnerToken := f6Setup(t, ciTestSubject)
 	grant := f6Lease(t, h, runnerID, runnerToken)

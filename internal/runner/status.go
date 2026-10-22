@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	jsonv2 "encoding/json/v2"
@@ -100,11 +101,15 @@ func runLoop(io IO, argv []string) int {
 		return ExitConfigUnavailable
 	}
 	defer unlock()
+	client := NewClient(cfg.Server, cred.RunnerID, cred.Token)
+	if finished, dropped := ReapAttempts(cfg.StateDir, client); finished+dropped > 0 {
+		_, _ = fmt.Fprintln(io.Stdout, "reaped "+strconv.Itoa(finished)+" finished "+strconv.Itoa(dropped)+" abandoned")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	loop := &Loop{
 		Config: cfg,
-		Client: NewClient(cfg.Server, cred.RunnerID, cred.Token),
+		Client: client,
 		Exec:   PodmanExec{Podman: cfg.PodmanPath},
 		Once:   *once,
 	}

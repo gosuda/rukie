@@ -19,6 +19,9 @@ func (d Deps) CIRunnerV1(next http.Handler) http.Handler {
 	mux.HandleFunc("POST /-/ci/v1/attempts/{id}/log.append", d.f6LogAppend)
 	mux.HandleFunc("PUT /-/ci/v1/attempts/{id}/artifact.put/{digest}", d.f6ArtifactPut)
 	mux.HandleFunc("POST /-/ci/v1/attempts/{id}/finish", d.f6Finish)
+	mux.HandleFunc("POST /-/ci/v1/registration-tokens", d.f6MintRegToken)
+	mux.HandleFunc("POST /-/ci/v1/register", d.f6Register)
+	mux.HandleFunc("POST /-/ci/v1/runners/{id}/rotate", d.f6Rotate)
 	mux.HandleFunc("GET /admin/runners", d.f6RunnersPage)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if runnerV1Route(r.URL.Path) {
@@ -30,22 +33,26 @@ func (d Deps) CIRunnerV1(next http.Handler) http.Handler {
 }
 
 func runnerV1Route(path string) bool {
-	if path == "/-/ci/v1/lease" || path == "/admin/runners" {
+	if path == "/-/ci/v1/lease" || path == "/-/ci/v1/register" || path == "/-/ci/v1/registration-tokens" || path == "/admin/runners" {
 		return true
 	}
-	rest, ok := strings.CutPrefix(path, "/-/ci/v1/attempts/")
+	if rest, ok := strings.CutPrefix(path, "/-/ci/v1/attempts/"); ok {
+		id, tail, _ := strings.Cut(rest, "/")
+		if id == "" {
+			return false
+		}
+		if tail == "heartbeat" || tail == "log.append" || tail == "finish" {
+			return true
+		}
+		digest, ok := strings.CutPrefix(tail, "artifact.put/")
+		return ok && digest != ""
+	}
+	rest, ok := strings.CutPrefix(path, "/-/ci/v1/runners/")
 	if !ok {
 		return false
 	}
 	id, tail, _ := strings.Cut(rest, "/")
-	if id == "" {
-		return false
-	}
-	if tail == "heartbeat" || tail == "log.append" || tail == "finish" {
-		return true
-	}
-	digest, ok := strings.CutPrefix(tail, "artifact.put/")
-	return ok && digest != ""
+	return id != "" && tail == "rotate"
 }
 
 func (d Deps) f6Lease(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +104,10 @@ func writeF6Grant(w http.ResponseWriter, lease *ci.Lease) {
 	for _, step := range lease.Job.Spec.Steps {
 		steps = append(steps, map[string]string{"name": step.Name, "run": step.Run})
 	}
+	caches := make([]map[string]string, 0, len(lease.Job.Spec.Caches))
+	for _, cache := range lease.Job.Spec.Caches {
+		caches = append(caches, map[string]string{"name": cache.Name, "path": cache.Path, "mode": cache.Mode})
+	}
 	env := map[string]string{"RUKIE_TREE": lease.Run.Tree}
 	for name, value := range lease.Job.Spec.Env {
 		env[name] = value
@@ -134,7 +145,7 @@ func writeF6Grant(w http.ResponseWriter, lease *ci.Lease) {
 			"effects": lease.Job.Spec.Effects, "network": lease.Job.Spec.Network,
 			"interruptible": lease.Job.Spec.Interruptible, "timeout_s": int64(timeout.Seconds()),
 			"image": map[string]string{"ref": lease.Job.Spec.Image, "manifest": lease.Job.Spec.Image},
-			"steps": steps, "env": env, "artifacts": lease.Job.Spec.Artifacts,
+			"steps": steps, "env": env, "artifacts": lease.Job.Spec.Artifacts, "caches": caches,
 		},
 		"fetch": map[string]string{
 			"url":  "/" + lease.Run.Owner + "/" + lease.Run.Repo + ".git",
@@ -160,8 +171,12 @@ func (d Deps) f6Heartbeat(w http.ResponseWriter, r *http.Request) {
 		writeRunnerProblem(w, err)
 		return
 	}
+	var cancel any
+	if reply.Cancel != "" {
+		cancel = reply.Cancel
+	}
 	writeRunnerJSON(w, map[string]any{
-		"state": reply.State, "cancel": nil, "lease_ttl_s": 30,
+		"state": reply.State, "cancel": cancel, "lease_ttl_s": 30,
 		"heartbeat_persisted_at_ms": reply.HeartbeatPersistedAt,
 		"log_ack_offset":            reply.LogAckOffset,
 	})
@@ -284,6 +299,72 @@ func (d Deps) f6Finish(w http.ResponseWriter, r *http.Request) {
 	writeRunnerJSON(w, map[string]any{
 		"attempt": reply.Attempt, "job": reply.Job, "run": reply.Run, "replayed": reply.Replayed,
 	})
+}
+
+func (d Deps) f6MintRegToken(w http.ResponseWriter, r *http.Request) {
+	if _, err := requireAdmin(r.Context(), d.Service, d.ciPrincipal(r)); err != nil {
+		writeRunnerProblem(w, err)
+		return
+	}
+	var in struct {
+		Scope    string   `json:"scope"`
+		Labels   []string `json:"labels"`
+		Capacity int      `json:"capacity"`
+	}
+	if !readRunnerBody(w, r, &in) {
+		return
+	}
+	ctrl, cerr := d.ciController()
+	if cerr != nil {
+		writeRunnerProblem(w, cerr)
+		return
+	}
+	token, err := ctrl.MintRegToken(r.Context(), in.Scope, in.Labels, in.Capacity)
+	if err != nil {
+		writeRunnerProblem(w, ciToOp(err, "registration token was not created"))
+		return
+	}
+	writeRunnerJSON(w, map[string]any{"token": token})
+}
+
+func (d Deps) f6Register(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Token string `json:"token"`
+	}
+	if !readRunnerBody(w, r, &in) {
+		return
+	}
+	ctrl, cerr := d.ciController()
+	if cerr != nil {
+		writeRunnerProblem(w, cerr)
+		return
+	}
+	runner, token, err := ctrl.RegisterWithToken(r.Context(), in.Token)
+	if err != nil {
+		writeRunnerProblem(w, ciToOp(err, "runner was not registered"))
+		return
+	}
+	writeRunnerJSON(w, map[string]any{"token": token, "runner": ciRunnerJSON(runner)})
+}
+
+func (d Deps) f6Rotate(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Fence int64 `json:"fence"`
+	}
+	if !readRunnerBody(w, r, &in) {
+		return
+	}
+	token, ctrl, ok := d.attemptToken(r)
+	if !ok {
+		writeRunnerProblem(w, ciProblem("E_RECOVERING"))
+		return
+	}
+	runner, secret, err := ctrl.RotateRunner(r.Context(), r.PathValue("id"), token, in.Fence)
+	if err != nil {
+		writeRunnerProblem(w, ciToOp(err, "runner credential was not rotated"))
+		return
+	}
+	writeRunnerJSON(w, map[string]any{"token": secret, "fence": runner.RotFence})
 }
 
 func (d Deps) f6RunnersPage(w http.ResponseWriter, r *http.Request) {

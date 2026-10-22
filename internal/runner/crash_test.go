@@ -7,9 +7,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	jsonv2 "encoding/json/v2"
 
 	"github.com/gosuda/rukie/internal/api"
 	"github.com/gosuda/rukie/internal/ci"
@@ -68,10 +72,15 @@ func crashSpec(t *testing.T) ci.Spec {
 
 func crashRun(t *testing.T, c *ci.Controller, key string) ci.Run {
 	t.Helper()
+	return crashRunSpec(t, c, key, crashSpec(t))
+}
+
+func crashRunSpec(t *testing.T, c *ci.Controller, key string, spec ci.Spec) ci.Run {
+	t.Helper()
 	run, err := c.CreateRun(t.Context(), ci.CreateRunRequest{
 		RepoID: 7, Principal: "ada", Subject: "0123456789abcdef0123456789abcdef01234567",
 		Tree: "tree-one", BaseCommit: "base-one", SpecFrom: "base",
-		Trust: "trusted", TriggerKey: key, Class: "interactive", Spec: crashSpec(t),
+		Trust: "trusted", TriggerKey: key, Class: "interactive", Spec: spec,
 	})
 	if err != nil {
 		t.Fatalf("create run: %v", err)
@@ -290,6 +299,61 @@ func TestCICacheHitAttestsWithoutRun(t *testing.T) {
 	}
 	if after[0].Statement.Supersedes == nil {
 		t.Fatal("cached attestation does not supersede the run verdict")
+	}
+}
+
+func writeReapAttempt(t *testing.T, state, id, token string, in FinishInput) {
+	t.Helper()
+	dir := filepath.Join(state, "attempts", id)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "attempt.token"), []byte(token), 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := jsonv2.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "result.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunnerReapsResultFromDisk(t *testing.T) {
+	clk := &crashClock{now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
+	c := openCrashCI(t, clk)
+	crashRun(t, c, "change:reap:tip")
+	_, client, _, _ := crashServer(t, c)
+	grant := mustHTTPLease(t, client)
+	state := t.TempDir()
+	writeReapAttempt(t, state, grant.Attempt.ID, grant.Attempt.Token, FinishInput{
+		Outcome: "passed", Fence: grant.Attempt.Fence,
+		LogSHA: Digest(nil), LogSeq: -1, LogEnd: 0,
+	})
+	finished, dropped := ReapAttempts(state, client)
+	if finished != 1 || dropped != 0 {
+		t.Fatalf("reap = %d/%d, want 1 finished", finished, dropped)
+	}
+	if _, err := os.Stat(filepath.Join(state, "attempts", grant.Attempt.ID)); !os.IsNotExist(err) {
+		t.Fatal("reaped attempt dir remains")
+	}
+	variant, err := ci.DecodeSpec([]byte(strings.Replace(crashSpecTOML, "echo hi", "echo yo", 1)))
+	if err != nil {
+		t.Fatalf("decode variant: %v", err)
+	}
+	crashRunSpec(t, c, "change:reap:two", variant)
+	second := mustHTTPLease(t, client)
+	dir := filepath.Join(state, "attempts", second.Attempt.ID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "attempt.token"), []byte(second.Attempt.Token), 0600); err != nil {
+		t.Fatal(err)
+	}
+	finished, dropped = ReapAttempts(state, client)
+	if finished != 0 || dropped != 1 {
+		t.Fatalf("reap = %d/%d, want 1 abandoned", finished, dropped)
 	}
 }
 

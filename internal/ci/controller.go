@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
@@ -114,11 +115,23 @@ type Runner struct {
 	ID             string
 	Scope          string
 	TokenHash      string
+	PriorHash      string
 	Status         string
 	SandboxProfile string
 	Labels         []string
 	PubKey         []byte
+	PriorExpires   int64
 	Capacity       int
+	RotFence       int64
+}
+type RegToken struct {
+	Hash     string
+	Scope    string
+	Labels   []string
+	Capacity int
+	Created  int64
+	Expires  int64
+	Used     bool
 }
 type StepState struct {
 	Name        string
@@ -201,6 +214,7 @@ type ciState struct {
 	Secrets    map[string]secretValue
 	Attempts   map[string]Attempt
 	Runners    map[string]Runner
+	RegTokens  map[string]RegToken
 	Cache      map[string]Cache
 	Chains     map[string]string
 	ChainTrust map[string]string
@@ -287,7 +301,7 @@ func NewController(st *store.Store, cfg Config) *Controller {
 func newState() ciState {
 	return ciState{
 		Runs: map[string]Run{}, Jobs: map[string]Job{}, Attempts: map[string]Attempt{}, Runners: map[string]Runner{},
-		Cache: map[string]Cache{}, Fair: map[string]float64{}, Chains: map[string]string{}, ChainTrust: map[string]string{},
+		RegTokens: map[string]RegToken{}, Cache: map[string]Cache{}, Fair: map[string]float64{}, Chains: map[string]string{}, ChainTrust: map[string]string{},
 		Triggers: map[string]string{}, Blobs: map[string][]byte{}, Artifacts: map[string][]Artifact{}, Secrets: map[string]secretValue{},
 	}
 }
@@ -611,12 +625,93 @@ func fairLess(state *ciState, a, b Job) bool {
 	}
 	return a.QueuedSeq < b.QueuedSeq
 }
+func runnerBearerOK(runner Runner, token string, now int64) bool {
+	if runner.Status != "active" {
+		return false
+	}
+	if runner.TokenHash == tokenHash(token) {
+		return true
+	}
+	return runner.PriorHash != "" && runner.PriorHash == tokenHash(token) && now <= runner.PriorExpires
+}
+
+func (c *Controller) MintRegToken(ctx context.Context, scope string, labels []string, capacity int) (string, error) {
+	if len(labels) == 0 || capacity < 1 || capacity > 256 || (scope != "trusted" && scope != "untrusted") {
+		return "", problem("E_INVALID")
+	}
+	var rawBytes [32]byte
+	if _, err := rand.Read(rawBytes[:]); err != nil {
+		return "", fmt.Errorf("MintRegToken: %w", err)
+	}
+	token := "rkt_" + base64.RawURLEncoding.EncodeToString(rawBytes[:])
+	merr := c.mutate(ctx, func(state *ciState, _ *int64, now int64) error {
+		if state.RegTokens == nil {
+			state.RegTokens = map[string]RegToken{}
+		}
+		state.RegTokens[tokenHash(token)] = RegToken{Hash: tokenHash(token), Scope: scope, Labels: slices.Clone(labels), Capacity: capacity, Created: now, Expires: now + 3600000}
+		return nil
+	})
+	return token, merr
+}
+
+func (c *Controller) RegisterWithToken(ctx context.Context, token string) (Runner, string, error) {
+	var runner Runner
+	var secret string
+	err := c.mutate(ctx, func(state *ciState, _ *int64, now int64) error {
+		entry, ok := state.RegTokens[tokenHash(token)]
+		if !ok || entry.Used || now > entry.Expires {
+			return problem("E_UNAUTHENTICATED")
+		}
+		entry.Used = true
+		state.RegTokens[tokenHash(token)] = entry
+		id, rerr := randomID("rnr_")
+		if rerr != nil {
+			return rerr
+		}
+		secret, rerr = randomID("")
+		if rerr != nil {
+			return rerr
+		}
+		runner = Runner{ID: id, Labels: entry.Labels, Scope: entry.Scope, Capacity: entry.Capacity, TokenHash: tokenHash(secret), Status: "active"}
+		state.Runners[id] = runner
+		return nil
+	})
+	return runner, secret, err
+}
+
+func (c *Controller) RotateRunner(ctx context.Context, runnerID, token string, fence int64) (Runner, string, error) {
+	var runner Runner
+	var secret string
+	err := c.mutate(ctx, func(state *ciState, _ *int64, now int64) error {
+		current, ok := state.Runners[runnerID]
+		if !ok || current.Status != "active" || current.TokenHash != tokenHash(token) {
+			return problem("E_UNAUTHENTICATED")
+		}
+		if current.RotFence != fence {
+			return problem("E_LEASE_LOST")
+		}
+		fresh, rerr := randomID("")
+		if rerr != nil {
+			return rerr
+		}
+		secret = fresh
+		current.PriorHash = current.TokenHash
+		current.PriorExpires = now + 300000
+		current.TokenHash = tokenHash(secret)
+		current.RotFence++
+		state.Runners[runnerID] = current
+		runner = current
+		return nil
+	})
+	return runner, secret, err
+}
+
 func (c *Controller) Lease(ctx context.Context, runnerID, token string) (*Lease, error) {
 	var lease *Lease
 	err := c.mutate(ctx, func(state *ciState, fence *int64, now int64) error {
 		c.clockGuard(state, now)
 		runner, exists := state.Runners[runnerID]
-		if !exists || runner.Status != "active" || runner.TokenHash != tokenHash(token) {
+		if !exists || !runnerBearerOK(runner, token, now) {
 			return problem("E_UNAUTHENTICATED")
 		}
 		if err := reap(state, now); err != nil {
@@ -1031,6 +1126,9 @@ func (c *Controller) Complete(ctx context.Context, id, token string, req FinishR
 			return problem("E_INVALID")
 		}
 		if req.Outcome == "errored" && !slices.Contains([]string{"infra", "lost", "timeout", "cancelled"}, req.Class) {
+			return problem("E_INVALID")
+		}
+		if req.Outcome == "passed" && state.Attempts[id].CancelReason != "" {
 			return problem("E_INVALID")
 		}
 		digest, e := FinishDigest(req)

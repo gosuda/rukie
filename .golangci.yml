@@ -48,13 +48,45 @@ linters:
       - path: ^internal/store/auth_token\.go$
         text: G101
         linters: [gosec]
-      # The runner only spawns podman, git, and /bin/sh through one fixed
-      # argument builder; the binary resolves via LookPath or explicit config.
-      - path: ^internal/runner/(exec|probe|sandbox)\.go$
+      # The job spec string runs as the runner uid; it executes inside
+      # the container in production and on the host only under tests.
+      - path: ^internal/runner/exec\.go$
         text: G204
         linters: [gosec]
-      # Host reads use runner-owned state paths with Clean plus escape checks.
-      - path: ^internal/runner/(exec|probe|runner|sandbox)\.go$
+      # Podman resolves via LookPath or explicit runner.toml config with
+      # a fixed argument builder and no caller-controlled flags.
+      - path: ^internal/runner/probe\.go$
+        text: G204
+        linters: [gosec]
+      # Git and podman run with fixed subcommands, bounded timeouts, and
+      # resolved binary paths; the timeout cause aborts hung children.
+      - path: ^internal/runner/sandbox\.go$
+        text: G204
+        linters: [gosec]
+      # Job-spec and step outputs live under attempt dirs; container-written
+      # logs open with O_NOFOLLOW and require regular files.
+      - path: ^internal/runner/exec\.go$
+        text: G304
+        linters: [gosec]
+      # Probe reads fixed host paths under /proc, /sys, and /etc.
+      - path: ^internal/runner/probe\.go$
+        text: G304
+        linters: [gosec]
+      # Config and credential live under the 0700 state directory.
+      - path: ^internal/runner/runner\.go$
+        text: G304
+        linters: [gosec]
+      # Mirror blobs, artifacts, and logs resolve under validated roots
+      # with Clean plus escape checks and symlink guards.
+      - path: ^internal/runner/sandbox\.go$
+        text: G304
+        linters: [gosec]
+      # The operator-supplied token file path is mode-checked before read.
+      - path: ^internal/runner/commands\.go$
+        text: G304
+        linters: [gosec]
+      # Attempt token and result live under the state dir attempt layout.
+      - path: ^internal/runner/loop\.go$
         text: G304
         linters: [gosec]
       # The container executor copy needs the exec bit to run job-exec.
