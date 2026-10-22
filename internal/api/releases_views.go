@@ -101,20 +101,20 @@ func writeRelease(w io.Writer, c op.ViewCtx, out ReleaseGetOut) error {
 	if item.Draft {
 		b.WriteString("<h2>Edit draft</h2>\n" +
 			formOpen(base+"/edit/"+item.Tag, c.CSRF) +
-			hiddenField("_etag", c.Input.Get("_etag")) +
+			hiddenField("_etag", item.ETag) +
 			textField("title", "Title", item.Title, false) +
 			textField("notes", "Notes", item.Notes, false) +
 			submitField("Save draft"))
 		b.WriteString("<h2>Publish draft</h2>\n" +
 			formOpen(base+"/edit/"+item.Tag, c.CSRF) +
-			hiddenField("_etag", c.Input.Get("_etag")) +
+			hiddenField("_etag", item.ETag) +
 			hiddenField("draft", "false") +
 			submitField("Publish release"))
 		b.WriteString("<h2>Upload asset</h2>\n<p>Upload asset bytes with a scoped API token: PUT " + esc(base+"/assets/"+item.Tag+"/{name}") + " with an If-None-Match or If-Match precondition.</p>\n")
 	}
 	b.WriteString("<h2>Delete release</h2>\n" +
 		formOpen(base+"/delete/"+item.Tag, c.CSRF) +
-		hiddenField("_etag", c.Input.Get("_etag")) +
+		hiddenField("_etag", item.ETag) +
 		submitField("Delete release "+item.Tag))
 	_, err := io.WriteString(w, pageShell("Release "+item.Tag, b.String()))
 	return err
