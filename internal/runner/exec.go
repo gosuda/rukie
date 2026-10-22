@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -31,10 +32,7 @@ type ExecStep struct {
 // ExecEnv carries the executor contract from the runner.
 func ExecEnv(getenv func(string) string) (specDigest, stepsPath string, ok bool) {
 	specDigest = getenv("RUKIE_SPEC_DIGEST")
-	stepsPath = getenv("RUKIE_STEPS")
-	if stepsPath == "" {
-		stepsPath = "/.rukie/steps.json"
-	}
+	stepsPath = cmp.Or(getenv("RUKIE_STEPS"), "/.rukie/steps.json")
 	return specDigest, stepsPath, specDigest != ""
 }
 

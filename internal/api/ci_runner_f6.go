@@ -201,7 +201,7 @@ func (d Deps) f6LogAppend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) f6ArtifactPut(w http.ResponseWriter, r *http.Request) {
-	if r.ContentLength <= 0 {
+	if r.ContentLength < 0 {
 		writeRunnerProblem(w, ciProblem("E_INVALID"))
 		return
 	}

@@ -181,6 +181,13 @@ func runRotate(io IO, argv []string) int {
 		_, _ = fmt.Fprintln(io.Stderr, "E_INVALID: no credential to rotate. register first.")
 		return ExitGeneral
 	}
+	prior := DefaultConfig(*stateDir)
+	if raw, rerr := os.ReadFile(filepath.Join(*stateDir, "runner.toml")); rerr == nil {
+		if uerr := tomlUnmarshal(raw, &prior); uerr != nil {
+			_, _ = fmt.Fprintln(io.Stderr, "E_INVALID: runner.toml does not parse. fix the config file.")
+			return ExitGeneral
+		}
+	}
 	revoke, err := http.NewRequest(http.MethodPost, strings.TrimSuffix(*server, "/")+"/-/ci/v1/runners/"+cred.RunnerID+"/revoke", strings.NewReader(`{}`))
 	if err != nil {
 		_, _ = fmt.Fprintln(io.Stderr, "E_INVALID: "+err.Error()+". check the server URL.")
@@ -207,7 +214,7 @@ func runRotate(io IO, argv []string) int {
 		} `json:"runner"`
 	}
 	if _, err := registerHTTP(*server, *token, map[string]any{
-		"labels": []string{"rotated"}, "scope": "untrusted", "capacity": 1,
+		"labels": prior.Labels, "scope": prior.Scope, "capacity": prior.Capacity,
 	}, &created); err != nil {
 		_, _ = fmt.Fprintln(io.Stderr, "E_INVALID: "+err.Error()+". re-register the runner.")
 		return ExitGeneral

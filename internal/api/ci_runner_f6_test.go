@@ -247,6 +247,24 @@ func TestRunnerProtocolGolden(t *testing.T) {
 	f6Golden(t, "finish", finishRec.Body.String())
 }
 
+func TestRunnerF6AcceptsEmptyArtifact(t *testing.T) {
+	_, h, runnerID, runnerToken := f6Setup(t, ciTestSubject)
+	grant := f6Lease(t, h, runnerID, runnerToken)
+	attemptID, attemptToken, fence := f6Attempt(grant)
+	emptyDigest := "sha256:" + f6DigestHex(nil)
+	rec := f6do(t, h, f6Req{
+		method: "PUT", target: "/-/ci/v1/attempts/" + attemptID + "/artifact.put/" + emptyDigest,
+		auth: attemptToken, raw: []byte{},
+		headers: map[string]string{"Content-Type": "application/octet-stream", "Rukie-Fence": strconv.FormatInt(fence, 10)},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty artifact.put = %d: %s, want 200", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), emptyDigest) {
+		t.Fatalf("empty artifact misses digest: %s", rec.Body.String())
+	}
+}
+
 func TestRunnerF6RejectsStaleFence(t *testing.T) {
 	_, h, runnerID, runnerToken := f6Setup(t, ciTestSubject)
 	grant := f6Lease(t, h, runnerID, runnerToken)

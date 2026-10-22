@@ -100,6 +100,7 @@ type Loop struct {
 	Client *Client
 	Now    func() time.Time
 	Mono   func() int64
+	Tick   time.Duration
 	Once   bool
 }
 
@@ -310,9 +311,13 @@ func (l *Loop) execute(ctx context.Context, grant *Grant) ExecuteOutcome {
 	ack := LastAck{At: l.mono(), Limit: SelfFenceS * int64(time.Second)}
 	done := make(chan int, 1)
 	go func() { done <- container.Wait() }()
-	ticker := time.NewTicker(HeartbeatIntervalS * time.Second)
+	tick := l.Tick
+	if tick <= 0 {
+		tick = HeartbeatIntervalS * time.Second
+	}
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
-	stream := &logStreamer{client: l.Client, attempt: grant.Attempt, logDir: work.Log}
+	stream := &logStreamer{client: l.Client, attempt: grant.Attempt, logDir: work.Log, seq: -1}
 	cancelled := false
 	for {
 		select {
@@ -328,9 +333,17 @@ func (l *Loop) execute(ctx context.Context, grant *Grant) ExecuteOutcome {
 		case <-ticker.C:
 			reply, herr := l.Client.Heartbeat(grant.Attempt)
 			if herr != nil {
-				_ = container.Kill()
-				<-done
-				return ExecuteAbandoned
+				if _, ok := errors.AsType[*LeaseLostError](herr); ok {
+					_ = container.Kill()
+					<-done
+					return ExecuteAbandoned
+				}
+				if ack.Stale(l.mono()) {
+					_ = container.Kill()
+					<-done
+					return ExecuteAbandoned
+				}
+				break
 			}
 			ack.At = l.mono()
 			if reply.Cancel != "" {
@@ -338,11 +351,6 @@ func (l *Loop) execute(ctx context.Context, grant *Grant) ExecuteOutcome {
 				_ = container.Kill()
 			}
 			stream.ship()
-			if ack.Stale(l.mono()) {
-				_ = container.Kill()
-				<-done
-				return ExecuteAbandoned
-			}
 		}
 	}
 }
