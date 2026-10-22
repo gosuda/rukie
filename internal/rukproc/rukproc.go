@@ -78,7 +78,15 @@ func (c *Child) Kill() error {
 // Run executes one short ruk invocation and returns its stdout. env fully
 // determines the child environment. Failures carry the trimmed stderr.
 func Run(ctx context.Context, bin string, args []string, env []string) ([]byte, error) {
+	return RunInDir(ctx, bin, "", args, env)
+}
+
+// RunInDir executes one short invocation in dir and returns its stdout. An
+// empty dir inherits the caller working directory. env fully determines the
+// child environment. Failures carry the trimmed stderr.
+func RunInDir(ctx context.Context, bin, dir string, args []string, env []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
