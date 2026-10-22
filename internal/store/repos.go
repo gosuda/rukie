@@ -560,10 +560,10 @@ VALUES (?, ?, ?, 0, '[]', '[]', '[]', 1, ?)`,
 type PolicyRuleInsert struct {
 	Pattern     string
 	Mode        string
-	BypassAdmin bool
 	PushAllow   string
 	LandAllow   string
 	Required    string
+	BypassAdmin bool
 }
 
 func (tx *WriteTx) InsertPolicyRule(repoID int64, now time.Time, in PolicyRuleInsert) error {
