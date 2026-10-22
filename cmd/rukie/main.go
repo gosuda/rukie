@@ -780,7 +780,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		SocketPath:       cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath),
 		RepoRoot:         cfg.Ruk.RepoRoot,
 		Limits:           wire.DefaultGitLimits(),
-		MaxHTTPBodyBytes: uint64(cfg.Git.MaxBodyBytes),
+		MaxHTTPBodyBytes: cfg.Git.MaxBodyBytes,
 		Feed:             events.OpenHookSink(st, spool, time.Now),
 		Store:            st,
 		Barrier:          holdBarrier,

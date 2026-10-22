@@ -359,6 +359,35 @@ func TestGitAuthCaseInsensitiveAndHint(t *testing.T) {
 	}
 }
 
+func TestGitConfiguredHTTPBodyCap(t *testing.T) {
+	limits := wire.DefaultGitLimits()
+	s := newStackWithHTTPCap(t, &limits, 64)
+	ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
+	s.addRepo(t, "ada", "hello", "private")
+	post := func(body string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, s.url+"/ada/hello.git/git-receive-pack", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		req.SetBasicAuth("ada", ada.token)
+		req.Header.Set("Content-Type", "application/x-git-receive-pack-request")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+	if status := post("0000"); status != http.StatusOK {
+		t.Fatalf("valid body below configured cap status = %d, want 200", status)
+	}
+	if status := post(strings.Repeat("a", 65)); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("body above configured cap status = %d, want 413", status)
+	}
+}
+
 func TestGitDaemonLimitRefusesChunkedBody(t *testing.T) {
 	limits := wire.DefaultGitLimits()
 	limits.MaxStdinBytes = 64

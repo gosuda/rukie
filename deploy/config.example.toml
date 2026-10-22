@@ -10,6 +10,10 @@ listen = ["0.0.0.0:3000"]
 [store]
 backend = "sqlite"
 
+[git]
+# Maximum Smart HTTP upload body size in bytes. Default: 268435456 (256 MiB).
+max_body_bytes = 268435456
+
 [ruk]
 binary_path = "/usr/lib/rukie/ruk"
 repo_root = "/var/lib/rukie/repos"
