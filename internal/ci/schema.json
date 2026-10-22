@@ -141,6 +141,34 @@
             "egress"
           ]
         },
+        "caches": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "path"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^/cache/[a-z0-9][a-z0-9-]{0,31}$"
+              },
+              "mode": {
+                "enum": [
+                  "exclusive",
+                  "shared"
+                ]
+              }
+            }
+          }
+        },
         "secrets": {
           "type": "array",
           "maxItems": 32,

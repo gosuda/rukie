@@ -59,6 +59,11 @@ type Retry struct {
 	On  []string `toml:"on" json:"on"`
 	Max int      `toml:"max" json:"max"`
 }
+type CacheSpec struct {
+	Name string `toml:"name" json:"name"`
+	Path string `toml:"path" json:"path"`
+	Mode string `toml:"mode,omitempty" json:"mode,omitempty"`
+}
 type JobSpec struct {
 	Matrix        map[string][]string `toml:"matrix,omitempty" json:"matrix,omitempty"`
 	Env           map[string]string   `toml:"env" json:"env"`
@@ -72,9 +77,28 @@ type JobSpec struct {
 	Artifacts     []string            `toml:"artifacts" json:"artifacts"`
 	Steps         []Step              `toml:"steps" json:"steps"`
 	RunsOn        []string            `toml:"runs_on" json:"runs_on"`
+	Caches        []CacheSpec         `toml:"caches,omitempty" json:"caches,omitempty"`
 	Retry         Retry               `toml:"retry" json:"retry"`
 	Interruptible bool                `toml:"interruptible" json:"interruptible"`
 	Pure          bool                `toml:"pure" json:"pure"`
+}
+
+func validCacheName(name string) bool {
+	if len(name) < 1 || len(name) > 32 {
+		return false
+	}
+	for i := range len(name) {
+		letter := name[i]
+		digit := letter >= '0' && letter <= '9'
+		lower := letter >= 'a' && letter <= 'z'
+		if i == 0 && !digit && !lower {
+			return false
+		}
+		if !digit && !lower && letter != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func Schema() []byte { return bytes.Clone(schemaBytes) }
@@ -195,6 +219,26 @@ func ValidateSpec(spec Spec) error {
 		}
 		if platforms != 1 {
 			return specError("/job/"+strconv.Itoa(i)+"/runs_on", "job needs exactly one platform label")
+		}
+		if j.Network != "" && j.Network != "none" && j.Network != "egress" {
+			return specError("/job/"+strconv.Itoa(i)+"/network", "network must be none or egress")
+		}
+		if len(j.Caches) > 8 {
+			return specError("/job/"+strconv.Itoa(i)+"/caches", "at most 8 caches")
+		}
+		seenCaches := make(map[string]bool, len(j.Caches))
+		for k := range j.Caches {
+			cache := &j.Caches[k]
+			if !validCacheName(cache.Name) || cache.Path != "/cache/"+cache.Name || seenCaches[cache.Name] {
+				return specError("/job/"+strconv.Itoa(i)+"/caches", "invalid cache "+strconv.Quote(cache.Name))
+			}
+			seenCaches[cache.Name] = true
+			if cache.Mode == "" {
+				cache.Mode = "exclusive"
+			}
+			if cache.Mode != "exclusive" && cache.Mode != "shared" {
+				return specError("/job/"+strconv.Itoa(i)+"/caches", "invalid cache mode "+strconv.Quote(cache.Mode))
+			}
 		}
 		if j.Pure && (j.Network != "none" || j.Effects != "none" || len(j.Secrets) > 0) {
 			return specError("/job/"+strconv.Itoa(i)+"/pure", "pure jobs allow no network, secrets, or effects")
