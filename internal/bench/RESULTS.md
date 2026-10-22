@@ -51,3 +51,34 @@ budget results and do not produce pass/fail ratios:
   and optimized paired gate are in progress.
 
 This file holds the method, the table schema, and diagnostic evidence only.
+
+## 2026-10-23 (transcribed partial runs; the test appended nothing)
+
+The test appends a block only on a fully completed run. Neither run below
+completed, so neither appended; the fetch and lookup rows are transcribed
+from the run logs (/tmp/v5-daemonpath-optimized2.log,
+/tmp/v5-daemonpath-bounded.log) because the V5 lane needs the measured
+numbers on record. Binary provenance was not captured in those logs
+(RUK_BIN unrecorded); no binary claim is made here. Clone and info/refs
+produced no rows in either run and stay unmeasured.
+
+Run A (2026-10-23 ~04:55 UTC): fetch and lookup passed, then the run hit
+the 30-minute timeout in a later phase; overall FAIL, no clone/info-refs
+rows. Run B (2026-10-23 ~05:19 UTC): fetch and lookup passed, then the
+harness panicked with index out of range in `samples.p` (an older test
+revision predating the committed empty-sample guard); overall FAIL, no
+clone/info-refs rows.
+
+| workload | stock p50 | stock p95 | stock p99 | daemon p50 | daemon p95 | daemon p99 | ratio p95 | budget | authority | result |
+|---|---|---|---|---|---|---|---|---|---|---|
+| incremental-fetch (run A) | 246.412629ms | 328.898748ms | n/a | 632.563799ms | 1.241796024s | n/a | 3.78x | <= 7.5x stock p95 | CEO-08 | PASS |
+| single-ref-lookup (run A) | 53.39755ms | 57.005058ms | n/a | 84.850088ms | 90.285332ms | n/a | 1.58x | <= 4x stock p95 | CEO-08 | PASS |
+| incremental-fetch (run B) | 246.5533ms | 325.328489ms | n/a | 639.982376ms | 1.19919917s | n/a | 3.69x | <= 7.5x stock p95 | CEO-08 | PASS |
+| single-ref-lookup (run B) | 54.706149ms | 58.535492ms | n/a | 84.621112ms | 88.918738ms | n/a | 1.52x | <= 4x stock p95 | CEO-08 | PASS |
+| clone (runs A, B) | unmeasured | unmeasured | unmeasured | unmeasured | unmeasured | unmeasured | unmeasured | report-only, no threshold | V5 brief | INCOMPLETE |
+| info-refs (runs A, B) | unmeasured | unmeasured | unmeasured | unmeasured | unmeasured | unmeasured | unmeasured | <= 150ms daemon p95 | verification §7 | INCOMPLETE |
+
+A full bounded run (clone plus info/refs) still needs the rebuilt release
+binary (ruk/.outline/worktree/model-build/target/release/ruk), which did
+not exist at transcription time; the pending daemon stdin fix lands on the
+parent side. No budget verdict is claimed for clone or info/refs.
