@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -317,21 +318,29 @@ func TestSearchFanOutCompositeCursor(t *testing.T) {
 	if strings.HasPrefix(cursor, "{") {
 		t.Fatalf("multi cursor looks verbatim, want a composite envelope: %.60q", cursor)
 	}
-	second, body2, _ := searchGet(t, srv, "/search?q=needle-f9&per_page=5&next="+url.QueryEscape(cursor), ada.token)
-	if second != http.StatusOK {
-		t.Fatalf("multi page 2 = %d (%v)", second, body2)
-	}
-	if !seen["ada/codepub2"] {
+	firstCursor := cursor
+	for range 30 {
+		if seen["ada/codepub2"] {
+			break
+		}
+		second, body2, _ := searchGet(t, srv, "/search?q=needle-f9&per_page=5&next="+url.QueryEscape(cursor), ada.token)
+		if second != http.StatusOK {
+			t.Fatalf("multi next page = %d (%v)", second, body2)
+		}
 		for _, h := range hitsOf(t, body2) {
 			m, _ := h.(map[string]any)
 			repo, _ := m["repo"].(string)
 			seen[repo] = true
 		}
-		if !seen["ada/codepub2"] {
-			t.Fatalf("fan-out missed ada/codepub2 across two pages: %v", seen)
+		cursor = nextOf(body2)
+		if cursor == "" {
+			break
 		}
 	}
-	tampered := cursor[:len(cursor)-2] + "xx"
+	if !seen["ada/codepub2"] {
+		t.Fatalf("fan-out missed ada/codepub2 across drained pages: %v", seen)
+	}
+	tampered := firstCursor[:len(firstCursor)-2] + "xx"
 	if code, _, _ := searchGet(t, srv, "/search?q=needle-f9&per_page=5&next="+url.QueryEscape(tampered), ada.token); code != http.StatusBadRequest {
 		t.Fatalf("tampered composite = %d, want 400", code)
 	}
@@ -347,6 +356,57 @@ func TestSearchFanOutCompositeCursor(t *testing.T) {
 	singleCursor := nextOf(singleBody)
 	if code, _, _ := searchGet(t, srv, "/search?q=needle-f9&per_page=5&next="+url.QueryEscape(singleCursor), ada.token); code != http.StatusBadRequest {
 		t.Fatalf("verbatim cursor on multi endpoint = %d, want 400", code)
+	}
+}
+
+func TestSearchPagesStayGloballyOrdered(t *testing.T) {
+	_, srv, ada, _ := searchSetup(t)
+	var keys []string
+	next := ""
+	for {
+		target := "/search?q=needle-f9&per_page=2"
+		if next != "" {
+			target += "&next=" + url.QueryEscape(next)
+		}
+		code, body, _ := searchGet(t, srv, target, ada.token)
+		if code != http.StatusOK {
+			t.Fatalf("GET %s = %d (%v)", target, code, body)
+		}
+		for _, h := range hitsOf(t, body) {
+			m, _ := h.(map[string]any)
+			repo, _ := m["repo"].(string)
+			path, _ := m["path"].(string)
+			line, _ := m["line"].(float64)
+			keys = append(keys, repo+"\x00"+path+fmt.Sprintf("\x00%08d", int(line)))
+		}
+		next = nextOf(body)
+		if next == "" {
+			break
+		}
+		if len(keys) > 200 {
+			t.Fatal("pagination did not terminate")
+		}
+	}
+	if len(keys) == 0 {
+		t.Fatal("no hits across pages")
+	}
+	seenB := false
+	seenAAfterB := false
+	for _, k := range keys {
+		if strings.HasPrefix(k, "ada/codepub2") {
+			seenB = true
+		}
+		if seenB && strings.HasPrefix(k, "ada/codepub\x00") {
+			seenAAfterB = true
+		}
+	}
+	if seenAAfterB {
+		t.Fatalf("later-repo hits precede earlier-repo continuation: %v", keys)
+	}
+	for i := 1; i < len(keys); i++ {
+		if keys[i-1] > keys[i] {
+			t.Fatalf("concatenated pages out of order at %d: %q then %q", i, keys[i-1], keys[i])
+		}
 	}
 }
 

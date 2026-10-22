@@ -363,13 +363,20 @@ type multiSlot struct {
 
 type multiPlan struct {
 	carried map[string]verbatimCursor
+	prior   map[string]verbatimCursor
 	after   string
+	base    string
 	slots   []multiSlot
 	afterID int64
+	baseID  int64
 }
 
 func planMultiPage(repos []searchRepoRef, resume compositeCursor, fp string) (multiPlan, error) {
-	plan := multiPlan{carried: map[string]verbatimCursor{}, after: resume.AfterName, afterID: resume.AfterID}
+	prior := make(map[string]verbatimCursor, len(resume.Cursors))
+	for id, cursor := range resume.Cursors {
+		prior[id] = cursor
+	}
+	plan := multiPlan{carried: map[string]verbatimCursor{}, after: resume.AfterName, afterID: resume.AfterID, base: resume.AfterName, baseID: resume.AfterID, prior: prior}
 	if resume.Print != "" && resume.Print != fp {
 		return plan, op.Errorf(op.CodeInvalid, "cursor is not valid for this query")
 	}
@@ -539,12 +546,14 @@ func mergeMultiPage(plan multiPlan, results map[int64]multiResult, fp string, re
 	var ordered []orderedHit
 	anomaly := ""
 	anyTruncated := false
-	for _, slot := range plan.slots {
+	emitted := make([]bool, len(plan.slots))
+	for i, slot := range plan.slots {
 		res, ok := results[slot.ref.row.ID]
 		if !ok {
 			return SearchCodeOut{}, op.Errorf(op.CodeInternal, "search fan-out lost repository %d", slot.ref.row.ID)
 		}
 		if res.dropped {
+			emitted[i] = true
 			continue
 		}
 		if res.truncated {
@@ -552,6 +561,22 @@ func mergeMultiPage(plan multiPlan, results map[int64]multiResult, fp string, re
 		}
 		if res.exhausted != "" && res.exhausted != "none" {
 			anomaly = worseExhaustion(anomaly, res.exhausted)
+		}
+		out.ScannedBlobs += res.blobs
+		out.ScannedBytes += res.bytes
+		out.SkippedBlobs += res.skipped
+		emitted[i] = true
+		if len(res.next) > 0 {
+			break
+		}
+	}
+	for i, slot := range plan.slots {
+		if !emitted[i] {
+			continue
+		}
+		res := results[slot.ref.row.ID]
+		if res.dropped {
+			continue
 		}
 		full := slot.ref.owner + "/" + slot.ref.name
 		for _, h := range res.hits {
@@ -563,9 +588,6 @@ func mergeMultiPage(plan multiPlan, results map[int64]multiResult, fp string, re
 				name: slot.ref.name, id: slot.ref.row.ID,
 			})
 		}
-		out.ScannedBlobs += res.blobs
-		out.ScannedBytes += res.bytes
-		out.SkippedBlobs += res.skipped
 	}
 	slices.SortFunc(ordered, func(a, b orderedHit) int {
 		return cmp.Or(strings.Compare(a.name, b.name), cmp.Compare(a.id, b.id),
@@ -578,23 +600,36 @@ func mergeMultiPage(plan multiPlan, results map[int64]multiResult, fp string, re
 	for idRaw, cursor := range plan.carried {
 		nextCursors[idRaw] = cursor
 	}
-	for _, slot := range plan.slots {
-		res, ok := results[slot.ref.row.ID]
-		if !ok || res.dropped {
+	coveredName, coveredID := plan.base, plan.baseID
+	for i, slot := range plan.slots {
+		res := results[slot.ref.row.ID]
+		if !emitted[i] {
+			if old, ok := plan.prior[fmt.Sprintf("%d", slot.ref.row.ID)]; ok {
+				nextCursors[fmt.Sprintf("%d", slot.ref.row.ID)] = old
+			}
+			continue
+		}
+		if res.dropped {
+			if slot.fresh {
+				coveredName, coveredID = slot.ref.name, slot.ref.row.ID
+			}
 			continue
 		}
 		if len(res.next) > 0 {
 			nextCursors[fmt.Sprintf("%d", slot.ref.row.ID)] = res.next
 		}
+		if slot.fresh {
+			coveredName, coveredID = slot.ref.name, slot.ref.row.ID
+		}
 	}
 	moreFresh := false
 	for _, ref := range repos {
-		if ref.name > plan.after || (ref.name == plan.after && ref.row.ID > plan.afterID) {
+		if ref.name > coveredName || (ref.name == coveredName && ref.row.ID > coveredID) {
 			moreFresh = true
 			break
 		}
 	}
-	out.Truncated = anyTruncated || len(nextCursors) > 0
+	out.Truncated = anyTruncated || len(nextCursors) > 0 || moreFresh
 	if len(nextCursors) == 0 && !moreFresh {
 		out.Exhausted = cmp.Or(anomaly, "none")
 		return out, nil
@@ -602,7 +637,7 @@ func mergeMultiPage(plan multiPlan, results map[int64]multiResult, fp string, re
 	out.Exhausted = cmp.Or(anomaly, "budget")
 	encoded, merr := encodeComposite(compositeCursor{
 		Version: 1, Print: fp, Cursors: nextCursors,
-		AfterName: plan.after, AfterID: plan.afterID,
+		AfterName: coveredName, AfterID: coveredID,
 	})
 	if merr != nil {
 		return SearchCodeOut{}, op.Wrap(op.CodeInternal, merr, "search cursor could not be encoded")

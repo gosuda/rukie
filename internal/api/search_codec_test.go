@@ -180,6 +180,34 @@ func TestMergeTerminalTruncation(t *testing.T) {
 	}
 }
 
+func TestMergeDrainsEarlierRepos(t *testing.T) {
+	repos := []searchRepoRef{{name: "a", row: store.RepoRow{ID: 1}}, {name: "b", row: store.RepoRow{ID: 2}}}
+	plan := multiPlan{slots: []multiSlot{{ref: repos[0], fresh: true}, {ref: repos[1], fresh: true}}, carried: map[string]verbatimCursor{}, after: "b", afterID: 2, base: "", baseID: 0, prior: map[string]verbatimCursor{}}
+	out, err := mergeMultiPage(plan, map[int64]multiResult{
+		1: {hits: []searchHitReply{{Path: "a.txt", Line: 1}}, next: verbatimCursor(`{"p":"a"}`), exhausted: "none"},
+		2: {hits: []searchHitReply{{Path: "b.txt", Line: 1}}, next: verbatimCursor(`{"p":"b"}`), exhausted: "none"},
+	}, "fp", repos)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(out.Hits) != 1 || out.Hits[0].Path != "a.txt" {
+		t.Fatalf("drain emitted %+v, want only the earlier repo", out.Hits)
+	}
+	if out.Next == nil {
+		t.Fatal("drain page has no continuation")
+	}
+	decoded, derr := decodeComposite(*out.Next)
+	if derr != nil {
+		t.Fatalf("continuation: %v", derr)
+	}
+	if _, ok := decoded.Cursors["2"]; ok {
+		t.Fatalf("withheld repo leaked a new cursor: %+v", decoded.Cursors)
+	}
+	if string(decoded.Cursors["1"]) != `{"p":"a"}` {
+		t.Fatalf("emitted repo lost its cursor: %+v", decoded.Cursors)
+	}
+}
+
 func TestPlanResumeAndMismatch(t *testing.T) {
 	repos := fakeSearchRepos(3)
 	q := searchCodeQuery{q: "x", perPage: 10}
