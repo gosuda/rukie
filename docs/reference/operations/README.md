@@ -72,6 +72,9 @@ Every operation in the table. Regenerate with `go run ./tools/docgen`.
 | `repo.settings.page` | `GET` | `/{owner}/{repo}/settings` | [repo.settings.page](./repo.settings.page.md) |
 | `repo.update` | `POST` | `/{owner}/{repo}/settings/general` | [repo.update](./repo.update.md) |
 | `repo.visibility.set` | `POST` | `/{owner}/{repo}/settings/visibility` | [repo.visibility.set](./repo.visibility.set.md) |
+| `search.code` | `GET` | `/search` | [search.code](./search.code.md) |
+| `search.repos` | `GET` | `/search/repos` | [search.repos](./search.repos.md) |
+| `search.users` | `GET` | `/search/users` | [search.users](./search.users.md) |
 | `settings.page` | `GET` | `/settings` | [settings.page](./settings.page.md) |
 | `tag.create` | `POST` | `/{owner}/{repo}/tags/create` | [tag.create](./tag.create.md) |
 | `tag.delete` | `POST` | `/{owner}/{repo}/tags/{tag}/delete` | [tag.delete](./tag.delete.md) |
