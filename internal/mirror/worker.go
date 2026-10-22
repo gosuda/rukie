@@ -500,10 +500,10 @@ func (e *execution) sync(ctx context.Context) (bool, error) {
 	e.trackPlanned(plan)
 	e.observed = true
 	if perr := e.pushDeletesFirst(ctx); perr != nil {
-		return e.finishCall(ctx, perr, &plan, nil)
+		return e.finishCall(ctx, sendUncertain(perr), &plan, nil)
 	}
 	if perr := e.resolveUncertain(ctx); perr != nil {
-		return e.finishCall(ctx, perr, &plan, nil)
+		return e.finishCall(ctx, sendUncertain(perr), &plan, nil)
 	}
 	outcome := summarizeTracked(e.tracked)
 	if countUncertain(e.tracked) > 0 {
@@ -925,6 +925,11 @@ func summarizeTracked(tracked []*trackedRef) runOutcome {
 }
 
 func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, remoteCount *int) (bool, error) {
+	if outcome, ok := sendUncertainOutcome(callErr); ok {
+		outcome.summary = e.scrub(callErr.Error())
+		outcome.delay = BackoffDelay(int(e.loaded.mirror.ConsecutiveFailures)+1, BaseBackoff, MaxBackoff, jitterFraction())
+		return e.finish(ctx, outcome, plan, remoteCount)
+	}
 	code, detail, reason := describeCallError(callErr)
 	verdict := Classify(code, int(detail.Status), retryAfterString(detail), reason)
 	if (detail.Status == 401 || detail.Status == 403) && verdict.Class != ClassRateLimited {
@@ -967,6 +972,32 @@ func protectedRepeat(row store.MirrorRow, verdict Verdict) int {
 		return int(row.ConsecutiveFailures)
 	}
 	return 0
+}
+
+type sendUncertainError struct{ err error }
+
+func (e *sendUncertainError) Error() string { return e.err.Error() }
+
+func (e *sendUncertainError) Unwrap() error { return e.err }
+
+func sendUncertain(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &sendUncertainError{err: err}
+}
+
+func sendUncertainOutcome(callErr error) (runOutcome, bool) {
+	if _, ok := errors.AsType[*sendUncertainError](callErr); !ok {
+		return runOutcome{}, false
+	}
+	if _, ok := errors.AsType[*ruk.Error](callErr); ok {
+		return runOutcome{}, false
+	}
+	return runOutcome{
+		runState: "failed", class: string(ClassUncertain),
+		summary: "push outcome unknown; will re-observe", mirror: "failing",
+	}, true
 }
 
 func describeCallError(err error) (string, ruk.HTTPDetail, string) {

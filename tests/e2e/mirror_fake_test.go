@@ -3,8 +3,10 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -120,6 +122,17 @@ func newMirrorFake(t *testing.T, mode, user, token string) *mirrorFake {
 					return
 				}
 			}
+		}
+		if len(r.TransferEncoding) > 0 && r.Body != nil {
+			raw, rerr := io.ReadAll(r.Body)
+			if rerr != nil {
+				http.Error(w, "read body", http.StatusBadRequest)
+				return
+			}
+			_ = r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			r.ContentLength = int64(len(raw))
+			r.TransferEncoding = nil
 		}
 		cgiHandler.ServeHTTP(w, r)
 	})

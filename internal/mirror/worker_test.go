@@ -341,6 +341,26 @@ func TestComputePlanCoversDefaultBranchOnce(t *testing.T) {
 	}
 }
 
+func TestSendUncertainOutcome(t *testing.T) {
+	if _, ok := sendUncertainOutcome(nil); ok {
+		t.Fatal("nil error maps to uncertain")
+	}
+	if _, ok := sendUncertainOutcome(errors.New("boom")); ok {
+		t.Fatal("plain error maps to uncertain")
+	}
+	outcome, ok := sendUncertainOutcome(sendUncertain(errors.New("client is closed: EOF")))
+	if !ok {
+		t.Fatal("send-phase transport loss must map to uncertain")
+	}
+	if outcome.class != string(ClassUncertain) || outcome.runState != "failed" || outcome.mirror != "failing" {
+		t.Fatalf("uncertain outcome = %+v", outcome)
+	}
+	coded := sendUncertain(&ruk.Error{Code: "E_FORBIDDEN", Op: "CallAuth", Message: "forbidden"})
+	if _, ok := sendUncertainOutcome(coded); ok {
+		t.Fatal("daemon refusal must keep its own classification")
+	}
+}
+
 func TestDriveMalformedPayloadCompletes(t *testing.T) {
 	w, _, q, _ := openWorker(t)
 	enqueueMirrorJob(t, q, "mirror-run:malformed", 1, `[1,2]`)
