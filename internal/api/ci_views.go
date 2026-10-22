@@ -10,7 +10,34 @@ import (
 	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/web/secheaders"
 )
+
+// latestRun picks the badge run: the highest creation time, breaking ties
+// toward the highest run id to match the ci.run.list ordering.
+func latestRun(runs []ci.Run) *ci.Run {
+	if len(runs) == 0 {
+		return nil
+	}
+	latest := &runs[0]
+	for i := range runs[1:] {
+		if run := &runs[i+1]; run.CreatedAt > latest.CreatedAt ||
+			(run.CreatedAt == latest.CreatedAt && run.ID > latest.ID) {
+			latest = run
+		}
+	}
+	return latest
+}
+
+// ciContentSecurityPolicy is the shared policy with scripts fully off:
+// CI pages are zero-JS surfaces, so they agree with htmlcheck instead of
+// inheriting the application script allowance.
+var ciContentSecurityPolicy = strings.Replace(secheaders.CSP, "script-src 'self'", "script-src 'none'", 1)
+
+func setCIPageHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", ciContentSecurityPolicy)
+}
 
 func writeCIRunList(w io.Writer, c op.ViewCtx, out CIRunListOut) error {
 	var b strings.Builder
@@ -277,7 +304,7 @@ func (d Deps) serveCITab(w http.ResponseWriter, r *http.Request, owner, repo str
 		writeRunnerProblem(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setCIPageHeaders(w)
 	_, _ = io.WriteString(w, body.String())
 }
 
@@ -297,7 +324,7 @@ func (d Deps) serveCIRunPage(w http.ResponseWriter, r *http.Request, owner, repo
 		writeRunnerProblem(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setCIPageHeaders(w)
 	_, _ = io.WriteString(w, body.String())
 }
 
@@ -342,7 +369,7 @@ func (d Deps) serveCIJobPage(w http.ResponseWriter, r *http.Request, owner, repo
 	b.WriteString("</table>\n")
 	base := "/" + owner + "/" + repo + "/ci/runs/" + runID + "/jobs/" + jobID
 	b.WriteString("<p><a href=\"" + esc(base+"/log") + "\">Log</a></p>\n")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setCIPageHeaders(w)
 	_, _ = io.WriteString(w, pageShell("CI job "+found.Spec.Name, b.String()))
 }
 
@@ -383,7 +410,7 @@ func (d Deps) serveCILog(w http.ResponseWriter, r *http.Request, owner, repo, ru
 	base := "/" + owner + "/" + repo + "/ci/runs/" + runID + "/jobs/" + jobID + "/log"
 	if refresh > 0 || acceptsHTML {
 		html := ciLogPage(base, string(attempt.Log), attempt.State, refresh)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		setCIPageHeaders(w)
 		_, _ = io.WriteString(w, html)
 		return
 	}
@@ -420,13 +447,7 @@ func (d Deps) serveCIBadge(w http.ResponseWriter, r *http.Request, owner, repo s
 		return
 	}
 	status := "unknown"
-	if len(runs) > 0 {
-		latest := runs[0]
-		for _, run := range runs[1:] {
-			if run.CreatedAt > latest.CreatedAt {
-				latest = run
-			}
-		}
+	if latest := latestRun(runs); latest != nil {
 		status = latest.State
 	}
 	w.Header().Set("Content-Type", "image/svg+xml")
@@ -464,7 +485,7 @@ func (d Deps) serveCISettings(w http.ResponseWriter, r *http.Request, owner, rep
 			"<td>" + esc(strings.Join(required, ", ")) + "</td></tr>\n")
 	}
 	b.WriteString("</table>\n")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setCIPageHeaders(w)
 	_, _ = io.WriteString(w, pageShell("CI settings", b.String()))
 }
 
@@ -516,7 +537,7 @@ func (d Deps) serveCIQueue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	b.WriteString("</table>\n")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setCIPageHeaders(w)
 	_, _ = io.WriteString(w, pageShell("CI queue", b.String()))
 }
 
@@ -563,7 +584,7 @@ func (d Deps) serveCIAdminQueue(w http.ResponseWriter, r *http.Request) {
 			"<td>" + esc(strconv.Itoa(runner.Capacity)) + "</td><td>" + esc(runner.Status) + "</td></tr>\n")
 	}
 	b.WriteString("</table>\n")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setCIPageHeaders(w)
 	_, _ = io.WriteString(w, pageShell("CI scheduler queue", b.String()))
 }
 
