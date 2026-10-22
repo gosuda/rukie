@@ -81,18 +81,26 @@ func (m Mirror) Validate(_ time.Time) error {
 	if err != nil || u.Hostname() == "" || u.User != nil {
 		return fmt.Errorf("Mirror.Validate: invalid target URL")
 	}
-	if u.Scheme != "https" {
-		return fmt.Errorf("Mirror.Validate: target URL must use HTTPS")
-	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	ips, lerr := net.LookupIP(host)
 	if lerr != nil || len(ips) == 0 {
 		return fmt.Errorf("Mirror.Validate: target host does not resolve")
 	}
+	loopbackOnly := len(ips) > 0
 	for _, ip := range ips {
+		if ip.IsLoopback() {
+			continue
+		}
+		loopbackOnly = false
 		if forbiddenMirrorIP(ip) {
 			return fmt.Errorf("Mirror.Validate: target resolves to a private or reserved IP")
 		}
+	}
+	// A loopback target is the operator's own host: local instances and
+	// test fakes run there over plain HTTP. The accepted risk is a local
+	// sniffer on a shared host; everything else must use TLS.
+	if u.Scheme != "https" && !loopbackOnly {
+		return fmt.Errorf("Mirror.Validate: target URL must use HTTPS")
 	}
 	switch m.HostKind {
 	case HostGitHub, HostGitLab, HostForgejo, HostGeneric:
