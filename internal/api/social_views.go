@@ -310,13 +310,19 @@ func listUserStars(ctx context.Context, d Deps, p op.Principal, target int64, cu
 	if rq.authed && !rq.caller.PublicOnly {
 		viewer = rq.userID
 	}
-	var rows []store.StarRow
-	var next string
-	qerr := d.Store.Read(ctx, func(tx *store.ReadTx) error {
-		var err error
-		rows, next, err = tx.ListStarsByUser(ctx, target, viewer, 0, cursor)
-		return err
-	})
+	fetch := func(fetchCursor string, window int) ([]store.StarRow, string, error) {
+		var rows []store.StarRow
+		var rawNext string
+		rerr := d.Store.Read(ctx, func(tx *store.ReadTx) error {
+			var err error
+			rows, rawNext, err = tx.ListStarsByUser(ctx, target, viewer, window, fetchCursor)
+			return err
+		})
+		return rows, rawNext, rerr
+	}
+	rows, next, qerr := collectTokenVisible(store.SocialDefaultLimit, cursor,
+		func(row store.StarRow) bool { return rq.tokenAllows(row.RepoID) },
+		store.StarUserPageCursor, fetch)
 	if qerr != nil {
 		return nil, "", storeToOp(qerr, "stars were not found")
 	}

@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
 )
 
@@ -245,5 +248,48 @@ func TestPlanResumeAndMismatch(t *testing.T) {
 	decodedGone, _ := decodeComposite(gone)
 	if _, err := planMultiPage(repos, decodedGone, fp); err == nil {
 		t.Fatal("cursor for a vanished repo accepted")
+	}
+}
+
+func TestMergePrefersLeaseConflictOverCancel(t *testing.T) {
+	leaseErr := op.Errorf(op.CodeConflict, "search slot lease was lost")
+	cancelErr := mapRukError(context.Canceled)
+	if !isCancelErr(cancelErr) {
+		t.Fatalf("cancel harness is not a cancellation: %v", cancelErr)
+	}
+	if isCancelErr(leaseErr) {
+		t.Fatalf("lease harness looks like a cancellation: %v", leaseErr)
+	}
+	for _, cancelFirst := range []bool{false, true} {
+		repos := fakeSearchRepos(2)
+		plan := multiPlan{
+			slots:   []multiSlot{{ref: repos[0], fresh: true}, {ref: repos[1], fresh: true}},
+			carried: map[string]verbatimCursor{},
+			after:   "b", afterID: 2,
+		}
+		first, second := error(leaseErr), cancelErr
+		if cancelFirst {
+			first, second = second, first
+		}
+		results := map[int64]multiResult{1: {err: first}, 2: {err: second}}
+		_, err := mergeMultiPage(plan, results, "fp", repos)
+		oerr, ok := errors.AsType[*op.Error](err)
+		if !ok || oerr.Code != op.CodeConflict {
+			t.Fatalf("cancelFirst=%v: merge returned %v, want the lease conflict", cancelFirst, err)
+		}
+		if !errors.Is(err, leaseErr) {
+			t.Fatalf("cancelFirst=%v: merge returned %v, want the lease error itself", cancelFirst, err)
+		}
+	}
+}
+
+func TestSinglePageEmptyExhaustedMeansNone(t *testing.T) {
+	if got := normalizeSearchExhausted(""); got != "none" {
+		t.Fatalf("empty exhausted = %q, want none", got)
+	}
+	for _, mark := range []string{"none", "budget", "deadline"} {
+		if got := normalizeSearchExhausted(mark); got != mark {
+			t.Fatalf("exhausted %q normalized to %q, want it unchanged", mark, got)
+		}
 	}
 }

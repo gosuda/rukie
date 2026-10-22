@@ -30,14 +30,59 @@ type StarFilter struct {
 	Limit        int
 }
 
+// SocialDefaultLimit is the page size the social listings (stars, forks, and
+// explore) use when the caller passes no limit. The API frontier loops
+// budget refills against the same constant so token-filtered pages fill to
+// the size an unfiltered page would have.
+const SocialDefaultLimit = 30
+
+// SocialMaxLimit caps the social listing page size.
+const SocialMaxLimit = 100
+
 func socialLimit(limit int) int {
 	if limit <= 0 {
-		return 30
+		return SocialDefaultLimit
 	}
-	if limit > 100 {
-		return 100
+	if limit > SocialMaxLimit {
+		return SocialMaxLimit
 	}
 	return limit
+}
+
+// StarUserPageCursor seals the continuation for a visible user-star page.
+// The cursor carries only sort keys, so deriving it from the last visible
+// row keeps hidden rows out of the continuation.
+func StarUserPageCursor(row StarRow) string {
+	return starPageCursor(row.StarredAt, row.RepoID)
+}
+
+// StarRepoPageCursor seals the continuation for a visible repository-star
+// page. The cursor carries only sort keys, so deriving it from the last
+// visible row keeps hidden rows out of the continuation.
+func StarRepoPageCursor(row StarRow) string {
+	return starPageCursor(row.StarredAt, row.UserID)
+}
+
+func starPageCursor(starredAt, tie int64) string {
+	return makeSocialCursor(starredAt, tie)
+}
+
+// ExplorePageCursor seals the continuation for a visible explore page. The
+// name sort embeds the repository name, so deriving the cursor from the last
+// visible row is what keeps hidden repository names out of continuations. An
+// empty sort reads as the store's default updated sort.
+func ExplorePageCursor(sort string, row RepoRow) string {
+	if sort == "name" {
+		return makeSocialNameCursor(strings.ToLower(row.Name), row.ID)
+	}
+	value := row.UpdatedAt
+	switch sort {
+	case "created":
+		value = row.CreatedAt
+	case "stars":
+		value = row.StarCount
+	}
+	return makeSocialCursor(value, row.ID)
 }
 
 func socialCursor(raw string) (int64, int64, error) {
@@ -204,11 +249,11 @@ func (tx *ReadTx) ListStars(filter StarFilter) ([]StarRow, string, error) {
 	if len(out) > limit {
 		last := out[limit-1]
 		out = out[:limit]
-		tie := last.UserID
 		if filter.UserID > 0 {
-			tie = last.RepoID
+			next = StarUserPageCursor(last)
+		} else {
+			next = StarRepoPageCursor(last)
 		}
-		next = makeSocialCursor(last.StarredAt, tie)
 	}
 	return out, next, nil
 }
@@ -534,18 +579,7 @@ func (tx *ReadTx) ExploreRepos(filter ExploreRepoFilter) ([]RepoRow, string, err
 	if len(out) > lim {
 		last := out[lim-1]
 		out = out[:lim]
-		if sort == "name" {
-			next = makeSocialNameCursor(strings.ToLower(last.Name), last.ID)
-			return out, next, nil
-		}
-		value := last.UpdatedAt
-		if sort == "created" {
-			value = last.CreatedAt
-		}
-		if sort == "stars" {
-			value = last.StarCount
-		}
-		next = makeSocialCursor(value, last.ID)
+		next = ExplorePageCursor(sort, last)
 	}
 	return out, next, nil
 }
