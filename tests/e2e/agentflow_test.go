@@ -67,6 +67,8 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterRefs(table, deps) },
 		func() error { return api.RegisterReview(table, deps) },
 		func() error { return api.RegisterMirror(table, deps) },
+		func() error { return api.RegisterOrgs(table, deps) },
+		func() error { return api.RegisterSocial(table, deps) },
 	} {
 		if err := step(); err != nil {
 			t.Fatalf("register: %v", err)
@@ -85,6 +87,8 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
 	api.RegisterMirrorViews(views)
+	api.RegisterOrgsViews(views)
+	api.RegisterSocialViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()
