@@ -66,6 +66,9 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	if err := api.RegisterAdmin(table, deps); err != nil {
 		t.Fatalf("register admin: %v", err)
 	}
+	if err := api.RegisterSearch(table, deps); err != nil {
+		t.Fatalf("register search: %v", err)
+	}
 	if err := api.RegisterF12(table, deps); err != nil {
 		t.Fatalf("register f12: %v", err)
 	}
@@ -78,6 +81,7 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterSearchViews(views)
 	api.RegisterF12Views(views)
 	api.RegisterLLMSViews(views)
 	var key [32]byte
@@ -436,6 +440,10 @@ func collectHTMLPages(t *testing.T, e *renderEnv) []htmlPage {
 	}
 	var pages []htmlPage
 	captureGET(t, e, &pages, "api.index", "api-index.html", "/-/api", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "search.code", "search.html", "/search?q=x", acookie, http.StatusOK, nil)
+	captureGET(t, e, &pages, "search.code", "search-hint.html", "/search", acookie, http.StatusOK, nil)
+	captureGET(t, e, &pages, "search.repos", "search-repos.html", "/search/repos?q=x", "", http.StatusOK, nil)
+	captureGET(t, e, &pages, "search.users", "search-users.html", "/search/users?q=x", "", http.StatusOK, nil)
 	captureGET(t, e, &pages, "api.llms.get", "llms.html", "/llms.txt", "", http.StatusOK, nil)
 	captureGET(t, e, &pages, "api.llmsfull.get", "llms-full.html", "/llms-full.txt", "", http.StatusOK, nil)
 	captureGET(t, e, &pages, "auth.login.page", "login.html", "/login", "", http.StatusOK, nil)

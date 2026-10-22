@@ -96,6 +96,9 @@ func TestPerfBudget(t *testing.T) {
 	measure(t, "blob-html", 200*time.Millisecond, func() {
 		h.get(t, "/ada/hello/blob/main/docs/README.md", "text/html", http.StatusOK)
 	})
+	measure(t, "search-code-json", 500*time.Millisecond, func() {
+		h.get(t, "/search?q=hello", "application/json", http.StatusOK)
+	})
 	measure(t, "info-refs", 150*time.Millisecond, func() {
 		h.infoRefs(t)
 	})
@@ -229,6 +232,7 @@ func liveStack(t *testing.T, bin string) *liveHarness {
 		func() error { return api.RegisterUser(table, deps) },
 		func() error { return api.RegisterAdmin(table, deps) },
 		func() error { return api.RegisterRepos(table, deps) },
+		func() error { return api.RegisterSearch(table, deps) },
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
 		func() error { return api.RegisterReview(table, deps) },
@@ -243,6 +247,7 @@ func liveStack(t *testing.T, bin string) *liveHarness {
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
 	api.RegisterReposViews(views)
+	api.RegisterSearchViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
