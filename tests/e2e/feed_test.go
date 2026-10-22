@@ -719,6 +719,7 @@ func TestFaultKillNine(t *testing.T) {
 			t.Fatalf("push reported success but main is %q", tips["refs/heads/main"])
 		}
 	})
+	t.Run("mirror", mirrorKillReconcile)
 }
 
 func TestEventsTailExpiredResnapshot(t *testing.T) {

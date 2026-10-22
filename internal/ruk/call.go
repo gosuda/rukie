@@ -356,3 +356,168 @@ func cancelTyped(pc *conn, s *stream) {
 	_ = pc.writeKind(KindCancel, s.id, nil)
 	pc.release(s)
 }
+
+// CallAuth runs one typed method and returns its reply, threading an
+// injected transport credential into the open. A zero-value None auth
+// without a credential sends no transport_auth, preserving the Call bytes.
+func CallAuth[Req, Resp any](ctx context.Context, c *Client, repo Repo, method wire.Method, req Req, auth wire.TransportAuth) (Resp, error) {
+	args, err := jsonv2.Marshal(req)
+	var zero Resp
+	if err != nil {
+		return zero, fmt.Errorf("CallAuth: %w", err)
+	}
+	return callDecodedAuth[Resp](ctx, c, repo, "CallAuth", method, newRequestID(), args, authPointer(auth), true)
+}
+
+// RetryAuth resends one call with its first request id, threading an
+// injected transport credential into the open.
+func RetryAuth[Req, Resp any](ctx context.Context, c *Client, repo Repo, method wire.Method, requestID string, req Req, auth wire.TransportAuth) (Resp, error) {
+	args, err := jsonv2.Marshal(req)
+	var zero Resp
+	if err != nil {
+		return zero, fmt.Errorf("RetryAuth: %w", err)
+	}
+	return callDecodedAuth[Resp](ctx, c, repo, "RetryAuth", method, requestID, args, authPointer(auth), false)
+}
+
+func authPointer(auth wire.TransportAuth) *wire.TransportAuth {
+	if auth.Credential == "" && (auth.Kind == "" || auth.Kind == wire.TransportAuthNone) {
+		return nil
+	}
+	dup := auth
+	return &dup
+}
+
+func callDecodedAuth[Resp any](ctx context.Context, c *Client, repo Repo, op string, method wire.Method, requestID string, args []byte, auth *wire.TransportAuth, autoRetry bool) (Resp, error) {
+	var zero Resp
+	start := time.Now()
+	for attempt := range 2 {
+		resp, outcome, code, outBytes, again, err := attemptCallAuth[Resp](ctx, c, repo, op, method, requestID, args, auth, autoRetry)
+		if c.hooks.OnCall != nil {
+			c.hooks.OnCall(CallEvent{
+				Method:   string(method),
+				Duration: time.Since(start),
+				Attempts: uint8(attempt + 1),
+				Code:     code,
+				Outcome:  outcome,
+				OutBytes: outBytes,
+			})
+		}
+		if !again || attempt == 1 {
+			return resp, err
+		}
+	}
+	return zero, fmt.Errorf("callDecodedAuth: %w", ErrProtocol)
+}
+
+func attemptCallAuth[Resp any](ctx context.Context, c *Client, repo Repo, op string, method wire.Method, requestID string, args []byte, auth *wire.TransportAuth, autoRetry bool) (Resp, Outcome, string, int64, bool, error) {
+	var zero Resp
+	kind := method.Kind()
+	sessionful := kind != wire.MethodAnonymous && kind != wire.MethodBootstrap && kind != wire.MethodAdmin
+	var sessionID *string
+	if sessionful {
+		if autoRetry {
+			entry, err := c.ensureLiveSession(ctx, repo)
+			if err != nil {
+				return zero, NotCommitted, "", 0, false, err
+			}
+			if kind == wire.MethodMutation && !entry.active {
+				forbidden := &Error{Code: wire.CodeForbidden, Op: op, Message: "session lacks active authority", Outcome: NotCommitted}
+				return zero, NotCommitted, string(wire.CodeForbidden), 0, false, forbidden
+			}
+			sessionID = &entry.id
+		} else {
+			entry, err := c.ensureReplaySession(ctx, repo)
+			if err != nil {
+				return zero, NotCommitted, "", 0, false, err
+			}
+			sessionID = &entry.id
+		}
+	}
+	argsText := string(args)
+	open := wire.InvocationOpen{
+		Repo:          cmp.Or(repo.Handle, repo.Path),
+		Method:        string(method),
+		RequestID:     &requestID,
+		ArgsJSON:      &argsText,
+		SessionID:     sessionID,
+		TransportAuth: auth,
+	}
+	rawOpen, err := jsonv2.Marshal(open)
+	if err != nil {
+		return zero, NotCommitted, "", 0, false, fmt.Errorf("attemptCallAuth: %w", err)
+	}
+	pc, s, queued, err := c.pool.acquire(ctx)
+	if err != nil {
+		return zero, NotCommitted, "", 0, false, err
+	}
+	openedAt := time.Now()
+	if err := pc.writeKind(KindOpen, s.id, rawOpen); err != nil {
+		pc.fail(err)
+		pc.release(s)
+		facts := typedFacts{Attempted: true}
+		outcome := outcomeTyped(facts)
+		if kind == wire.MethodRead {
+			return zero, outcome, "", 0, autoRetry, fmt.Errorf("attemptCallAuth: %w", err)
+		}
+		return zero, outcome, "", 0, false, fmt.Errorf("attemptCallAuth: %w: %w", err, ErrOutcomeUnknown)
+	}
+	s.mu.Lock()
+	s.facts.Attempted = true
+	s.mu.Unlock()
+	snap, waitErr := waitTerminal(ctx, pc, s)
+	if waitErr != nil {
+		outcome := Unknown
+		if kind == wire.MethodRead {
+			outcome = NotCommitted
+		}
+		if ctx.Err() != nil {
+			return zero, outcome, "", int64(len(snap.output)), false, fmt.Errorf("attemptCallAuth: %w", ctx.Err())
+		}
+		facts := snap.facts
+		outcome = outcomeTyped(facts)
+		if cause := pc.cause(); cause != nil {
+			waitErr = fmt.Errorf("attemptCallAuth: %w: %w", waitErr, cause)
+		}
+		if kind == wire.MethodRead {
+			return zero, outcome, "", int64(len(snap.output)), autoRetry, fmt.Errorf("attemptCallAuth: %w", waitErr)
+		}
+		return zero, outcome, "", int64(len(snap.output)), false, fmt.Errorf("attemptCallAuth: %w: %w", waitErr, ErrOutcomeUnknown)
+	}
+	if snap.hasAcc {
+		c.handles.put(repo.Path, snap.accepted.RepoHandle)
+		if c.hooks.OnAccept != nil {
+			c.hooks.OnAccept(AcceptEvent{Wait: time.Since(openedAt), Conn: pc.id, Queued: queued})
+		}
+	}
+	outBytes := int64(len(snap.output))
+	if snap.exit.Status == 0 {
+		var out Resp
+		if err := decodeTypedBody(method, requestID, snap.output, &out); err != nil {
+			return zero, Committed, "OK", outBytes, false, err
+		}
+		return out, Committed, "OK", outBytes, false, nil
+	}
+	code := snap.exit.Code
+	if snap.hasRef {
+		code = string(snap.refusal.Code)
+	}
+	if sentinelFor(wire.Code(code)) == nil {
+		return zero, Unknown, code, outBytes, false, fmt.Errorf("attemptCallAuth: %w: exit code %q", ErrProtocol, code)
+	}
+	outcome := outcomeTyped(snap.facts)
+	if !snap.facts.Accepted && code == string(wire.CodeNotFound) && repo.Handle != "" {
+		c.handles.drop(repo.Path)
+		if _, err := c.OpenRepo(ctx, repo.Path); err == nil {
+			rerr := refusalErrorOf(op, snap, requestID, outcome)
+			return zero, outcome, code, outBytes, true, rerr
+		}
+	}
+	if snap.facts.Accepted && sessionful && (code == string(wire.CodeForbidden) || code == string(wire.CodeNotFound)) {
+		if _, err := c.recoverSession(ctx, repo, wire.Code(code)); err == nil {
+			rerr := refusalErrorOf(op, snap, requestID, outcome)
+			return zero, outcome, code, outBytes, true, rerr
+		}
+	}
+	return zero, outcome, code, outBytes, false, refusalErrorOf(op, snap, requestID, outcome)
+}

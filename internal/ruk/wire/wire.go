@@ -4,6 +4,8 @@ import (
 	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // Method names one daemon method.
@@ -38,6 +40,8 @@ type InvocationOpen struct {
 	OnBehalfOf *string `json:"on_behalf_of,omitempty"`
 	Repo       string  `json:"repo"`
 	Method     string  `json:"method"`
+
+	TransportAuth *TransportAuth `json:"transport_auth,omitempty"`
 }
 
 type ServiceOpen struct {
@@ -360,4 +364,196 @@ type ReplyEnvelope struct {
 type SchemaVersion struct {
 	Major uint32 `json:"major"`
 	Minor uint32 `json:"minor"`
+}
+
+// TransportAuthKind names one injected transport credential kind.
+type TransportAuthKind string
+
+const (
+	// TransportAuthNone sends no credential.
+	TransportAuthNone TransportAuthKind = "none"
+	// TransportAuthBasic sends a user:password credential.
+	TransportAuthBasic TransportAuthKind = "basic"
+	// TransportAuthBearer sends a bearer token credential.
+	TransportAuthBearer TransportAuthKind = "bearer"
+)
+
+// TransportAuth carries one credential injected for remote authentication
+// on a single call. It never enters digests, receipts, or logs: String
+// redacts the credential.
+type TransportAuth struct {
+	Kind       TransportAuthKind `json:"kind,omitempty"`
+	Credential string            `json:"credential,omitempty"`
+	Origin     string            `json:"origin,omitempty"`
+}
+
+// String names the kind and origin while redacting the credential.
+func (a TransportAuth) String() string {
+	return "TransportAuth{kind:" + string(a.Kind) + " origin:" + a.Origin + " credential:[redacted]}"
+}
+
+// GoString redacts like String: %#v must never dump the credential.
+func (a TransportAuth) GoString() string {
+	return "wire.TransportAuth{Kind:" + strconv.Quote(string(a.Kind)) +
+		" Origin:" + strconv.Quote(a.Origin) + " Credential:\"[redacted]\"}"
+}
+
+// Validate fails closed on a half-specified credential: an explicit kind
+// needs both the secret and a well-formed origin scope. None carries
+// nothing and always passes.
+func (a TransportAuth) Validate() error {
+	if a.Kind == TransportAuthNone || a.Kind == "" {
+		return nil
+	}
+	if a.Kind != TransportAuthBasic && a.Kind != TransportAuthBearer {
+		return fmt.Errorf("TransportAuth: unknown kind %q", a.Kind)
+	}
+	if a.Credential == "" {
+		return fmt.Errorf("TransportAuth: credential is required for kind %q", a.Kind)
+	}
+	scoped, err := OriginOf(a.Origin + "/")
+	if err != nil || scoped != a.Origin {
+		return fmt.Errorf("TransportAuth: origin must be scheme://host[:port]")
+	}
+	return nil
+}
+
+// OriginOf reports the origin scope of one http(s) URL: lowercase
+// scheme://host:port with browser defaults (80/443) filled in. Userinfo
+// never enters the scope. Only http and https have an origin.
+func OriginOf(rawURL string) (string, error) {
+	invalid := func() (string, error) {
+		return "", fmt.Errorf("OriginOf: URL has no http(s) origin")
+	}
+	scheme, rest, ok := strings.Cut(rawURL, "://")
+	if !ok {
+		return invalid()
+	}
+	scheme = asciiLower(scheme)
+	if scheme != "http" && scheme != "https" {
+		return invalid()
+	}
+	authority, _, _ := strings.Cut(rest, "/")
+	hostport := authority
+	if _, after, found := strings.CutLast(authority, "@"); found {
+		hostport = after
+	}
+	var host string
+	var port uint16
+	if bracketed, found := strings.CutPrefix(hostport, "["); found {
+		end := strings.IndexByte(bracketed, ']')
+		if end < 0 {
+			return invalid()
+		}
+		host = asciiLower(bracketed[:end])
+		if host == "" {
+			return invalid()
+		}
+		tail := bracketed[end+1:]
+		if tail != "" {
+			portText, prefixed := strings.CutPrefix(tail, ":")
+			if !prefixed {
+				return invalid()
+			}
+			parsed, good := parsePortU16(portText)
+			if !good {
+				return invalid()
+			}
+			port = parsed
+		}
+	} else if head, tail, found := strings.CutLast(hostport, ":"); found && isAllDigits(tail) {
+		if head == "" {
+			return invalid()
+		}
+		parsed, good := parsePortU16(tail)
+		if !good {
+			return invalid()
+		}
+		host = asciiLower(head)
+		port = parsed
+	} else {
+		if hostport == "" {
+			return invalid()
+		}
+		host = asciiLower(hostport)
+		port = 0
+	}
+	if port == 0 {
+		if scheme == "https" {
+			port = 443
+		} else {
+			port = 80
+		}
+	}
+	return scheme + "://" + host + ":" + fmt.Sprint(port), nil
+}
+
+// AuthForMirror builds the Basic credential for mirroring to targetURL:
+// username:token scoped to the URL's origin. It refuses an empty user or
+// token, a URL embedding userinfo, and a non-http(s) URL.
+func AuthForMirror(username, token, targetURL string) (TransportAuth, error) {
+	var zero TransportAuth
+	if username == "" || token == "" {
+		return zero, fmt.Errorf("AuthForMirror: username and token are required")
+	}
+	if hasUserinfo(targetURL) {
+		return zero, fmt.Errorf("AuthForMirror: remote URL embeds credentials")
+	}
+	origin, err := OriginOf(targetURL)
+	if err != nil {
+		return zero, fmt.Errorf("AuthForMirror: %w", err)
+	}
+	return TransportAuth{
+		Kind:       TransportAuthBasic,
+		Credential: username + ":" + token,
+		Origin:     origin,
+	}, nil
+}
+
+func hasUserinfo(rawURL string) bool {
+	_, rest, ok := strings.Cut(rawURL, "://")
+	if !ok {
+		return false
+	}
+	authority := rest
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		authority = rest[:i]
+	}
+	return strings.Contains(authority, "@")
+}
+
+func asciiLower(s string) string {
+	raw := []byte(s)
+	for i := range raw {
+		if raw[i] >= 'A' && raw[i] <= 'Z' {
+			raw[i] += 'a' - 'A'
+		}
+	}
+	return string(raw)
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range s {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func parsePortU16(s string) (uint16, bool) {
+	if !isAllDigits(s) {
+		return 0, false
+	}
+	var n uint32
+	for i := range s {
+		n = n*10 + uint32(s[i]-'0')
+		if n > 0xffff {
+			return 0, false
+		}
+	}
+	return uint16(n), true
 }

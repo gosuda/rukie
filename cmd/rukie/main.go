@@ -29,6 +29,7 @@ import (
 	"github.com/gosuda/rukie/internal/gitssh"
 	"github.com/gosuda/rukie/internal/logging"
 	"github.com/gosuda/rukie/internal/mcp"
+	"github.com/gosuda/rukie/internal/mirror"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/repowatch"
@@ -323,12 +324,20 @@ func runServe(argv []string) int {
 		defer close(sweepDone)
 		_ = app.watcher.RunSweeper(sweepCtx, time.Hour)
 	}()
+	mirrorDone := make(chan error, 1)
+	go func() {
+		mirrorDone <- app.mirror.Scheduler(workerCtx, 10*time.Second, "serve-mirror")
+	}()
 	ownedDrainRunners["followers"] = app.watcher.StopAll
 	ownedDrainRunners["queue"] = func(context.Context) error {
 		workerStop()
 		sweepStop()
 		<-workerDone
 		<-sweepDone
+		mirrorErr := <-mirrorDone
+		if mirrorErr != nil && !errors.Is(mirrorErr, context.Canceled) {
+			return mirrorErr
+		}
 		return nil
 	}
 	if app.ssh != nil {
@@ -549,6 +558,7 @@ type app struct {
 	watcher *repowatch.Watcher
 	jobs    *queue.Queue
 	ssh     *gitssh.Server
+	mirror  mirror.Worker
 }
 
 type gitFallback struct {
@@ -660,6 +670,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		Service: authSvc, Limiter: limiter, Reveals: authDeps.Reveals,
 		Store: st, Ruk: repoClient, Queue: repoJobs,
 		RepoRoot: cfg.Ruk.RepoRoot, RukBin: cfg.Ruk.BinaryPath,
+		SealKey:       key,
 		OnRepoCreated: func(repoID int64) { watcher.Start(ctx, repoID) },
 		OnRepoDeleted: watcher.Stop,
 	}
@@ -676,6 +687,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
 	if regErr := api.RegisterReview(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
+	if regErr := api.RegisterMirror(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
@@ -699,6 +714,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
+	api.RegisterMirrorViews(views)
 	api.RegisterOrgsViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
@@ -776,7 +792,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, err
 	}
-	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv}, cleanup, nil
+	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {

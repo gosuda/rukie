@@ -164,6 +164,7 @@ func writeRepoSettings(w io.Writer, c op.ViewCtx, out RepoSettingsPageOut) error
 		textField("confirm", "Confirm full name", "", false) +
 		submitField("Delete repository"))
 	b.WriteString("<p><a href=\"/" + esc(repo.Owner+"/"+repo.Name+"/settings/collaborators") + "\">Collaborators</a></p>\n")
+	b.WriteString("<p><a href=\"/" + esc(repo.Owner+"/"+repo.Name+"/settings/mirrors") + "\">Mirrors</a></p>\n")
 	_, err := io.WriteString(w, pageShell("Settings", b.String()))
 	return err
 }

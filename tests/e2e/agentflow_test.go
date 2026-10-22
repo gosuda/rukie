@@ -34,14 +34,20 @@ import (
 type apiHarness struct {
 	server  *httptest.Server
 	watcher *repowatch.Watcher
+	queue   *queue.Queue
+	sealKey []byte
 }
 
 func mountAPI(t *testing.T, s *stack) *apiHarness {
 	t.Helper()
+	var sealKey [32]byte
+	_, _ = rand.Read(sealKey[:])
+	mirrorQueue := queue.Open(s.st, time.Now)
 	deps := api.Deps{
 		Service: s.auth, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(),
-		Store: s.st, Ruk: s.client, Queue: queue.Open(s.st, time.Now),
+		Store: s.st, Ruk: s.client, Queue: mirrorQueue,
 		RepoRoot: s.roots, RukBin: rukBin(t),
+		SealKey: sealKey[:],
 	}
 	watcher := repowatch.New(repowatch.Config{
 		Store: s.st, Queue: queue.Open(s.st, time.Now), Client: s.client,
@@ -60,6 +66,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
 		func() error { return api.RegisterReview(table, deps) },
+		func() error { return api.RegisterMirror(table, deps) },
 	} {
 		if err := step(); err != nil {
 			t.Fatalf("register: %v", err)
@@ -77,6 +84,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
+	api.RegisterMirrorViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()
@@ -97,7 +105,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	front := api.RawBytes{Deps: deps}.Wrap(mounted)
 	ts := httptest.NewServer(front)
 	t.Cleanup(ts.Close)
-	return &apiHarness{server: ts, watcher: watcher}
+	return &apiHarness{server: ts, watcher: watcher, queue: mirrorQueue, sealKey: sealKey[:]}
 }
 
 func apiCall(t *testing.T, h *apiHarness, method, target, authHeader, body string) (int, map[string]any) {
@@ -426,6 +434,7 @@ func TestAgentFlow(t *testing.T) {
 			t.Fatalf("spoofed approval run = %d, want 409: ordinary comments never approve", spoofStatus)
 		}
 	})
+	t.Run("mirror", mirrorAgentFlow)
 }
 
 func TestAdminMethodsRefusedForNonAdminPeer(t *testing.T) {

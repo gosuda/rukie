@@ -32,5 +32,14 @@ linters:
       - path: ^internal/store/auth_token\.go$
         text: G101
         linters: [gosec]
+      # Daemon wire JSON key order is pinned by golden tests
+      # (TestPushArgsMarshalGolden, TestInvocationOpenAuthOmission); reordering
+      # these fields would change the wire format.
+      - path: ^internal/ruk/push\.go$
+        text: (PushUpdate has|struct has)
+        linters: [govet]
+      - path: ^internal/ruk/wire/wire\.go$
+        text: InvocationOpen has
+        linters: [govet]
 formatters:
   enable: [gofmt, goimports]

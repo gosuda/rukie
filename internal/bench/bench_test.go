@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,10 +91,10 @@ func TestPerfBudget(t *testing.T) {
 		h.get(t, "/ada/hello", "text/html", http.StatusOK)
 	})
 	measure(t, "tree-json", 100*time.Millisecond, func() {
-		h.get(t, "/ada/hello/tree/main", "application/json", http.StatusOK)
+		h.get(t, "/ada/hello/tree/main/docs", "application/json", http.StatusOK)
 	})
 	measure(t, "blob-html", 200*time.Millisecond, func() {
-		h.get(t, "/ada/hello/blob/main/README.md", "text/html", http.StatusOK)
+		h.get(t, "/ada/hello/blob/main/docs/README.md", "text/html", http.StatusOK)
 	})
 	measure(t, "info-refs", 150*time.Millisecond, func() {
 		h.infoRefs(t)
@@ -101,8 +102,10 @@ func TestPerfBudget(t *testing.T) {
 }
 
 type liveHarness struct {
-	api string
-	git string
+	api    string
+	git    string
+	tokens []string
+	calls  atomic.Uint64
 }
 
 func (h *liveHarness) get(t *testing.T, target, accept string, want int) {
@@ -112,14 +115,17 @@ func (h *liveHarness) get(t *testing.T, target, accept string, want int) {
 		t.Fatalf("request: %v", err)
 	}
 	req.Header.Set("Accept", accept)
+	if len(h.tokens) > 0 {
+		req.Header.Set("Authorization", "Bearer "+h.tokens[h.calls.Add(1)%uint64(len(h.tokens))])
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != want {
-		t.Fatalf("GET %s %s = %d, want %d", target, accept, resp.StatusCode, want)
+		t.Fatalf("GET %s %s = %d, want %d: %s", target, accept, resp.StatusCode, want, raw)
 	}
 }
 
@@ -128,6 +134,9 @@ func (h *liveHarness) infoRefs(t *testing.T) {
 	req, err := http.NewRequest("GET", h.git+"/ada/hello.git/info/refs?service=git-upload-pack", nil)
 	if err != nil {
 		t.Fatalf("request: %v", err)
+	}
+	if len(h.tokens) > 0 {
+		req.SetBasicAuth("ada", h.tokens[h.calls.Add(1)%uint64(len(h.tokens))])
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -188,6 +197,20 @@ func liveStack(t *testing.T, bin string) *liveHarness {
 	admin, err := svc.BootstrapAdmin(ctx, "ada", "long-test-password-01", "127.0.0.1")
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
+	}
+	scopes, serr := auth.ParseScopeSet([]string{"repo:read"})
+	if serr != nil {
+		t.Fatalf("scopes: %v", serr)
+	}
+	harness := &liveHarness{}
+	for range 16 {
+		secret, serr := svc.CreateToken(ctx, auth.CreateTokenInput{
+			Name: "bench", Scopes: scopes, UserID: admin.ID,
+		})
+		if serr != nil {
+			t.Fatalf("create token: %v", serr)
+		}
+		harness.tokens = append(harness.tokens, secret.Secret)
 	}
 	seedBenchRepo(ctx, t, st, client, seedConfig{bin: bin, roots: roots, ownerID: admin.ID})
 	deps := api.Deps{
@@ -255,7 +278,9 @@ func liveStack(t *testing.T, bin string) *liveHarness {
 	}
 	gitServer := httptest.NewServer(git)
 	t.Cleanup(gitServer.Close)
-	return &liveHarness{api: apiServer.URL, git: gitServer.URL}
+	harness.api = apiServer.URL
+	harness.git = gitServer.URL
+	return harness
 }
 
 type seedConfig struct {
@@ -296,9 +321,18 @@ func seedBenchRepo(ctx context.Context, t *testing.T, st *store.Store, client *r
 		t.Fatalf("hash-object: %v", err)
 	}
 	blob := strings.TrimSpace(string(blobOut))
-	treeFile := filepath.Join(t.TempDir(), "tree")
+	subFile := filepath.Join(t.TempDir(), "subtree")
 	blobRaw := mustHex(t, blob)
-	entry := append([]byte("100644 README.md\x00"), blobRaw...)
+	subEntry := append([]byte("100644 README.md\x00"), blobRaw...)
+	if werr := os.WriteFile(subFile, subEntry, 0o600); werr != nil {
+		t.Fatalf("subtree file: %v", werr)
+	}
+	subOut, serr := rukproc.Run(ctx, bin, []string{"git", "--git-dir=" + repoDir, "hash-object", "-w", "-t", "tree", subFile}, env)
+	if serr != nil {
+		t.Fatalf("mksubtree: %v\n%s", serr, subOut)
+	}
+	treeFile := filepath.Join(t.TempDir(), "tree")
+	entry := append([]byte("40000 docs\x00"), mustHex(t, strings.TrimSpace(string(subOut)))...)
 	if werr := os.WriteFile(treeFile, entry, 0o600); werr != nil {
 		t.Fatalf("tree file: %v", werr)
 	}
@@ -330,7 +364,7 @@ func seedBenchRepo(ctx context.Context, t *testing.T, st *store.Store, client *r
 		repoID, ierr = tx.InsertRepo(now, store.RepoInsert{
 			OwnerUserID:   int64OrNull(ownerID),
 			Name:          "hello",
-			Visibility:    "private",
+			Visibility:    "public",
 			Topics:        "[]",
 			DefaultBranch: "main",
 			RukPath:       "ada/hello.git",
