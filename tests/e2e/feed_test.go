@@ -720,6 +720,7 @@ func TestFaultKillNine(t *testing.T) {
 		}
 	})
 	t.Run("mirror", mirrorKillReconcile)
+	t.Run("ci_attest", ciAttestFault)
 }
 
 func TestEventsTailExpiredResnapshot(t *testing.T) {

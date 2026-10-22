@@ -10,6 +10,7 @@ import (
 
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/ruk"
@@ -23,6 +24,7 @@ type Deps struct {
 	Store         *store.Store
 	Ruk           *ruk.Client
 	Queue         *queue.Queue
+	CI            *ci.Controller
 	OnRepoCreated func(repoID int64)
 	OnRepoDeleted func(repoID int64)
 	Clock         func() time.Time

@@ -4,7 +4,9 @@ package e2e
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -22,6 +24,7 @@ import (
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/api"
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/repowatch"
@@ -35,6 +38,7 @@ type apiHarness struct {
 	server  *httptest.Server
 	watcher *repowatch.Watcher
 	queue   *queue.Queue
+	ci      *ci.Controller
 	sealKey []byte
 }
 
@@ -48,6 +52,16 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		Store: s.st, Ruk: s.client, Queue: mirrorQueue,
 		RepoRoot: s.roots, RukBin: rukBin(t),
 		SealKey: sealKey[:],
+	}
+	ciSeed := sha256.Sum256(append([]byte("rukie-ci-attest-v1"), sealKey[:]...))
+	deps.CI = ci.NewController(s.st, ci.Config{
+		Now: time.Now, SignKey: ed25519.NewKeyFromSeed(ciSeed[:]), SealKey: sealKey[:],
+		Deliver: func(ctx context.Context, row ci.Outbox, signature string) (string, error) {
+			return deps.CIDeliver()(ctx, row, signature)
+		},
+	})
+	if err := deps.CI.Recover(t.Context()); err != nil {
+		t.Fatalf("ci recover: %v", err)
 	}
 	watcher := repowatch.New(repowatch.Config{
 		Store: s.st, Queue: queue.Open(s.st, time.Now), Client: s.client,
@@ -67,6 +81,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterRefs(table, deps) },
 		func() error { return api.RegisterReview(table, deps) },
 		func() error { return api.RegisterMirror(table, deps) },
+		func() error { return api.RegisterCI(table, deps) },
 	} {
 		if err := step(); err != nil {
 			t.Fatalf("register: %v", err)
@@ -85,6 +100,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
 	api.RegisterMirrorViews(views)
+	api.RegisterCIViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()
@@ -102,10 +118,10 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	if err != nil {
 		t.Fatalf("mount: %v", err)
 	}
-	front := api.RawBytes{Deps: deps}.Wrap(mounted)
+	front := deps.CIRaw(api.RawBytes{Deps: deps}.Wrap(mounted))
 	ts := httptest.NewServer(front)
 	t.Cleanup(ts.Close)
-	return &apiHarness{server: ts, watcher: watcher, queue: mirrorQueue, sealKey: sealKey[:]}
+	return &apiHarness{server: ts, watcher: watcher, queue: mirrorQueue, ci: deps.CI, sealKey: sealKey[:]}
 }
 
 func apiCall(t *testing.T, h *apiHarness, method, target, authHeader, body string) (int, map[string]any) {
@@ -435,6 +451,7 @@ func TestAgentFlow(t *testing.T) {
 		}
 	})
 	t.Run("mirror", mirrorAgentFlow)
+	t.Run("ci_attest", ciAttestAgentFlow)
 }
 
 func TestAdminMethodsRefusedForNonAdminPeer(t *testing.T) {

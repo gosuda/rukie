@@ -22,6 +22,17 @@ linters:
       - path: ^internal/op/mount_huma\.go$
         text: G705
         linters: [gosec]
+      # The CI artifact log/blob handler serves store bytes with a sniffed
+      # content type, like the raw-blob handler above; the sink is the
+      # content-addressed artifact store, never reflected markup.
+      - path: ^internal/api/ci_runner\.go$
+        text: G705
+        linters: [gosec]
+      # SSH string length prefixes encode protocol-small statement fields
+      # already held in memory; no field approaches 4 GiB.
+      - path: ^internal/ci/signature\.go$
+        text: G115
+        linters: [gosec]
       # RFC 6238 mandates HMAC-SHA-1 for TOTP; totp.go is its only user here.
       - path: ^internal/auth/totp\.go$
         text: G505
