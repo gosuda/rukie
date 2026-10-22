@@ -61,6 +61,10 @@ func run(argv []string) int {
 	switch argv[0] {
 	case "serve":
 		return runServe(argv[1:])
+	case "runner":
+		return runRunner(argv[1:])
+	case "job-exec":
+		return runJobExec(argv[1:])
 	case "dev":
 		return runDev(argv[1:])
 	case "bootstrap":
