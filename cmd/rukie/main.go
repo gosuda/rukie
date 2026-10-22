@@ -694,6 +694,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	if regErr := api.RegisterIntents(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	if regErr := api.RegisterOrgs(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
@@ -715,6 +719,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
 	api.RegisterMirrorViews(views)
+	api.RegisterIntentsViews(views)
 	api.RegisterOrgsViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
