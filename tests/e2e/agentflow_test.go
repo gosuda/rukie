@@ -84,6 +84,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
+	api.RegisterMirrorViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
 	mux := http.NewServeMux()
@@ -433,6 +434,7 @@ func TestAgentFlow(t *testing.T) {
 			t.Fatalf("spoofed approval run = %d, want 409: ordinary comments never approve", spoofStatus)
 		}
 	})
+	t.Run("mirror", mirrorAgentFlow)
 }
 
 func TestAdminMethodsRefusedForNonAdminPeer(t *testing.T) {
