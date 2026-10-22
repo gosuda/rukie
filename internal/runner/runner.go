@@ -58,13 +58,13 @@ func fail(code, msg, remedy string) *Failure {
 
 // Config is the runner.toml shape.
 type Config struct {
-	Labels      []string `toml:"labels" json:"labels"`
 	Server      string   `toml:"server" json:"server"`
 	RunnerID    string   `toml:"runner_id" json:"runner_id"`
 	Scope       string   `toml:"scope" json:"scope"`
 	PodmanPath  string   `toml:"podman_path" json:"podman_path"`
 	ProbeImage  string   `toml:"probe_image" json:"probe_image"`
 	StateDir    string   `toml:"state_dir" json:"state_dir"`
+	Labels      []string `toml:"labels" json:"labels"`
 	Capacity    int      `toml:"capacity" json:"capacity"`
 	MaxJobs     int      `toml:"max_jobs" json:"max_jobs"`
 	CPUs        float64  `toml:"cpus" json:"cpus"`

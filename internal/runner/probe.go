@@ -32,9 +32,9 @@ type ProbeCheck struct {
 
 // ProbeReport is the ordered probe outcome and probe.json body.
 type ProbeReport struct {
+	Podman   string       `json:"podman"`
 	Checks   []ProbeCheck `json:"checks"`
 	Failures []ProbeCheck `json:"failures"`
-	Podman   string       `json:"podman"`
 	Egress   bool         `json:"egress"`
 }
 
@@ -93,10 +93,10 @@ func flockFile(path string) (func(), error) {
 }
 
 type probeCtx struct {
-	cfg    Config
 	env    ProbeEnv
 	podman string
 	report ProbeReport
+	cfg    Config
 }
 
 func (c *probeCtx) fail(name, code, msg string, exit int) *Failure {
@@ -337,8 +337,8 @@ func probeP13(c *probeCtx) *Failure {
 }
 
 type probeStep struct {
-	name string
 	run  func(c *probeCtx) *Failure
+	name string
 }
 
 // RunProbe executes P1-P9 and P13 against the host. P10-P12 need a

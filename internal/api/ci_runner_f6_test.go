@@ -33,12 +33,12 @@ func f6DigestHex(data []byte) string {
 }
 
 type f6Req struct {
+	headers map[string]string
 	method  string
 	target  string
 	auth    string
 	body    string
 	raw     []byte
-	headers map[string]string
 }
 
 func f6Handler(e *repoEnv) http.Handler {

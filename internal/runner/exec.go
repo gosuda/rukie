@@ -19,8 +19,8 @@ import (
 
 // ExecSpec is the in-container step plan.
 type ExecSpec struct {
-	Steps []ExecStep        `json:"steps"`
 	Env   map[string]string `json:"env"`
+	Steps []ExecStep        `json:"steps"`
 }
 
 // ExecStep is one shell step.

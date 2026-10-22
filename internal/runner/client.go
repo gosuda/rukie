@@ -18,12 +18,12 @@ func encodeBase64(data []byte) string {
 
 // Grant is a leased and started attempt with its job spec.
 type Grant struct {
-	Attempt AttemptRef       `json:"attempt"`
-	Job     JobPayload       `json:"job"`
+	Timers  map[string]int64 `json:"timers"`
 	Run     RunPayload       `json:"run"`
 	Fetch   FetchPayload     `json:"fetch"`
 	Secrets []map[string]any `json:"secrets"`
-	Timers  map[string]int64 `json:"timers"`
+	Attempt AttemptRef       `json:"attempt"`
+	Job     JobPayload       `json:"job"`
 }
 
 // AttemptRef identifies a live attempt.
@@ -252,10 +252,10 @@ func (c *Client) PutArtifact(attempt AttemptRef, data []byte) error {
 
 // FinishInput is the terminal verdict for an attempt.
 type FinishInput struct {
-	Artifacts []ArtifactRef
 	Outcome   string
 	Class     string
 	LogSHA    string
+	Artifacts []ArtifactRef
 	ExitCode  int
 	Fence     int64
 	LogSeq    int64

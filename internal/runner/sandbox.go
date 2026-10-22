@@ -48,15 +48,15 @@ func backoffWithJitter(base time.Duration, attempt int) time.Duration {
 
 // SandboxRun describes one container invocation.
 type SandboxRun struct {
-	Caches     []CacheMount
-	RukieDir   string
+	ServerHost string
 	Name       string
 	Image      string
 	Network    string
 	WorkHost   string
 	LogHost    string
 	EnvFile    string
-	ServerHost string
+	RukieDir   string
+	Caches     []CacheMount
 	UID        int
 	GID        int
 	CPUs       float64

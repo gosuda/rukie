@@ -93,13 +93,13 @@ func (c *podmanContainer) Kill() error {
 
 // Loop owns one runner process lifetime.
 type Loop struct {
-	Config Config
+	Exec   ContainerExec
 	Stdout *os.File
 	Stderr *os.File
-	Exec   ContainerExec
 	Client *Client
 	Now    func() time.Time
 	Mono   func() int64
+	Config Config
 	Tick   time.Duration
 	Once   bool
 }
@@ -406,11 +406,11 @@ func (l *Loop) finish(ctx context.Context, done AttemptDone) {
 }
 
 type logStreamer struct {
-	sum     []byte
-	attempt AttemptRef
-	logDir  string
 	client  *Client
 	offsets map[string]int64
+	logDir  string
+	sum     []byte
+	attempt AttemptRef
 	seq     int64
 	end     int64
 }
