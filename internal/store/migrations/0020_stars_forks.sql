@@ -21,3 +21,5 @@ CREATE INDEX idx_repos_explore_created ON repos(visibility, created_at DESC, id 
 CREATE INDEX idx_repos_explore_stars ON repos(visibility, star_count DESC, id DESC);
 CREATE INDEX idx_repos_explore_name ON repos(visibility, name COLLATE NOCASE, id);
 CREATE INDEX idx_orgs_explore ON orgs(visibility, lower_name, id);
+CREATE UNIQUE INDEX idx_repos_org_name ON repos(org_id, name) WHERE owner_user_id IS NULL;
+CREATE UNIQUE INDEX idx_repos_user_name ON repos(owner_user_id, name) WHERE owner_user_id IS NOT NULL;

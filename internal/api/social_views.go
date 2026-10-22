@@ -145,7 +145,7 @@ func writeForkPage(w io.Writer, c op.ViewCtx, out ForkPageOut) error {
 		formOpen(action, c.CSRF) +
 		textField("target_owner", "Destination owner (your username or an organization you can create in)", c.Input.Get("target_owner"), false) +
 		textField("name", "Repository name", name, false) +
-		checkField("default_branch_only", "Copy only the default branch and its tags", c.Input.Get("default_branch_only") != "") +
+		checkField("default_branch_only", "Copy only the default branch and its tags; freeze markers do not carry over, so a fork's tags start mutable", c.Input.Get("default_branch_only") != "") +
 		submitField("Create fork") +
 		"<p>" + link("/"+out.Owner+"/"+out.Repo, "Back to repository") + "</p>\n"
 	_, err := io.WriteString(w, pageShell("Fork repository", body))

@@ -521,6 +521,15 @@ func TestForkTokenNamespaceOnly(t *testing.T) {
 		t.Fatalf("org namespace refusal carries no problem code: %s", raw)
 	}
 
+	adaToken := apiToken(t, h, adaSession, "repo:read repo:create")
+	status, _, raw = socialDo(t, h, "POST", forksPath("ada", "open"), adaToken, `{"name":"owner-org-fork","target_owner":"acme"}`)
+	if status != http.StatusForbidden {
+		t.Fatalf("org-owner token fork into own org = %d, want 403 (only the token-namespace guard refuses this): %s", status, raw)
+	}
+	if leftStatus, leftBody := apiCall(t, h, "GET", "/acme/owner-org-fork", adaSession, ""); leftStatus != http.StatusNotFound {
+		t.Fatalf("refused org-owner token fork left a repo behind (%d): %v", leftStatus, leftBody)
+	}
+
 	orgFork := createFork(t, h, "ada", "open", adaSession, `{"name":"session-org","target_owner":"acme"}`)
 	if got := orgFork["owner"]; got != "acme" {
 		t.Fatalf("session org fork owner = %v, want acme", got)

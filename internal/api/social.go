@@ -388,6 +388,9 @@ func (d Deps) forkCreateCore(ctx context.Context, p op.Principal, owner, repo st
 	if cerr != nil {
 		return ForkCreateOut{}, cerr
 	}
+	if aerr := d.checkRepoAccess(rq, rc.row, "repo.view", ""); aerr != nil {
+		return ForkCreateOut{}, aerr
+	}
 	dest, derr := d.forkDestination(ctx, rq, body.TargetOwner)
 	if derr != nil {
 		return ForkCreateOut{}, derr
@@ -494,10 +497,13 @@ func (d Deps) forkCreateCore(ctx context.Context, p op.Principal, owner, repo st
 		return gerr
 	})
 	if werr != nil {
-		d.deleteForkStore(ctx, destAbs)
+		// A unique violation means a concurrent fork committed this name
+		// first and the store at destAbs belongs to the winner; only the
+		// non-unique failure path may roll the store back.
 		if isUniqueViolation(werr) {
 			return ForkCreateOut{}, op.Errorf(op.CodeConflict, "repository name is already taken")
 		}
+		d.deleteForkStore(ctx, destAbs)
 		return ForkCreateOut{}, op.Wrap(op.CodeInternal, werr, "fork record failed")
 	}
 	if d.OnRepoCreated != nil {
