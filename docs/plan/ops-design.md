@@ -249,11 +249,10 @@ Token-bucket per key, enforced in-process before the op table.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | bool | `true` | |
-| `requests_per_minute` | uint | `600` | Per authenticated principal (user/token) across HTTP API + MCP. |
+| `requests_per_minute` | uint | `300` | Per authenticated token across HTTP API + MCP. |
 | `anonymous_per_minute` | uint | `60` | Per source IP for unauthenticated reads. |
-| `push_per_minute_per_repo` | uint | `30` | Git push operations per repo (anti-flap). |
-| `burst` | uint | `50` | Bucket burst above the per-minute rate. |
-| `ban_minutes` | uint | `0` | `0` = never ban, only 429. Nonzero = temp-ban repeat 429 offenders (logged + metric). |
+| `burst` | uint | `600` | Per-token bucket capacity. |
+| `ban_minutes` | uint | `10` | Cooldown after 60 Git authentication failures from one source IP within one minute. |
 
 Responses: `429 application/problem+json` (RFC 9457) with
 `Retry-After` seconds. MCP tools surface the same as a typed error.

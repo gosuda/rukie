@@ -2,6 +2,7 @@ package access
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,7 +15,6 @@ const (
 	anonRatePerMinute  = 60.0
 	anonBurst          = 60.0
 	gitFailRatePerMin  = 60.0
-	gitCooldown        = 10 * time.Minute
 	loginMaxFailures   = 5
 	loginWindow        = 10 * time.Minute
 )
@@ -30,25 +30,66 @@ type gitState struct {
 }
 
 type Limiter struct {
-	now       func() time.Time
-	tokens    map[string]*bucket
-	anons     map[string]*bucket
-	logins    map[string][]time.Time
-	gitFails  map[string]*gitState
-	tokenRate float64
-	tokenCap  float64
-	mu        sync.Mutex
+	now         func() time.Time
+	tokens      map[string]*bucket
+	anons       map[string]*bucket
+	logins      map[string][]time.Time
+	gitFails    map[string]*gitState
+	tokenRate   float64
+	anonRate    float64
+	tokenCap    float64
+	gitCooldown time.Duration
+	enabled     bool
+	mu          sync.Mutex
+}
+
+// LimiterConfig sets request-rate limits and the master enable switch.
+type LimiterConfig struct {
+	RequestsPerMinute  uint
+	AnonymousPerMinute uint
+	Burst              uint
+	BanMinutes         uint
+	Enabled            bool
+}
+
+const gitCooldownMinutes = 10
+
+// DefaultLimiterConfig returns the limits that preserve current production behavior.
+func DefaultLimiterConfig() LimiterConfig {
+	return LimiterConfig{
+		RequestsPerMinute:  uint(tokenRatePerMinute),
+		AnonymousPerMinute: uint(anonRatePerMinute),
+		Burst:              uint(tokenBurst),
+		BanMinutes:         gitCooldownMinutes,
+		Enabled:            true,
+	}
 }
 
 func NewLimiter() *Limiter {
+	return NewLimiterWithConfig(DefaultLimiterConfig())
+}
+
+// NewLimiterWithConfig creates a limiter from explicit rate-limit settings.
+func cooldownDuration(minutes uint) time.Duration {
+	duration, err := time.ParseDuration(strconv.FormatUint(uint64(minutes), 10) + "m")
+	if err != nil {
+		return time.Duration(1<<63 - 1)
+	}
+	return duration
+}
+
+func NewLimiterWithConfig(cfg LimiterConfig) *Limiter {
 	return &Limiter{
-		now:       time.Now,
-		tokens:    map[string]*bucket{},
-		anons:     map[string]*bucket{},
-		logins:    map[string][]time.Time{},
-		gitFails:  map[string]*gitState{},
-		tokenRate: tokenRatePerMinute / 60.0,
-		tokenCap:  tokenBurst,
+		now:         time.Now,
+		tokens:      map[string]*bucket{},
+		anons:       map[string]*bucket{},
+		logins:      map[string][]time.Time{},
+		gitFails:    map[string]*gitState{},
+		tokenRate:   float64(cfg.RequestsPerMinute) / 60.0,
+		anonRate:    float64(cfg.AnonymousPerMinute) / 60.0,
+		tokenCap:    float64(cfg.Burst),
+		gitCooldown: cooldownDuration(cfg.BanMinutes),
+		enabled:     cfg.Enabled,
 	}
 }
 
@@ -71,6 +112,9 @@ func takeToken(b *bucket, now time.Time, rate, capacity float64) (bool, time.Dur
 }
 
 func (l *Limiter) GitCooldown(id string) (bool, time.Duration) {
+	if !l.enabled {
+		return false, 0
+	}
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -86,6 +130,9 @@ func (l *Limiter) GitCooldown(id string) (bool, time.Duration) {
 
 func (l *Limiter) Admit(ctx context.Context, key op.RateKey) op.RateDecision {
 	_ = ctx
+	if !l.enabled {
+		return op.RateDecision{Allow: true}
+	}
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -104,7 +151,7 @@ func (l *Limiter) Admit(ctx context.Context, key op.RateKey) op.RateDecision {
 			b = &bucket{tokens: anonBurst, last: now}
 			l.anons[key.ID] = b
 		}
-		allow, wait := takeToken(b, now, anonRatePerMinute/60.0, anonBurst)
+		allow, wait := takeToken(b, now, l.anonRate, anonBurst)
 		return op.RateDecision{Allow: allow, RetryAfter: wait}
 	case op.RateIPLogin:
 		var kept []time.Time
@@ -136,8 +183,8 @@ func (l *Limiter) Admit(ctx context.Context, key op.RateKey) op.RateDecision {
 		}
 		st.failures = kept
 		if float64(len(kept)) >= gitFailRatePerMin {
-			st.blocked = now.Add(gitCooldown)
-			return op.RateDecision{RetryAfter: gitCooldown}
+			st.blocked = now.Add(l.gitCooldown)
+			return op.RateDecision{RetryAfter: l.gitCooldown}
 		}
 		st.failures = append(st.failures, now)
 		return op.RateDecision{Allow: true}
