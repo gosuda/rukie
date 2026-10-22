@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -72,6 +74,7 @@ func TestLoopRidesOutHeartbeatErrors(t *testing.T) {
 	grant.Fetch.URL = src
 	grant.Fetch.Want = mustGitOut(t, src, "rev-parse", "HEAD")
 	grant.Fetch.ExpectTree = mustGitOut(t, src, "rev-parse", "HEAD^{tree}")
+	grant.Job.Caches = []Cache{{Name: "go", Path: "/cache/go", Mode: "exclusive"}}
 	flaky := &flakyHeartbeat{base: http.DefaultTransport, fails: 1}
 	client.HTTP = &http.Client{Timeout: 40 * time.Second, Transport: flaky}
 	state := t.TempDir()
@@ -88,6 +91,20 @@ func TestLoopRidesOutHeartbeatErrors(t *testing.T) {
 	}
 	if flaky.calls.Load() < 2 {
 		t.Fatalf("heartbeats seen = %d, want at least 2", flaky.calls.Load())
+	}
+	left, lerr := os.ReadDir(state + "/attempts")
+	if lerr != nil || len(left) != 0 {
+		t.Fatalf("attempt dir remains: %v %v", left, lerr)
+	}
+	remains := []string{}
+	_ = filepath.WalkDir(state, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && entry.Name() == ".inflight" {
+			remains = append(remains, path)
+		}
+		return nil
+	})
+	if len(remains) != 0 {
+		t.Fatalf("inflight markers remain: %v", remains)
 	}
 	_, jobs, err := c.Run(t.Context(), run.ID)
 	if err != nil {

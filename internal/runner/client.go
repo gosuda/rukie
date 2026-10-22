@@ -45,8 +45,16 @@ type JobPayload struct {
 	Steps        []StepPayload     `json:"steps"`
 	Env          map[string]string `json:"env"`
 	Artifacts    []string          `json:"artifacts"`
+	Caches       []Cache           `json:"caches"`
 	TimeoutS     int64             `json:"timeout_s"`
 	Pure         bool              `json:"pure"`
+}
+
+// Cache is one declared cache volume.
+type Cache struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Mode string `json:"mode"`
 }
 
 // StepPayload is one shell step.
@@ -275,6 +283,58 @@ type FinishReply struct {
 	Job      string `json:"job"`
 	Run      string `json:"run"`
 	Replayed bool   `json:"replayed"`
+}
+
+// Registration is a consumed single-use token.
+type Registration struct {
+	Token  string `json:"token"`
+	Runner struct {
+		ID string `json:"id"`
+	} `json:"runner"`
+}
+
+// Register consumes one single-use registration token.
+func (c *Client) Register(rkt string) (string, string, error) {
+	out, status, err := c.post("/-/ci/v1/register", "", map[string]any{"token": rkt})
+	if err != nil {
+		return "", "", err
+	}
+	if status != http.StatusOK {
+		return "", "", fmt.Errorf("Client.Register: %s", problemCode(out))
+	}
+	var decoded Registration
+	if err := jsonv2.Unmarshal(out, &decoded); err != nil {
+		return "", "", fmt.Errorf("Client.Register: %w", err)
+	}
+	return decoded.Runner.ID, decoded.Token, nil
+}
+
+// Rotate swaps the runner credential with fencing.
+func (c *Client) Rotate(fence int64) (string, int64, error) {
+	out, status, err := c.post("/-/ci/v1/runners/"+c.Runner+"/rotate", c.Token, map[string]any{
+		"fence": fence,
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	if status != http.StatusOK {
+		code := problemCode(out)
+		if code == "E_LEASE_LOST" {
+			return "", 0, &LeaseLostError{Code: code}
+		}
+		if leaseLost(code) {
+			return "", 0, &LeaseLostError{Code: code}
+		}
+		return "", 0, fmt.Errorf("Client.Rotate: %s", code)
+	}
+	var decoded struct {
+		Token string `json:"token"`
+		Fence int64  `json:"fence"`
+	}
+	if err := jsonv2.Unmarshal(out, &decoded); err != nil {
+		return "", 0, fmt.Errorf("Client.Rotate: %w", err)
+	}
+	return decoded.Token, decoded.Fence, nil
 }
 
 // Finish reports the terminal verdict with fencing.

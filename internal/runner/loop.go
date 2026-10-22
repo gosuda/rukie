@@ -113,11 +113,14 @@ func (l *Loop) mono() int64 {
 
 // AttemptWork is the prepared attempt directory.
 type AttemptWork struct {
-	Dir     string
-	Work    string
-	Log     string
-	Grant   *Grant
-	EnvFile string
+	Dir       string
+	Work      string
+	Log       string
+	Grant     *Grant
+	EnvFile   string
+	Caches    []CacheMount
+	CacheDirs []string
+	Unlocks   []func()
 }
 
 // PrepareAttempt materializes the exact tree and writes attempt files.
@@ -153,6 +156,32 @@ func PrepareAttempt(cfg Config, grant *Grant) (AttemptWork, error) {
 		"RUKIE_ATTEMPT="+grant.Attempt.ID,
 		"RUKIE_FENCE="+strconv.FormatInt(grant.Attempt.Fence, 10),
 	)
+	if err := os.WriteFile(filepath.Join(work.Dir, "attempt.token"), []byte(grant.Attempt.Token), 0600); err != nil {
+		return AttemptWork{}, fmt.Errorf("PrepareAttempt: %w", err)
+	}
+	for _, declared := range grant.Job.Caches {
+		dir, cerr := CacheDir(cfg.StateDir, grant.Run.Trust, key, declared.Name)
+		if cerr != nil {
+			releaseCaches(work)
+			return AttemptWork{}, cerr
+		}
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			releaseCaches(work)
+			return AttemptWork{}, fmt.Errorf("PrepareAttempt: %w", err)
+		}
+		unlock, lerr := flockFile(dir + ".lock")
+		if lerr != nil {
+			releaseCaches(work)
+			return AttemptWork{}, fmt.Errorf("PrepareAttempt: cache %s is busy", declared.Name)
+		}
+		work.Unlocks = append(work.Unlocks, unlock)
+		work.CacheDirs = append(work.CacheDirs, dir)
+		if err := os.WriteFile(filepath.Join(dir, ".inflight"), []byte(grant.Attempt.ID), 0600); err != nil {
+			releaseCaches(work)
+			return AttemptWork{}, fmt.Errorf("PrepareAttempt: %w", err)
+		}
+		work.Caches = append(work.Caches, CacheMount{Host: dir, Name: declared.Name})
+	}
 	if err := os.WriteFile(work.EnvFile, []byte(strings.Join(envLines, "\n")+"\n"), 0600); err != nil {
 		return AttemptWork{}, fmt.Errorf("PrepareAttempt: %w", err)
 	}
@@ -191,7 +220,7 @@ func repoKeyOf(grant *Grant) string {
 	trimmed = strings.TrimPrefix(trimmed, "/")
 	parts := strings.Split(trimmed, "/")
 	for i, part := range parts {
-		parts[i] = slugPath(part)
+		parts[i] = strings.ReplaceAll(slugPath(part), "-", "--")
 	}
 	return strings.Join(parts, "-")
 }
@@ -228,9 +257,17 @@ func (l LastAck) Stale(now int64) bool {
 	return now-l.At > l.Limit
 }
 
+func releaseCaches(work AttemptWork) {
+	for _, dir := range work.CacheDirs {
+		_ = os.Remove(filepath.Join(dir, ".inflight"))
+	}
+	for _, unlock := range work.Unlocks {
+		unlock()
+	}
+}
+
 // SandboxArgs renders the job container command.
 func SandboxArgs(cfg Config, podman string, grant *Grant, work AttemptWork) []string {
-	caches := []CacheMount{}
 	return BuildPodmanArgs(podman, SandboxRun{
 		Name:      "rukie-" + grant.Attempt.ID,
 		Image:     grant.Job.Image["ref"],
@@ -244,9 +281,55 @@ func SandboxArgs(cfg Config, podman string, grant *Grant, work AttemptWork) []st
 		WorkHost:  work.Work,
 		LogHost:   work.Log,
 		EnvFile:   work.EnvFile,
-		Caches:    caches,
+		Caches:    work.Caches,
 		RukieDir:  filepath.Join(work.Dir, ".rukie"),
 	})
+}
+
+// ReapAttempts refinishs completed attempts from disk and drops the rest.
+func ReapAttempts(stateDir string, client *Client) (int, int) {
+	refinished, abandoned := 0, 0
+	entries, err := os.ReadDir(filepath.Join(stateDir, "attempts"))
+	if err != nil {
+		return 0, 0
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(stateDir, "attempts", entry.Name())
+		token, terr := os.ReadFile(filepath.Join(dir, "attempt.token"))
+		raw, rerr := os.ReadFile(filepath.Join(dir, "result.json"))
+		if terr != nil || rerr != nil {
+			_ = os.RemoveAll(dir)
+			abandoned++
+			continue
+		}
+		var in FinishInput
+		if jerr := jsonv2.Unmarshal(raw, &in); jerr != nil {
+			_ = os.RemoveAll(dir)
+			abandoned++
+			continue
+		}
+		reply, ferr := client.Finish(AttemptRef{ID: entry.Name(), Fence: in.Fence, Token: strings.TrimSpace(string(token))}, in)
+		if ferr == nil || reply.Replayed {
+			_ = os.RemoveAll(dir)
+			refinished++
+			continue
+		}
+		if lost, ok := errors.AsType[*LeaseLostError](ferr); ok {
+			_ = lost
+			_ = os.RemoveAll(dir)
+			abandoned++
+			continue
+		}
+		if strings.Contains(ferr.Error(), "E_RESULT_CONFLICT") {
+			_ = os.RemoveAll(dir)
+			abandoned++
+			continue
+		}
+	}
+	return refinished, abandoned
 }
 
 // RunLoop pulls leases until the context ends.
@@ -297,15 +380,31 @@ func abandonedCode(abandoned bool) int {
 	return ExitOK
 }
 
+func releaseAttempt(work AttemptWork) {
+	releaseCaches(work)
+}
+
+func dropAttempt(work AttemptWork) {
+	releaseCaches(work)
+	_ = os.RemoveAll(work.Dir)
+}
+
 // Execute runs one granted attempt to a finish or an abandon.
 func (l *Loop) execute(ctx context.Context, grant *Grant) ExecuteOutcome {
 	work, err := PrepareAttempt(l.Config, grant)
 	if err != nil {
 		return ExecuteAbandoned
 	}
+	if verr := ValidateImageRef(grant.Job.Image["ref"]); verr != nil {
+		stream := &logStreamer{client: l.Client, attempt: grant.Attempt, logDir: work.Log, seq: -1}
+		l.finish(ctx, AttemptDone{Work: work, Grant: grant, Stream: stream, Outcome: "errored", Class: "infra", Exit: 125})
+		dropAttempt(work)
+		return ExecuteDone
+	}
 	timeout := time.Duration(grant.Job.TimeoutS) * time.Second
 	container, err := l.Exec.Start(SandboxArgs(l.Config, l.Config.PodmanPath, grant, work), timeout+2*time.Minute)
 	if err != nil {
+		releaseAttempt(work)
 		return ExecuteAbandoned
 	}
 	ack := LastAck{At: l.mono(), Limit: SelfFenceS * int64(time.Second)}
@@ -324,11 +423,13 @@ func (l *Loop) execute(ctx context.Context, grant *Grant) ExecuteOutcome {
 		case <-ctx.Done():
 			_ = container.Kill()
 			<-done
+			releaseAttempt(work)
 			return ExecuteAbandoned
 		case exit := <-done:
 			ticker.Stop()
 			outcome, class := MapVerdict(exit, cancelled)
 			l.finish(ctx, AttemptDone{Work: work, Grant: grant, Stream: stream, Outcome: outcome, Class: class, Exit: exit})
+			dropAttempt(work)
 			return ExecuteDone
 		case <-ticker.C:
 			reply, herr := l.Client.Heartbeat(grant.Attempt)
@@ -336,11 +437,13 @@ func (l *Loop) execute(ctx context.Context, grant *Grant) ExecuteOutcome {
 				if _, ok := errors.AsType[*LeaseLostError](herr); ok {
 					_ = container.Kill()
 					<-done
+					releaseAttempt(work)
 					return ExecuteAbandoned
 				}
 				if ack.Stale(l.mono()) {
 					_ = container.Kill()
 					<-done
+					releaseAttempt(work)
 					return ExecuteAbandoned
 				}
 				break
@@ -357,11 +460,11 @@ func (l *Loop) execute(ctx context.Context, grant *Grant) ExecuteOutcome {
 
 // AttemptDone carries the completed attempt and its verdict.
 type AttemptDone struct {
-	Work    AttemptWork
 	Grant   *Grant
 	Stream  *logStreamer
 	Outcome string
 	Class   string
+	Work    AttemptWork
 	Exit    int
 }
 

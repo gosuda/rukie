@@ -78,6 +78,19 @@ func ForbiddenFlags() []string {
 	return []string{"--device", "--privileged", "--volume", "--group-add", "--publish", "--add-host", "--sysctl", "--cgroup-parent"}
 }
 
+// ValidateImageRef rejects option-like or blank image references.
+func ValidateImageRef(ref string) error {
+	if ref == "" || strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("ValidateImageRef: image reference %q is not runnable", ref)
+	}
+	for _, letter := range ref {
+		if letter == ' ' || letter == '\t' || letter == '\n' || letter == '\r' {
+			return fmt.Errorf("ValidateImageRef: image reference %q is not runnable", ref)
+		}
+	}
+	return nil
+}
+
 // BuildPodmanArgs renders one podman invocation for probe and jobs.
 func BuildPodmanArgs(podman string, run SandboxRun) []string {
 	memory := run.MemoryMB << 20
@@ -112,7 +125,7 @@ func BuildPodmanArgs(podman string, run SandboxRun) []string {
 	for _, cache := range run.Caches {
 		args = append(args, "--mount=type=bind,src="+cache.Host+",dst=/cache/"+cache.Name+",nosuid,nodev")
 	}
-	args = append(args, run.Image)
+	args = append(args, "--", run.Image)
 	if run.Probe {
 		args = append(args, "--probe")
 		return args
@@ -235,6 +248,7 @@ func VerifyTree(mirror, want, expect string) error {
 }
 
 // Materialize writes the exact tree into dir with no .git directory.
+// Symlinks materialize last so no file is ever written through a link.
 func Materialize(mirror, tree, dir string) error {
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("Materialize: %w", err)
@@ -243,7 +257,12 @@ func Materialize(mirror, tree, dir string) error {
 	if err != nil {
 		return fmt.Errorf("Materialize: %w", err)
 	}
-	for _, entry := range strings.Split(string(entries), "\x00") {
+	type link struct {
+		name   string
+		target string
+	}
+	links := []link{}
+	for entry := range strings.SplitSeq(string(entries), "\x00") {
 		if entry == "" {
 			continue
 		}
@@ -277,23 +296,55 @@ func Materialize(mirror, tree, dir string) error {
 		if err != nil {
 			return fmt.Errorf("Materialize: %w", err)
 		}
+		if mode == "120000" {
+			links = append(links, link{name: clean, target: string(content)})
+			continue
+		}
 		perm := fs.FileMode(0644)
 		if mode == "100755" {
 			perm = 0755
-		} else if mode != "100644" && mode != "120000" {
+		} else if mode != "100644" {
 			return fmt.Errorf("Materialize: unsupported mode %s", mode)
-		}
-		if mode == "120000" {
-			if err := os.Symlink(string(content), target); err != nil {
-				return fmt.Errorf("Materialize: %w", err)
-			}
-			continue
 		}
 		if err := os.WriteFile(target, content, perm); err != nil {
 			return fmt.Errorf("Materialize: %w", err)
 		}
 	}
+	for _, pending := range links {
+		resolved, rerr := resolveLinkTarget(dir, pending.name, pending.target)
+		if rerr != nil {
+			return rerr
+		}
+		if err := os.Symlink(resolved, filepath.Join(dir, pending.name)); err != nil {
+			return fmt.Errorf("Materialize: %w", err)
+		}
+	}
 	return nil
+}
+
+func resolveLinkTarget(dir, name, target string) (string, error) {
+	if filepath.IsAbs(target) {
+		return "", fmt.Errorf("Materialize: link escapes the workspace %q", name)
+	}
+	resolved := filepath.Join(filepath.Dir(filepath.Join(dir, name)), target)
+	rel, err := filepath.Rel(dir, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("Materialize: link escapes the workspace %q", name)
+	}
+	parent := filepath.Dir(filepath.Join(dir, name))
+	for current := parent; current != dir && strings.HasPrefix(current, dir); current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", fmt.Errorf("Materialize: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("Materialize: link traverses a link %q", name)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("Materialize: link traverses a file %q", name)
+		}
+	}
+	return target, nil
 }
 
 // OpenLogChunk opens a container-written log file with the host-path rule.
@@ -328,6 +379,11 @@ func Digest(data []byte) string {
 
 // CacheDir returns the trust-scoped cache volume path.
 func CacheDir(stateDir, trust, repoKey, name string) (string, error) {
+	for _, part := range []string{trust, repoKey, name} {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, `/\`) {
+			return "", fmt.Errorf("CacheDir: cache scope escapes %q", part)
+		}
+	}
 	clean := filepath.Clean(name)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
 		return "", fmt.Errorf("CacheDir: cache name escapes %q", name)
@@ -341,7 +397,22 @@ func CollectArtifact(work, name string) (string, []byte, error) {
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
 		return "", nil, fmt.Errorf("CollectArtifact: artifact escapes %q", name)
 	}
-	raw, err := os.ReadFile(filepath.Join(work, clean))
+	f, err := os.OpenFile(filepath.Join(work, clean), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if info, serr := os.Lstat(filepath.Join(work, clean)); serr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", nil, fail("HOST_PATH_VIOLATION", name+" is a symlink", "declare the file itself as the artifact")
+		}
+		return "", nil, fmt.Errorf("CollectArtifact: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return "", nil, fmt.Errorf("CollectArtifact: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, fail("HOST_PATH_VIOLATION", name+" is not a regular file", "declare regular files as artifacts")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, ChunkMax+1))
 	if err != nil {
 		return "", nil, fmt.Errorf("CollectArtifact: %w", err)
 	}

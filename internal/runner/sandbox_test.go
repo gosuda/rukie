@@ -277,13 +277,30 @@ func TestSandboxP11RejectsEmptyOutput(t *testing.T) {
 }
 
 func TestSandboxP11ClassifiesUserns(t *testing.T) {
+	for _, row := range []struct {
+		stderr string
+		code   string
+	}{
+		{"Error: userns denied", "USERNS_DENIED"},
+		{"Error: creating container: apparmor: unprivileged user namespaces are denied", "USERNS_DENIED"},
+		{"Error: newuidmap: subuid range not found", "USERNS_DENIED"},
+	} {
+		env := passingEnv()
+		env.Run = func(string, ...string) ([]byte, []byte, error) {
+			return nil, []byte(row.stderr), os.ErrPermission
+		}
+		cfg := DefaultConfig(t.TempDir())
+		if _, rerr := SandboxProbe(cfg, env, "/usr/bin/podman"); rerr == nil || rerr.Code != row.code {
+			t.Fatalf("userns denial %q = %v, want E_%s", row.stderr, rerr, row.code)
+		}
+	}
 	env := passingEnv()
 	env.Run = func(string, ...string) ([]byte, []byte, error) {
-		return nil, []byte("Error: userns denied"), os.ErrPermission
+		return nil, []byte("Error: pull access denied"), os.ErrNotExist
 	}
 	cfg := DefaultConfig(t.TempDir())
-	if _, rerr := SandboxProbe(cfg, env, "/usr/bin/podman"); rerr == nil || rerr.Code != "USERNS_DENIED" {
-		t.Fatalf("userns denial = %v, want E_USERNS_DENIED", rerr)
+	if _, rerr := SandboxProbe(cfg, env, "/usr/bin/podman"); rerr == nil || rerr.Code != "SANDBOX_PROBE" {
+		t.Fatalf("pull failure = %v, want E_SANDBOX_PROBE", rerr)
 	}
 }
 
@@ -405,6 +422,135 @@ func TestSandboxMaterializeExactTree(t *testing.T) {
 func TestSandboxMaterializeRejectsEscape(t *testing.T) {
 	if err := Materialize(t.TempDir(), "nope", filepath.Join(t.TempDir(), "w")); err == nil {
 		t.Fatal("missing mirror materializes")
+	}
+}
+
+func TestSandboxMaterializeRejectsLinkEscape(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		target string
+		ok     bool
+	}{
+		{"absolute", "/etc/hostname", false},
+		{"parent", "../outside", false},
+		{"dotdot", "sub/../../outside", false},
+		{"ok", "real.txt", true},
+		{"ok-sub", "sub/in.txt", true},
+	} {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "src")
+		mustGit(t, src, "init")
+		mustGitFile(t, src, "real.txt", "data\n")
+		mustGitFile(t, src, "sub/in.txt", "data\n")
+		if err := os.Symlink(row.target, filepath.Join(src, "link")); err != nil {
+			t.Fatal(err)
+		}
+		tree := mustGitTree(t, src)
+		mirror := filepath.Join(dir, "mirror.git")
+		if err := UpdateMirror(mirror, src, "HEAD", os.Environ()); err != nil {
+			t.Fatalf("%s: mirror: %v", row.name, err)
+		}
+		out := filepath.Join(dir, "work")
+		err := Materialize(mirror, tree, out)
+		if row.ok && err != nil {
+			t.Fatalf("%s: %v", row.name, err)
+		}
+		if !row.ok && err == nil {
+			t.Fatalf("%s materialized", row.name)
+		}
+		if row.ok {
+			raw, err := os.ReadFile(filepath.Join(out, "link"))
+			if err != nil || string(raw) != "data\n" {
+				t.Fatalf("%s content = %q, %v", row.name, raw, err)
+			}
+		}
+	}
+}
+
+func mustGitTree(t *testing.T, dir string) string {
+	t.Helper()
+	mustGit(t, dir, "add", "-A")
+	mustGit(t, dir, "commit", "-m", "one")
+	return mustGitOut(t, dir, "rev-parse", "HEAD^{tree}")
+}
+
+func TestSandboxLinkTraversalRefused(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.MkdirAll(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveLinkTarget(dir, "link/evil", "x"); err == nil {
+		t.Fatal("link traversal accepted")
+	}
+	if _, err := resolveLinkTarget(dir, "a", "../b"); err == nil {
+		t.Fatal("parent escape accepted")
+	}
+	if _, err := resolveLinkTarget(dir, "a", "/abs"); err == nil {
+		t.Fatal("absolute target accepted")
+	}
+	got, err := resolveLinkTarget(dir, "a", "sub/f.txt")
+	if err != nil || got != "sub/f.txt" {
+		t.Fatalf("relative target = %q, %v", got, err)
+	}
+}
+
+func TestSandboxCollectRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.MkdirAll(work, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "real.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(work, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CollectArtifact(work, "link.txt"); err == nil {
+		t.Fatal("symlinked artifact collected")
+	} else if !strings.Contains(err.Error(), "HOST_PATH_VIOLATION") {
+		t.Fatalf("link artifact = %v, want E_HOST_PATH_VIOLATION", err)
+	}
+	if digest, raw, err := CollectArtifact(work, "real.txt"); err != nil || string(raw) != "data" || digest == "" {
+		t.Fatalf("real artifact = %q %v", raw, err)
+	}
+}
+
+func TestSandboxCacheScopeValidation(t *testing.T) {
+	for _, row := range []struct {
+		trust, repo, name string
+		ok                bool
+	}{
+		{"trusted", "o-r", "go", true},
+		{"untrusted", "o-r", "go", true},
+		{"../x", "o-r", "go", false},
+		{"trusted", "..", "go", false},
+		{"trusted", "o/r", "go", false},
+		{"trusted", "o-r", "../go", false},
+		{"", "o-r", "go", false},
+	} {
+		_, err := CacheDir(t.TempDir(), row.trust, row.repo, row.name)
+		if (err == nil) != row.ok {
+			t.Errorf("cache %v = %v, want ok=%v", row, err, row.ok)
+		}
+	}
+}
+
+func TestSandboxRepoKeyCollisionFree(t *testing.T) {
+	grant := func(url string) *Grant {
+		return &Grant{Fetch: FetchPayload{URL: url}}
+	}
+	seen := map[string]string{}
+	for _, url := range []string{"/o/a/b.git", "/o/a-b.git", "/o/a--b.git", "/o/a/b/c.git"} {
+		key := repoKeyOf(grant(url))
+		if prior, exists := seen[key]; exists {
+			t.Fatalf("key %q collides for %s and %s", key, prior, url)
+		}
+		seen[key] = url
 	}
 }
 
