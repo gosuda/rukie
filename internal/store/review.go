@@ -83,10 +83,15 @@ type IntentRow struct {
 	State          string
 	Contract       string
 	PublicID       string
+	LeaseMode      string
+	ClaimPaths     string
+	CloseReason    sql.NullString
 	AssigneeUserID sql.NullInt64
 	RepoID         int64
 	Number         int64
 	CreatedBy      int64
+	Version        int64
+	ClosedAt       sql.NullInt64
 	ID             int64
 	CreatedAt      int64
 	UpdatedAt      int64
@@ -101,6 +106,10 @@ type AskRow struct {
 	PublicID    string
 	AnsweredBy  sql.NullInt64
 	ExpiresAt   sql.NullInt64
+	DeadlineMS  int64
+	AnsweredAt  sql.NullInt64
+	Version     int64
+	RepoID      int64
 	IntentID    int64
 	CreatedBy   int64
 	ID          int64
@@ -552,194 +561,6 @@ VALUES (?, ?, ?, ?, ?)`, row.PublicID, row.PlanID, row.State, row.Detail, msOf(n
 	return row, nil
 }
 
-// InsertIntent creates an intent with the next per-repo number.
-func (tx *WriteTx) InsertIntent(now time.Time, row IntentRow) (IntentRow, error) {
-	inner, err := tx.live()
-	if err != nil {
-		return IntentRow{}, err
-	}
-	if row.PublicID == "" {
-		row.PublicID = string(NewID(now))
-	}
-	if row.Contract == "" {
-		row.Contract = "{}"
-	}
-	var maxNum sql.NullInt64
-	if qerr := inner.QueryRowContext(tx.ctx,
-		`SELECT max(number) FROM intents WHERE repo_id = ?`, row.RepoID).Scan(&maxNum); qerr != nil {
-		return IntentRow{}, qerr
-	}
-	number := int64(1)
-	if maxNum.Valid {
-		number = maxNum.Int64 + 1
-	}
-	ms := msOf(now)
-	res, ierr := inner.ExecContext(tx.ctx, `INSERT INTO intents
-(public_id, repo_id, number, title, body, state, contract, assignee_user_id, created_by, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
-		row.PublicID, row.RepoID, number, row.Title, row.Body, row.Contract,
-		nullInt(row.AssigneeUserID), row.CreatedBy, ms, ms)
-	if ierr != nil {
-		return IntentRow{}, ierr
-	}
-	id, ierr := res.LastInsertId()
-	if ierr != nil {
-		return IntentRow{}, ierr
-	}
-	row.ID = id
-	row.Number = number
-	row.State = "open"
-	row.CreatedAt = ms
-	row.UpdatedAt = ms
-	return row, nil
-}
-
-// GetIntent loads one intent inside a write transaction.
-func (tx *WriteTx) GetIntent(id int64) (IntentRow, error) {
-	inner, err := tx.live()
-	if err != nil {
-		return IntentRow{}, err
-	}
-	var row IntentRow
-	serr := inner.QueryRowContext(tx.ctx, `SELECT id, public_id, repo_id, number, title, body,
-state, contract, assignee_user_id, created_by, created_at, updated_at
-FROM intents WHERE id = ?`, id).Scan(
-		&row.ID, &row.PublicID, &row.RepoID, &row.Number, &row.Title, &row.Body,
-		&row.State, &row.Contract, &row.AssigneeUserID, &row.CreatedBy,
-		&row.CreatedAt, &row.UpdatedAt)
-	if errors.Is(serr, sql.ErrNoRows) {
-		return IntentRow{}, fmt.Errorf("GetIntent: %w: intent %d", ErrNotFound, id)
-	}
-	return row, serr
-}
-
-// SetIntentState moves an intent between open, blocked, and closed.
-func (tx *WriteTx) SetIntentState(now time.Time, id int64, state string) error {
-	inner, err := tx.live()
-	if err != nil {
-		return err
-	}
-	switch state {
-	case "open", "blocked", "closed":
-	default:
-		return fmt.Errorf("SetIntentState: unknown state %q", state)
-	}
-	moved, merr := execAffected(tx.ctx, inner,
-		`UPDATE intents SET state = ?, updated_at = ? WHERE id = ?`, state, msOf(now), id)
-	if merr != nil {
-		return merr
-	}
-	if moved == 0 {
-		return fmt.Errorf("SetIntentState: %w: intent %d", ErrNotFound, id)
-	}
-	return nil
-}
-
-// LinkIntentChange attaches a change to an intent.
-func (tx *WriteTx) LinkIntentChange(intentID, changeID int64, headOid string) error {
-	inner, err := tx.live()
-	if err != nil {
-		return err
-	}
-	_, ierr := inner.ExecContext(tx.ctx, `INSERT INTO intent_changes (intent_id, change_id, head_oid)
-VALUES (?, ?, ?) ON CONFLICT (intent_id, change_id) DO UPDATE SET head_oid = excluded.head_oid`,
-		intentID, changeID, headOid)
-	return ierr
-}
-
-// UnlinkIntentChange detaches a change from an intent.
-func (tx *WriteTx) UnlinkIntentChange(intentID, changeID int64) error {
-	inner, err := tx.live()
-	if err != nil {
-		return err
-	}
-	moved, merr := execAffected(tx.ctx, inner,
-		`DELETE FROM intent_changes WHERE intent_id = ? AND change_id = ?`, intentID, changeID)
-	if merr != nil {
-		return merr
-	}
-	if moved == 0 {
-		return fmt.Errorf("UnlinkIntentChange: %w: intent %d change %d", ErrNotFound, intentID, changeID)
-	}
-	return nil
-}
-
-// InsertAsk records a structured question on an intent.
-func (tx *WriteTx) InsertAsk(now time.Time, row AskRow) (AskRow, error) {
-	inner, err := tx.live()
-	if err != nil {
-		return AskRow{}, err
-	}
-	if row.PublicID == "" {
-		row.PublicID = string(NewID(now))
-	}
-	res, ierr := inner.ExecContext(tx.ctx, `INSERT INTO asks
-(public_id, intent_id, question, options, blocks_claim, state, answer, answered_by, expires_at, created_by, created_at)
-VALUES (?, ?, ?, ?, ?, 'asked', '', NULL, ?, ?, ?)`,
-		row.PublicID, row.IntentID, row.Question, row.Options, boolInt(row.BlocksClaim),
-		nullInt(row.ExpiresAt), row.CreatedBy, msOf(now))
-	if ierr != nil {
-		return AskRow{}, ierr
-	}
-	id, ierr := res.LastInsertId()
-	if ierr != nil {
-		return AskRow{}, ierr
-	}
-	row.ID = id
-	row.State = "asked"
-	row.CreatedAt = msOf(now)
-	return row, nil
-}
-
-// AnswerAsk records a human answer and unblocks the lease in the same row.
-func (tx *WriteTx) AnswerAsk(intentID, askID, answeredBy int64, answer string) error {
-	inner, err := tx.live()
-	if err != nil {
-		return err
-	}
-	moved, merr := execAffected(tx.ctx, inner, `UPDATE asks
-SET state = 'answered', answer = ?, answered_by = ? WHERE id = ? AND intent_id = ? AND state = 'asked'`,
-		answer, answeredBy, askID, intentID)
-	if merr != nil {
-		return merr
-	}
-	if moved == 0 {
-		return fmt.Errorf("AnswerAsk: %w: ask %d", ErrNotFound, askID)
-	}
-	return nil
-}
-
-// ExpireAsk marks an open ask expired without answering it.
-func (tx *WriteTx) ExpireAsk(askID int64) error {
-	inner, err := tx.live()
-	if err != nil {
-		return err
-	}
-	moved, merr := execAffected(tx.ctx, inner, `UPDATE asks
-SET state = 'expired' WHERE id = ? AND state = 'asked'`, askID)
-	if merr != nil {
-		return merr
-	}
-	if moved == 0 {
-		return fmt.Errorf("ExpireAsk: %w: ask %d", ErrNotFound, askID)
-	}
-	return nil
-}
-
-// CountOpenBlockingAsks counts asked blocking asks on an intent.
-func (tx *ReadTx) CountOpenBlockingAsks(intentID int64) (int64, error) {
-	inner, err := tx.live()
-	if err != nil {
-		return 0, err
-	}
-	var count int64
-	if qerr := inner.QueryRowContext(tx.ctx, `SELECT count(*) FROM asks
-WHERE intent_id = ? AND state = 'asked' AND blocks_claim = 1`, intentID).Scan(&count); qerr != nil {
-		return 0, qerr
-	}
-	return count, nil
-}
-
 // InsertView creates a named saved query with its first version.
 func (tx *WriteTx) InsertView(now time.Time, row ViewRow) (ViewRow, error) {
 	inner, err := tx.live()
@@ -797,6 +618,13 @@ VALUES (?, ?, ?, ?, ?)`, viewID, next, revset, predicates, msOf(now)); ierr != n
 		return 0, uerr
 	}
 	return next, nil
+}
+
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func nullInt(v sql.NullInt64) any {
