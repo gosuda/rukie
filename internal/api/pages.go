@@ -28,6 +28,7 @@ type Deps struct {
 	Clock         func() time.Time
 	RepoRoot      string
 	RukBin        string
+	SealKey       []byte
 }
 
 func (d Deps) now() time.Time {

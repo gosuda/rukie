@@ -631,6 +631,35 @@ func TestMirrorSetResult(t *testing.T) {
 	}
 }
 
+func TestMirrorSetManual(t *testing.T) {
+	st, now := openMirrorTest(t)
+	repoID, _ := seedMirrorRepo(t, st, now, "hello")
+	row := insertMirrorFixture(t, st, now, repoID, "edge")
+	at := msOf(now)
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		return tx.SetMirrorManual(now, row.ID)
+	}); err != nil {
+		t.Fatalf("set manual: %v", err)
+	}
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		return tx.SetMirrorManual(now, row.ID+999)
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing manual err = %v, want ErrNotFound", err)
+	}
+	if err := st.Read(t.Context(), func(tx *ReadTx) error {
+		got, gerr := tx.GetMirror(row.ID)
+		if gerr != nil {
+			return gerr
+		}
+		if got.LastManualAt != at {
+			t.Fatalf("last manual = %d, want %d", got.LastManualAt, at)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("after manual: %v", err)
+	}
+}
+
 func TestMirrorListPagination(t *testing.T) {
 	st, now := openMirrorTest(t)
 	repoID, _ := seedMirrorRepo(t, st, now, "hello")

@@ -549,6 +549,24 @@ next_run_at = ?, event_cursor = ?, adopted = ?`
 	return nil
 }
 
+// SetMirrorManual records one manual sync start for throttle checks.
+func (tx *WriteTx) SetMirrorManual(now time.Time, id int64) error {
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	moved, merr := execAffected(tx.ctx, inner, `UPDATE mirrors
+SET last_manual_at = ?, updated_at = ? WHERE id = ?`,
+		msOf(now), msOf(now), id)
+	if merr != nil {
+		return fmt.Errorf("SetMirrorManual: %w", mapErr(merr))
+	}
+	if moved == 0 {
+		return fmt.Errorf("SetMirrorManual: %w: mirror %d", ErrNotFound, id)
+	}
+	return nil
+}
+
 // PutCredential stores one sealed credential, replacing any prior seal for
 // the mirror while keeping the original created_at. Callers pass the stored
 // LastUsedAt through on rotation.

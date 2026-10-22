@@ -38,10 +38,13 @@ type apiHarness struct {
 
 func mountAPI(t *testing.T, s *stack) *apiHarness {
 	t.Helper()
+	var sealKey [32]byte
+	_, _ = rand.Read(sealKey[:])
 	deps := api.Deps{
 		Service: s.auth, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(),
 		Store: s.st, Ruk: s.client, Queue: queue.Open(s.st, time.Now),
 		RepoRoot: s.roots, RukBin: rukBin(t),
+		SealKey: sealKey[:],
 	}
 	watcher := repowatch.New(repowatch.Config{
 		Store: s.st, Queue: queue.Open(s.st, time.Now), Client: s.client,
@@ -60,6 +63,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
 		func() error { return api.RegisterReview(table, deps) },
+		func() error { return api.RegisterMirror(table, deps) },
 	} {
 		if err := step(); err != nil {
 			t.Fatalf("register: %v", err)

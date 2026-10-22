@@ -660,6 +660,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		Service: authSvc, Limiter: limiter, Reveals: authDeps.Reveals,
 		Store: st, Ruk: repoClient, Queue: repoJobs,
 		RepoRoot: cfg.Ruk.RepoRoot, RukBin: cfg.Ruk.BinaryPath,
+		SealKey:       key,
 		OnRepoCreated: func(repoID int64) { watcher.Start(ctx, repoID) },
 		OnRepoDeleted: watcher.Stop,
 	}
@@ -676,6 +677,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
 	if regErr := api.RegisterReview(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
+	if regErr := api.RegisterMirror(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
