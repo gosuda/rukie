@@ -27,7 +27,8 @@ func (tx *ReadTx) SearchReposFTS(q, afterName string, afterID int64, limit int) 
 	var arg any
 	if len([]rune(q)) < 3 {
 		query = `SELECT r.id, r.owner_user_id, r.org_id, r.name, r.visibility, r.description, r.website,
-	r.topics, r.default_branch, r.archived, r.deleted_at, r.purge_after, r.ruk_path, r.created_at, r.updated_at
+	r.topics, r.default_branch, r.archived, r.deleted_at, r.purge_after, r.ruk_path, r.created_at, r.updated_at,
+	r.state, r.fork_of_repo_id, r.fork_root_repo_id, r.star_count, r.forks_count
 	FROM repos r
 WHERE lower(r.name || ' ' || coalesce(r.description, '') || ' ' || coalesce(r.topics, '') || ' ' || coalesce(r.website, '')) LIKE ? ESCAPE '\'
 AND r.deleted_at IS NULL AND (r.name, r.id) > (?, ?)
@@ -35,7 +36,8 @@ ORDER BY r.name, r.id LIMIT ?`
 		arg = `%` + likeEscape(strings.ToLower(q)) + `%`
 	} else {
 		query = `SELECT r.id, r.owner_user_id, r.org_id, r.name, r.visibility, r.description, r.website,
-	r.topics, r.default_branch, r.archived, r.deleted_at, r.purge_after, r.ruk_path, r.created_at, r.updated_at
+	r.topics, r.default_branch, r.archived, r.deleted_at, r.purge_after, r.ruk_path, r.created_at, r.updated_at,
+	r.state, r.fork_of_repo_id, r.fork_root_repo_id, r.star_count, r.forks_count
 	FROM repos r JOIN repos_fts f ON f.rowid = r.id
 WHERE f.body MATCH ? AND r.deleted_at IS NULL AND (r.name, r.id) > (?, ?)
 ORDER BY r.name, r.id LIMIT ?`
