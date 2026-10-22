@@ -344,7 +344,7 @@ func TestSocialExploreUsersAndOrgs(t *testing.T) {
 // or "" when the page is terminal.
 func socialNextLink(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
-	for _, part := range strings.Split(rec.Header().Get("Link"), ",") {
+	for part := range strings.SplitSeq(rec.Header().Get("Link"), ",") {
 		start := strings.Index(part, "<")
 		end := strings.Index(part, ">")
 		if start < 0 || end < 0 || end <= start+1 {
