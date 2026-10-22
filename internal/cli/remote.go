@@ -58,6 +58,9 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	if err := api.RegisterRepos(table, deps); err != nil {
 		return nil, err
 	}
+	if err := api.RegisterSearch(table, deps); err != nil {
+		return nil, err
+	}
 	if err := api.RegisterCode(table, deps); err != nil {
 		return nil, err
 	}
@@ -78,6 +81,7 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	api.RegisterAdminViews(views)
 	api.RegisterF12Views(views)
 	api.RegisterReposViews(views)
+	api.RegisterSearchViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterOrgsViews(views)

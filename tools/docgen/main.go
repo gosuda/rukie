@@ -97,6 +97,7 @@ func buildDocTable(dbPath string) (*op.Table, *op.Document, error) {
 		func() error { return api.RegisterAdmin(table, deps) },
 		func() error { return api.RegisterF12(table, deps) },
 		func() error { return api.RegisterRepos(table, deps) },
+		func() error { return api.RegisterSearch(table, deps) },
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
 		func() error { return api.RegisterOrgs(table, deps) },
@@ -116,6 +117,7 @@ func buildDocTable(dbPath string) (*op.Table, *op.Document, error) {
 	api.RegisterAdminViews(views)
 	api.RegisterF12Views(views)
 	api.RegisterReposViews(views)
+	api.RegisterSearchViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterOrgsViews(views)

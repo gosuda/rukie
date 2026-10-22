@@ -698,6 +698,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	if regErr := api.RegisterSearch(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	if regErr := api.RegisterCode(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
@@ -751,6 +755,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterAdminViews(views)
 	api.RegisterF12Views(views)
 	api.RegisterReposViews(views)
+	api.RegisterSearchViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
@@ -836,7 +841,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		return nil, cleanup, err
 	}
 	raw := api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server})
-	return &app{server: server, handler: repoDeps.CIRaw(raw), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl}, cleanup, nil
+	return &app{server: server, handler: api.RewriteSearchPaths(repoDeps.CIRaw(raw)), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {
