@@ -554,7 +554,7 @@ func (d Deps) serveCIBytes(w http.ResponseWriter, r *http.Request) {
 		writeRunnerProblem(w, op.Errorf(op.CodeNotFound, "CI blob was not found"))
 		return
 	}
-	blob, ok := ctrl.Blob(ctx, digest)
+	blob, ok := ctrl.RepoBlob(ctx, rc.row.ID, digest)
 	if !ok {
 		writeRunnerProblem(w, op.Errorf(op.CodeNotFound, "CI blob was not found"))
 		return

@@ -528,13 +528,35 @@ func (c *Controller) CreateRunner(ctx context.Context, labels []string, scope st
 	return runner, token, err
 }
 func (c *Controller) RevokeRunner(ctx context.Context, id string) error {
-	return c.mutate(ctx, func(state *ciState, _ *int64, _ int64) error {
+	return c.mutate(ctx, func(state *ciState, fence *int64, now int64) error {
 		runner, exists := state.Runners[id]
 		if !exists {
 			return problem("E_NOT_FOUND")
 		}
 		runner.Status = "revoked"
 		state.Runners[id] = runner
+		affected := map[string]bool{}
+		for aid, a := range state.Attempts {
+			if a.RunnerID != id || !attemptActive(a.State) {
+				continue
+			}
+			*fence++
+			a.State = "lost"
+			a.LostAt = now
+			a.Fence = *fence
+			state.Attempts[aid] = a
+			if j, ok := state.Jobs[a.JobID]; ok {
+				j.Fence = 0
+				retryJob(&j, "lost", now)
+				state.Jobs[a.JobID] = j
+				affected[j.RunID] = true
+			}
+		}
+		for runID := range affected {
+			if err := advanceJobs(state, runID, now); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }
@@ -676,6 +698,9 @@ func getAttempt(state *ciState, id, token string, fence int64) (Attempt, Job, er
 	}
 	j := state.Jobs[a.JobID]
 	if a.TokenHash != tokenHash(token) {
+		return Attempt{}, Job{}, problem("E_UNAUTHENTICATED")
+	}
+	if runner, ok := state.Runners[a.RunnerID]; !ok || runner.Status != "active" {
 		return Attempt{}, Job{}, problem("E_UNAUTHENTICATED")
 	}
 	if a.Fence != fence || j.Fence != fence || !attemptActive(a.State) {
@@ -838,13 +863,16 @@ func (c *Controller) sealSecrets(state *ciState, run Run, job Job, runner Runner
 }
 func (c *Controller) AppendLogs(ctx context.Context, id, token string, chunk LogAppend) (int64, error) {
 	var ack int64
-	err := c.mutate(ctx, func(state *ciState, _ *int64, _ int64) error {
+	err := c.mutate(ctx, func(state *ciState, _ *int64, now int64) error {
 		a, _, err := getAttempt(state, id, token, chunk.Fence)
 		if err != nil {
 			return err
 		}
 		if a.State == "granted" {
 			return problem("E_NOT_STARTED")
+		}
+		if now > a.LostAt {
+			return problem("E_LEASE_LOST")
 		}
 		if len(chunk.Data) > 65536 {
 			return problem("E_LIMIT")
@@ -941,9 +969,13 @@ func (c *Controller) PutBlob(ctx context.Context, id, token string, fence int64,
 	if Digest(data) != digest {
 		return problem("E_DIGEST_MISMATCH")
 	}
-	return c.mutate(ctx, func(state *ciState, _ *int64, _ int64) error {
-		if _, _, err := getAttempt(state, id, token, fence); err != nil {
+	return c.mutate(ctx, func(state *ciState, _ *int64, now int64) error {
+		a, _, err := getAttempt(state, id, token, fence)
+		if err != nil {
 			return err
+		}
+		if now > a.LostAt {
+			return problem("E_LEASE_LOST")
 		}
 		state.Blobs[digest] = slices.Clone(data)
 		return nil
@@ -966,6 +998,9 @@ func (c *Controller) Complete(ctx context.Context, id, token string, req FinishR
 			return problem("E_NOT_FOUND")
 		}
 		if a.TokenHash != tokenHash(token) {
+			return problem("E_UNAUTHENTICATED")
+		}
+		if runner, ok := state.Runners[a.RunnerID]; !ok || runner.Status != "active" {
 			return problem("E_UNAUTHENTICATED")
 		}
 		j := state.Jobs[a.JobID]
@@ -1486,16 +1521,35 @@ func (c *Controller) Artifacts(ctx context.Context, jobID string) ([]Artifact, e
 	return slices.Clone(state.Artifacts[jobID]), nil
 }
 
-func (c *Controller) Blob(ctx context.Context, digest string) ([]byte, bool) {
+// RepoBlob returns the blob only when the digest belongs to an artifact of
+// a job in the given repo. Direct-digest fetches of other repos' blobs
+// answer not-found, closing the cross-repo read and existence oracle.
+func (c *Controller) RepoBlob(ctx context.Context, repoID int64, digest string) ([]byte, bool) {
 	state, err := c.snapshot(ctx)
 	if err != nil {
 		return nil, false
 	}
-	blob, ok := state.Blobs[digest]
-	if !ok {
-		return nil, false
+	for jobID, artifacts := range state.Artifacts {
+		job, ok := state.Jobs[jobID]
+		if !ok {
+			continue
+		}
+		run, ok := state.Runs[job.RunID]
+		if !ok || run.RepoID != repoID {
+			continue
+		}
+		for _, artifact := range artifacts {
+			if artifact.Digest != digest {
+				continue
+			}
+			blob, ok := state.Blobs[digest]
+			if !ok {
+				return nil, false
+			}
+			return slices.Clone(blob), true
+		}
 	}
-	return slices.Clone(blob), true
+	return nil, false
 }
 
 func (c *Controller) RelayLoop(ctx context.Context, interval time.Duration) {

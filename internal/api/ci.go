@@ -891,7 +891,7 @@ func ciArtifactGetHandler(d Deps) func(context.Context, op.Principal, CIArtifact
 		if cerr != nil {
 			return CIArtifactGetOut{}, cerr
 		}
-		blob, ok := ctrl.Blob(ctx, in.Digest)
+		blob, ok := ctrl.RepoBlob(ctx, rc.row.ID, in.Digest)
 		if !ok {
 			return CIArtifactGetOut{}, op.Errorf(op.CodeNotFound, "CI blob was not found")
 		}
