@@ -17,6 +17,7 @@ var supportedFeatures = []string{"credits", "hooks.v1", "events.v1", "archive.v1
 
 type conn struct {
 	hooks      Hooks
+	onFree     func()
 	nc         net.Conn
 	streams    map[uint64]*stream
 	readerDone chan struct{}
@@ -131,20 +132,31 @@ func (c *conn) reserve() (*stream, bool) {
 }
 
 func (c *conn) release(s *stream) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, ok := c.streams[s.id]; ok {
-		delete(c.streams, s.id)
-		c.live--
+	present, freed := c.drop(s.id)
+	// The hook takes the pool lock, which acquire holds while probing load,
+	// so it must run outside the critical section.
+	if present && freed != nil {
+		freed()
 	}
 }
 
-func (c *conn) remove(s *stream) {
+// drop removes one live stream and reports whether it was there plus the
+// pool wakeup hook. Callers invoke the hook after drop returns.
+func (c *conn) drop(id uint64) (bool, func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.streams[s.id]; ok {
-		delete(c.streams, s.id)
-		c.live--
+	if _, ok := c.streams[id]; !ok {
+		return false, nil
+	}
+	delete(c.streams, id)
+	c.live--
+	return true, c.onFree
+}
+
+func (c *conn) remove(s *stream) {
+	present, freed := c.drop(s.id)
+	if present && freed != nil {
+		freed()
 	}
 }
 

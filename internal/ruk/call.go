@@ -158,6 +158,11 @@ func callDecoded[Resp any](ctx context.Context, c *Client, repo Repo, op string,
 		if !again || attempt == 1 {
 			return resp, err
 		}
+		reopened, rerr := c.OpenRepo(ctx, repo.Path)
+		if rerr != nil {
+			return zero, fmt.Errorf("callDecoded: reopen repo: %w", rerr)
+		}
+		repo = reopened
 	}
 	return zero, fmt.Errorf("callDecoded: %w", ErrProtocol)
 }
@@ -406,6 +411,11 @@ func callDecodedAuth[Resp any](ctx context.Context, c *Client, repo Repo, op str
 		if !again || attempt == 1 {
 			return resp, err
 		}
+		reopened, rerr := c.OpenRepo(ctx, repo.Path)
+		if rerr != nil {
+			return zero, fmt.Errorf("callDecodedAuth: reopen repo: %w", rerr)
+		}
+		repo = reopened
 	}
 	return zero, fmt.Errorf("callDecodedAuth: %w", ErrProtocol)
 }

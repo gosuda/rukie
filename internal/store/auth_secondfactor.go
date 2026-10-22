@@ -166,7 +166,7 @@ func (s *Store) PromoteTOTPSecret(ctx context.Context, userID int64, counter, no
 			now, userID); uerr != nil {
 			return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(uerr))
 		}
-		if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM user_recovery_codes WHERE user_id = ?`, userID); derr != nil {
+		if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM recovery_codes WHERE user_id = ?`, userID); derr != nil {
 			return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(derr))
 		}
 		if cerr := s.insertRecoveryCodes(tx.ctx, inner, userID, now, digests); cerr != nil {
@@ -272,11 +272,14 @@ func (s *Store) clearTOTP(ctx context.Context, userID int64, now int64, revokeSe
 			now, userID); uerr != nil {
 			return fmt.Errorf("ClearTOTP: %w", mapErr(uerr))
 		}
+		// Pending second-factor sessions must not survive the reset: with
+		// totp_enabled cleared they would resolve as full sessions.
+		del := `DELETE FROM sessions WHERE user_id = ? AND auth_level IN ('password-pending', 'oidc-pending')`
 		if revokeSessions {
-			_, serr := inner.ExecContext(tx.ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
-			if serr != nil {
-				return fmt.Errorf("ClearTOTP: %w", serr)
-			}
+			del = `DELETE FROM sessions WHERE user_id = ?`
+		}
+		if _, serr := inner.ExecContext(tx.ctx, del, userID); serr != nil {
+			return fmt.Errorf("ClearTOTP: %w", serr)
 		}
 		return nil
 	})

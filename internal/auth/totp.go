@@ -463,7 +463,14 @@ func formatRecoveryCode(encoded string) string {
 }
 
 func (s *Service) SessionRestricted(sess Session, u User) bool {
+	if pendingLevel(sess.AuthLevel) {
+		return true
+	}
 	return u.TOTPEnabled && !sess.TOTPOk
+}
+
+func pendingLevel(level string) bool {
+	return level == pendingPasswordLevel || level == pendingOIDCLevel
 }
 
 func fullLevelFor(pending string) string {

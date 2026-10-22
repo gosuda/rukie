@@ -220,6 +220,45 @@ func TestPasswordLockout(t *testing.T) {
 	}
 }
 
+func TestMustChangePasswordPendingPrincipal(t *testing.T) {
+	svc, _ := openTestService(t)
+	svc.SetSealKey(testSealKey())
+	u, password, err := svc.CreateUserRandom(t.Context(), 0, CreateUserRandomInput{Name: "must-change", IsAdmin: false}, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("create temporary user: %v", err)
+	}
+	now := time.Now().UTC()
+	enrollment, err := svc.EnrollTOTP(t.Context(), u.ID, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("enroll totp: %v", err)
+	}
+	secret, err := base32NoPad.DecodeString(enrollment.SecretBase32)
+	if err != nil {
+		t.Fatalf("decode enrollment secret: %v", err)
+	}
+	setup, err := svc.Login(t.Context(), LoginInput{Username: u.Name, Password: password, IP: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("setup login: %v", err)
+	}
+	if _, verifyErr := svc.VerifyTOTP(t.Context(), VerifyTOTPInput{SessionSecret: setup.Secret, Code: TOTPCode(secret, TOTPCounter(now)), IP: "127.0.0.1"}); verifyErr != nil {
+		t.Fatalf("promote totp: %v", verifyErr)
+	}
+	login, err := svc.Login(t.Context(), LoginInput{Username: u.Name, Password: password, IP: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	principal, err := NewAuthenticator(svc).Session(t.Context(), login.Secret)
+	if err != nil {
+		t.Fatalf("session principal: %v", err)
+	}
+	if !principal.MustChangePassword || !principal.Grants.Has(op.ScopeRepoRead) {
+		t.Fatalf("pending principal = %+v, want mandatory password-change repo scope", principal)
+	}
+	if principal.Grants.Has(op.ScopeRepoWrite) || principal.Grants.Has(op.ScopeAdminWrite) {
+		t.Fatalf("pending principal has write grants: %v", principal.Grants)
+	}
+}
+
 func TestFreshAuthWindow(t *testing.T) {
 	svc, setClock := openTestService(t)
 	ctx := t.Context()

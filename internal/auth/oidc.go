@@ -63,7 +63,6 @@ type OIDCCallbackInput struct {
 	BrowserSecret string
 	SessionSecret string
 	SessionUserID int64
-	SessionFresh  bool
 }
 
 type OIDCCallbackResult struct {
@@ -303,20 +302,22 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 	}
 	var current User
 	var haveSession bool
-	var sess Session
-	var serr error
 	if in.SessionSecret != "" {
-		sess, current, serr = s.LookupSession(ctx, in.SessionSecret)
+		sess, u, serr := s.LookupSession(ctx, in.SessionSecret)
 		if serr != nil {
 			return OIDCCallbackResult{}, errInvalidCredentials
 		}
-		haveSession = true
+		// A second-factor-pending session proves only the password step;
+		// it must not authorize linking an external identity.
+		if !pendingLevel(sess.AuthLevel) {
+			current, haveSession = u, true
+		}
 	} else if in.SessionUserID != 0 {
-		current, _, serr = s.authUserByID(ctx, in.SessionUserID)
+		u, _, serr := s.authUserByID(ctx, in.SessionUserID)
 		if serr != nil {
 			return OIDCCallbackResult{}, errInvalidCredentials
 		}
-		haveSession = true
+		current, haveSession = u, true
 	}
 	if st.HasLink {
 		if !haveSession || current.ID != st.LinkUserID {
@@ -340,21 +341,6 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		}
 		res.ReturnTo = safeReturnTo(st.ReturnTo)
 		return res, nil
-	}
-	if haveSession {
-		fresh := in.SessionFresh
-		if in.SessionSecret != "" {
-			fresh = SessionFresh(sess.AuthedAt, now)
-		}
-		if !fresh {
-			return OIDCCallbackResult{}, errInvalidCredentials
-		}
-		if lerr := s.linkIdentity(ctx, rt.config.Issuer, idToken.Subject, current.ID, now); lerr != nil {
-			return OIDCCallbackResult{}, lerr
-		}
-		s.recordAudit(ctx, AuditEvent{Actor: current.ID, Action: "oidc.link",
-			Target: "user:" + current.Name, IP: in.IP, UserAgent: in.UserAgent, Result: "ok"})
-		return OIDCCallbackResult{User: current, Linked: true, ReturnTo: safeReturnTo(st.ReturnTo)}, nil
 	}
 	if claims.EmailVerified && claims.Email != "" {
 		if _, _, uerr := s.authUserByEmail(ctx, claims.Email); uerr == nil {

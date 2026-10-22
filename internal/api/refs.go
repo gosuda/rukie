@@ -368,6 +368,16 @@ func branchUpdateHandler(d Deps) func(context.Context, op.Principal, BranchUpdat
 		if terr != nil {
 			return BranchUpdateOut{}, terr
 		}
+		var ancestry logReply
+		if aerr := d.callRuk(ctx, daemon, wire.MethodLog, map[string]any{
+			"revset": "ancestors(" + to.commit + ") & " + current,
+			"page":   map[string]any{"limit": 1},
+		}, &ancestry); aerr != nil {
+			return BranchUpdateOut{}, aerr
+		}
+		if len(ancestry.Entries.Items) == 0 {
+			return BranchUpdateOut{}, op.Errorf(op.CodeConflict, "branch update is not a fast-forward")
+		}
 		var reply bookmarkSetReply
 		serr := d.callRuk(ctx, daemon, wire.MethodBookmarkSet, map[string]any{
 			"name":     headsPrefix + in.Branch,

@@ -149,6 +149,11 @@ func mapF12Error(err error) error {
 }
 
 func oidcSessionUser(ctx context.Context, svc *auth.Service, p op.Principal) int64 {
+	// Second-factor-pending sessions carry only public read; they must not
+	// act as the linking user for an OIDC callback.
+	if !p.Grants.Has(op.ScopeRepoRead) {
+		return 0
+	}
 	if userID, _, err := auth.RequireSession(p); err == nil {
 		if u, uerr := svc.GetUserByID(ctx, userID); uerr == nil && u.IsActive {
 			return userID
@@ -345,18 +350,11 @@ func RegisterF12(t *op.Table, deps Deps) error {
 			if in.Code == "" || in.State == "" {
 				return OIDCCallbackOut{}, op.Errorf(op.CodeValidation, "code and state are required")
 			}
-			userID := oidcSessionUser(ctx, deps.Service, p)
-			fresh := false
-			if userID != 0 {
-				if _, ferr := auth.RequireFresh(ctx, deps.Service, p, deps.now()); ferr == nil {
-					fresh = true
-				}
-			}
 			res, cerr := deps.Service.HandleOIDCCallback(ctx, auth.OIDCCallbackInput{
 				ProviderID: in.Provider, Code: in.Code, State: in.State,
 				IP: op.ClientIP(ctx), UserAgent: op.UserAgent(ctx),
 				BrowserSecret: op.Cookie(ctx, auth.OIDCBrowserCookieName()),
-				SessionUserID: userID, SessionFresh: fresh,
+				SessionUserID: oidcSessionUser(ctx, deps.Service, p),
 			})
 			if cerr != nil {
 				return OIDCCallbackOut{}, mapF12Error(cerr)

@@ -42,18 +42,24 @@ func (a Authenticator) Session(ctx context.Context, secret string) (op.Principal
 		return op.Principal{}, ErrSessionInvalid
 	}
 	if a.svc.SessionRestricted(sess, u) {
+		grants := op.Scopes(0).Add(op.ScopePublicRead)
+		if u.MustChangePassword {
+			grants = grants.Add(op.ScopeRepoRead)
+		}
 		return op.Principal{
-			UserID:  u.ID,
-			Kind:    op.PrincipalHuman,
-			TokenID: -sess.RowID,
-			Grants:  op.Scopes(0).Add(op.ScopePublicRead),
+			UserID:             u.ID,
+			Kind:               op.PrincipalHuman,
+			TokenID:            -sess.RowID,
+			Grants:             grants,
+			MustChangePassword: u.MustChangePassword,
 		}, nil
 	}
 	return op.Principal{
-		UserID:  u.ID,
-		Kind:    op.PrincipalHuman,
-		TokenID: -sess.RowID,
-		Grants:  ScopesAll(),
+		UserID:             u.ID,
+		Kind:               op.PrincipalHuman,
+		TokenID:            -sess.RowID,
+		Grants:             ScopesAll(),
+		MustChangePassword: u.MustChangePassword,
 	}, nil
 }
 

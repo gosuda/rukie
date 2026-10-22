@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -836,6 +837,13 @@ func mirrorUpdateHandler(d Deps) func(context.Context, op.Principal, MirrorUpdat
 		cfg, patch, changed, aerr := applyMirrorUpdate(row, in.Body)
 		if aerr != nil {
 			return MirrorUpdateOut{}, aerr
+		}
+		oldOrigin, oldErr := url.Parse(row.TargetURL)
+		newOrigin, newErr := url.Parse(cfg.TargetURL)
+		originChanged := oldErr != nil || newErr != nil ||
+			!strings.EqualFold(oldOrigin.Scheme, newOrigin.Scheme) || !strings.EqualFold(oldOrigin.Host, newOrigin.Host)
+		if originChanged && (in.Body.Token == nil || *in.Body.Token == "") {
+			return MirrorUpdateOut{}, op.Errorf(op.CodeValidation, "changing mirror origin requires a new token")
 		}
 		if verr := cfg.Validate(d.now()); verr != nil {
 			return MirrorUpdateOut{}, op.Wrap(op.CodeValidation, verr, "mirror configuration is not valid")

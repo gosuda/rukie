@@ -969,6 +969,16 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+func mustChangePasswordAllows(p Principal, operation string) bool {
+	if !p.MustChangePassword {
+		return true
+	}
+	if operation == "auth.logout" {
+		return true
+	}
+	return operation == "auth.password.change" && p.Grants.Has(ScopeRepoRead)
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h, ok := s.nonOp[r.Method+" "+r.URL.Path]; ok {
 		h.ServeHTTP(w, r)
@@ -1027,6 +1037,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.finish(w, r, st, start, decision)
 			return
 		}
+	}
+	if !mustChangePasswordAllows(st.principal, spec.Name) {
+		st.failure = Errorf(CodeForbidden, "password change is required")
+		decision = "forbid:password-change-required"
+		s.finish(w, r, st, start, decision)
+		return
 	}
 	if !st.principal.Can(spec.Scope) {
 		st.failure = Errorf(CodeForbidden, "missing scope %q", spec.Scope.String())
@@ -1183,11 +1199,11 @@ func csrfToken(key []byte, cookieValue string) string {
 }
 
 func (s *Server) checkOriginCSRF(r *http.Request, st *reqState) *Error {
-	if r.Header.Get("Cookie") == "" {
-		return nil
-	}
 	if err := s.csrf.Check(r); err != nil {
 		return Errorf(CodeForbidden, "cross-origin request refused")
+	}
+	if r.Header.Get("Cookie") == "" {
+		return nil
 	}
 	contentType, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
 	if strings.TrimSpace(strings.ToLower(contentType)) != "application/x-www-form-urlencoded" {
@@ -1472,7 +1488,10 @@ func (s *Server) renderSuccess(st *reqState, status int, header http.Header, bod
 		var buf bytes.Buffer
 		c := ViewCtx{Spec: st.spec, Principal: st.principal, RequestID: st.requestID, Path: st.path, CSRF: st.csrf}
 		if err := entry.fn(&buf, c, out); err != nil {
-			return s.renderProblemMedia(st, status, header, mustProblem(st, err))
+			raw := mustProblem(st, err)
+			// A view that fails mid-render must not keep the success status:
+			// the body is now an error page.
+			return s.renderProblemMedia(st, problemStatus(raw, status), header, raw)
 		}
 		return status, header, buf.Bytes()
 	case MediaMarkdown:
@@ -1492,7 +1511,8 @@ func (s *Server) renderSuccess(st *reqState, status int, header http.Header, bod
 		}
 		buf.Reset()
 		if err := RenderMarkdown(&buf, out); err != nil {
-			return s.renderProblemMedia(st, status, header, mustProblem(st, err))
+			raw := mustProblem(st, err)
+			return s.renderProblemMedia(st, problemStatus(raw, status), header, raw)
 		}
 		return status, header, buf.Bytes()
 	default:
@@ -1520,6 +1540,20 @@ func mustProblem(st *reqState, err error) []byte {
 	p := problemFor(st, st.spec, err)
 	raw, _ := jsonv2.Marshal(p, jsonv1.DefaultOptionsV1())
 	return raw
+}
+
+// problemStatus reads the status out of an encoded problem body so a render
+// failure replaces the pending success status instead of keeping it. The
+// fallback covers an unparseable body.
+func problemStatus(raw []byte, fallback int) int {
+	var p problemBody
+	if err := jsonv2.Unmarshal(raw, &p, jsonv1.DefaultOptionsV1()); err != nil || p.Status == 0 {
+		return http.StatusInternalServerError
+	}
+	if p.Status < 400 {
+		return fallback
+	}
+	return p.Status
 }
 
 func (s *Server) renderProblemMedia(st *reqState, status int, header http.Header, body []byte) (int, http.Header, []byte) {

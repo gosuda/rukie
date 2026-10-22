@@ -10,6 +10,7 @@ import (
 	"maps"
 	"math/big"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -108,6 +109,7 @@ func buildRemote() (*op.Server, error) {
 type RemoteInvoker struct {
 	Base    *url.URL
 	Client  *http.Client
+	Jar     http.CookieJar
 	Token   string
 	Session string
 	Retries int
@@ -159,6 +161,12 @@ func (r *RemoteInvoker) once(ctx context.Context, req *http.Request, rawBody []b
 	} else if r.Session != "" {
 		cloned.Header.Set("Cookie", r.Session)
 	}
+	if r.Jar != nil {
+		cloned.Header.Del("Cookie")
+		for _, cookie := range r.Jar.Cookies(cloned.URL) {
+			cloned.AddCookie(cookie)
+		}
+	}
 	client := r.Client
 	if client == nil {
 		client = http.DefaultClient
@@ -173,6 +181,9 @@ func (r *RemoteInvoker) once(ctx context.Context, req *http.Request, rawBody []b
 		return nil, true, err
 	}
 	out := &op.Response{Status: resp.StatusCode, Header: resp.Header.Clone(), Body: body}
+	if r.Jar != nil {
+		r.Jar.SetCookies(cloned.URL, resp.Cookies())
+	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 		if resp.Header.Get("Retry-After") != "" {
 			return out, true, nil
@@ -350,9 +361,18 @@ func dispatchRemote(ctx context.Context, std IO, server *op.Server, inv *op.Invo
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	jar, _ := cookiejar.New(nil)
 	caller := &RemoteInvoker{
-		Base: base, Token: token, Session: session,
+		Base: base, Token: token, Session: session, Jar: jar,
 		Client: &http.Client{Timeout: timeout},
+	}
+	if session != "" {
+		for _, part := range strings.Split(session, ";") {
+			name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+			if ok {
+				jar.SetCookies(base, []*http.Cookie{{Name: name, Value: value, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode}})
+			}
+		}
 	}
 	if inv.Global.All {
 		return runAll(ctx, std, server, inv, caller, req)

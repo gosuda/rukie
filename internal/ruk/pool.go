@@ -33,6 +33,9 @@ func (p *pool) nextID() uint64 {
 
 func (p *pool) add(pc *conn) {
 	pc.maxStreams = p.maxStreams
+	// A finished stream frees capacity; waiters in acquire sleep on changed
+	// and only a broadcast tells them to look again.
+	pc.onFree = p.broadcast
 	p.mu.Lock()
 	p.conns = append(p.conns, pc)
 	p.mu.Unlock()

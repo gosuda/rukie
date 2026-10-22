@@ -1,6 +1,7 @@
 package review
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -30,7 +31,15 @@ type Ingress struct {
 	HeadOid  string
 	RepoID   int64
 	AuthorID int64
+	// MayEdit reports whether the pusher holds change.edit. Creating a change
+	// needs only repo visibility; appending a patchset to somebody else's
+	// change does not.
+	MayEdit bool
 }
+
+// ErrIngressForbidden marks a diverted push that would touch a change the
+// pusher may not edit.
+var ErrIngressForbidden = errors.New("change.edit is required to update this change")
 
 // IngressChange creates or updates the change for a diverted push inside the
 // hook budget. The change commits synchronously: the caller answers ok only
@@ -43,6 +52,9 @@ func IngressChange(tx *store.WriteTx, now time.Time, in Ingress) (store.ChangeRo
 		key = fmt.Sprintf("%s~%d", in.Branch, in.AuthorID)
 	}
 	if row, gerr := tx.GetChangeByKey(in.RepoID, key); gerr == nil && row.State == "open" {
+		if !in.MayEdit {
+			return store.ChangeRow{}, "", ErrIngressForbidden
+		}
 		updated, aerr := tx.AppendPatchset(now, row.ID, in.HeadOid)
 		if aerr != nil {
 			return store.ChangeRow{}, "", aerr
