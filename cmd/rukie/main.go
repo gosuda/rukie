@@ -712,6 +712,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
 	api.RegisterReviewViews(views)
+	api.RegisterMirrorViews(views)
 	api.RegisterOrgsViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
