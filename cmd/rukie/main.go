@@ -670,6 +670,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		Service: authSvc, Limiter: limiter, Reveals: authDeps.Reveals,
 		Store: st, Ruk: repoClient, Queue: repoJobs,
 		RepoRoot: cfg.Ruk.RepoRoot, RukBin: cfg.Ruk.BinaryPath,
+		DataDir:       cfg.DataDir,
 		SealKey:       key,
 		OnRepoCreated: func(repoID int64) { watcher.Start(ctx, repoID) },
 		OnRepoDeleted: watcher.Stop,
@@ -698,6 +699,10 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	if regErr := api.RegisterReleases(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	fillLLMS, regErr := api.RegisterLLMS(table, llmsBase(cfg))
 	if regErr != nil {
 		cleanup()
@@ -716,6 +721,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterReviewViews(views)
 	api.RegisterMirrorViews(views)
 	api.RegisterOrgsViews(views)
+	api.RegisterReleasesViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
 	idem.StartSweeper(ctx, time.Minute)
@@ -792,7 +798,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, err
 	}
-	return &app{server: server, handler: api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server}), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}}, cleanup, nil
+	return &app{server: server, handler: api.ReleaseBytes{Deps: repoDeps}.Wrap(api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server})), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {
