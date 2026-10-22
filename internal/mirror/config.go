@@ -42,13 +42,13 @@ type Mirror struct {
 	Mode                     Mode         `json:"mode"`
 	RefSelection             RefSelection `json:"ref_selection"`
 	Globs                    []string     `json:"globs"`
+	DebounceSeconds          uint64       `json:"debounce_seconds"`
+	MaxDelaySeconds          uint64       `json:"max_delay_seconds"`
+	ReconcileIntervalSeconds uint64       `json:"reconcile_interval_seconds"`
 	IncludeNotes             bool         `json:"include_notes"`
 	ProtectDefaultBranch     bool         `json:"protect_default_branch"`
 	Enabled                  bool         `json:"enabled"`
 	SyncOnRefUpdate          bool         `json:"sync_on_ref_update"`
-	DebounceSeconds          uint64       `json:"debounce_seconds"`
-	MaxDelaySeconds          uint64       `json:"max_delay_seconds"`
-	ReconcileIntervalSeconds uint64       `json:"reconcile_interval_seconds"`
 	CreateIfMissing          bool         `json:"create_if_missing"`
 	PolicyAck                bool         `json:"policy_ack"`
 	AdoptExistingRefs        bool         `json:"adopt_existing_refs"`

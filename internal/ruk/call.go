@@ -380,8 +380,6 @@ func RetryAuth[Req, Resp any](ctx context.Context, c *Client, repo Repo, method 
 	return callDecodedAuth[Resp](ctx, c, repo, "RetryAuth", method, requestID, args, authPointer(auth), false)
 }
 
-// authPointer nils a zero-value or credential-less None auth so the open
-// omits transport_auth and serializes exactly as without auth.
 func authPointer(auth wire.TransportAuth) *wire.TransportAuth {
 	if auth.Credential == "" && (auth.Kind == "" || auth.Kind == wire.TransportAuthNone) {
 		return nil

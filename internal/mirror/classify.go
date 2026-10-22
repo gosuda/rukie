@@ -33,14 +33,16 @@ const (
 
 type Verdict struct {
 	Class Class
-	Retry bool
 	State string
+	Retry bool
 }
 
 func Classify(code string, status int, retryAfter, reason string) Verdict {
 	c := strings.ToUpper(code)
 	r := strings.ToLower(reason)
-	v := func(cl Class, retry bool, state string) Verdict { return Verdict{cl, retry, state} }
+	v := func(cl Class, retry bool, state string) Verdict {
+		return Verdict{Class: cl, Retry: retry, State: state}
+	}
 	if status == 429 || (status == 403 && strings.TrimSpace(retryAfter) != "") || strings.Contains(strings.ToLower(reason), "rate limit") {
 		return v(ClassRateLimited, true, "failing")
 	}
@@ -92,17 +94,17 @@ func Classify(code string, status int, retryAfter, reason string) Verdict {
 
 type reasonGroup struct {
 	class Class
+	state string
 	terms []string
 	retry bool
-	state string
 }
 
 var reasonGroups = []reasonGroup{
-	{ClassRefHidden, []string{"deny updating a hidden ref", "hidden ref"}, false, "partial"},
-	{ClassRefProtected, []string{"protected branch", "force push", "not allowed to push", "ruleset", "codeowners", "required status"}, false, "partial"},
-	{ClassRefPolicy, []string{"push protection", "secret scanning", "gh013"}, false, "needs_attention"},
-	{ClassTooLarge, []string{"exceeds", "file size limit", "pack exceeds", "too large", "100 mb", "100 mib"}, false, "needs_attention"},
-	{ClassRefHook, []string{"hook declined", "pre-receive", "update hook"}, false, "partial"},
+	{class: ClassRefHidden, state: "partial", terms: []string{"deny updating a hidden ref", "hidden ref"}, retry: false},
+	{class: ClassRefProtected, state: "partial", terms: []string{"protected branch", "force push", "not allowed to push", "ruleset", "codeowners", "required status"}, retry: false},
+	{class: ClassRefPolicy, state: "needs_attention", terms: []string{"push protection", "secret scanning", "gh013"}, retry: false},
+	{class: ClassTooLarge, state: "needs_attention", terms: []string{"exceeds", "file size limit", "pack exceeds", "too large", "100 mb", "100 mib"}, retry: false},
+	{class: ClassRefHook, state: "partial", terms: []string{"hook declined", "pre-receive", "update hook"}, retry: false},
 }
 
 func classifyReason(reason string) Verdict {

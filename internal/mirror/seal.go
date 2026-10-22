@@ -5,13 +5,14 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"fmt"
+	"math"
 )
 
 type SealedCredential struct {
-	KeyVersion uint32 `json:"key_version"`
+	Last4      string `json:"last4"`
 	Nonce      []byte `json:"nonce"`
 	Ciphertext []byte `json:"ciphertext"`
-	Last4      string `json:"last4"`
+	KeyVersion uint32 `json:"key_version"`
 }
 
 func Seal(key, token []byte, aad string, version uint32, last4 string) (SealedCredential, error) {
@@ -60,6 +61,15 @@ func Zero(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// CheckedUint32 converts a stored key version, failing closed instead of
+// wrapping negatives or overflows into credential state.
+func CheckedUint32(v int64) (uint32, error) {
+	if v < 0 || v > math.MaxUint32 {
+		return 0, fmt.Errorf("mirror seal: key version out of range")
+	}
+	return uint32(v), nil
 }
 
 func Last4(token string) string {

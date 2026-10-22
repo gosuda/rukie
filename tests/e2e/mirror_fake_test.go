@@ -20,21 +20,19 @@ import (
 )
 
 type mirrorFake struct {
-	server *httptest.Server
-	root   string
-	URL    string
-
-	posts      atomic.Int64
-	entered    chan struct{}
-	release    chan struct{}
-	rateLimit  int64
-	retryAfter int
-	hold       bool
-
+	server      *httptest.Server
+	entered     chan struct{}
+	release     chan struct{}
+	token       string
+	URL         string
 	mode        string
 	user        string
-	token       string
+	root        string
+	posts       atomic.Int64
+	rateLimit   int64
+	retryAfter  int
 	enteredOnce sync.Once
+	hold        bool
 }
 
 func newMirrorFake(t *testing.T, mode, user, token string) *mirrorFake {
@@ -165,69 +163,6 @@ func (f *mirrorFake) refs(t *testing.T) map[string]string {
 		m[name] = oid
 	}
 	return m
-}
-
-func (f *mirrorFake) hook(t *testing.T, script string) {
-	t.Helper()
-	if !strings.HasPrefix(script, "#!") {
-		script = "#!/bin/sh\n" + script
-	}
-	p := filepath.Join(f.root, "repo.git", "hooks", "pre-receive")
-	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
-		t.Fatalf("write hook: %v", err)
-	}
-	if err := os.Chmod(p, 0o755); err != nil {
-		t.Fatalf("chmod hook: %v", err)
-	}
-}
-
-func (f *mirrorFake) protect(t *testing.T) {
-	t.Helper()
-	f.hook(t, `#!/bin/sh
-zero="0000000000000000000000000000000000000000"
-while read old new ref; do
-  if [ "$ref" = "refs/heads/main" ] && [ "$new" = "$zero" ]; then
-    echo "protected branch: deletion of main is not allowed" >&2
-    exit 1
-  fi
-  if [ "$old" != "$zero" ] && [ "$new" != "$zero" ]; then
-    if ! git merge-base --is-ancestor "$old" "$new"; then
-      echo "protected branch: non-fast-forward update is not allowed" >&2
-      exit 1
-    fi
-  fi
-done
-`)
-}
-
-func (f *mirrorFake) limitBlobs(t *testing.T, n int) {
-	t.Helper()
-	script := fmt.Sprintf(`#!/bin/sh
-limit=%d
-zero="0000000000000000000000000000000000000000"
-while read old new ref; do
-  if [ "$new" = "$zero" ]; then
-    continue
-  fi
-  if [ "$old" = "$zero" ]; then
-    range="$new"
-  else
-    range="$old..$new"
-  fi
-  for oid in $(git rev-list --objects "$range" 2>/dev/null | cut -d' ' -f1); do
-    [ -z "$oid" ] && continue
-    kind=$(git cat-file -t "$oid" 2>/dev/null) || continue
-    if [ "$kind" = "blob" ]; then
-      size=$(git cat-file -s "$oid" 2>/dev/null) || continue
-      if [ "$size" -gt "$limit" ]; then
-        echo "file size limit exceeded: blob $oid is $size bytes (limit $limit bytes)" >&2
-        exit 1
-      fi
-    fi
-  done
-done
-`, n)
-	f.hook(t, script)
 }
 
 func TestMirrorFakeSmartHTTP(t *testing.T) {

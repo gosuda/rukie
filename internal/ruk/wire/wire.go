@@ -510,8 +510,6 @@ func AuthForMirror(username, token, targetURL string) (TransportAuth, error) {
 	}, nil
 }
 
-// hasUserinfo reports whether rawURL carries a userinfo authority part,
-// the same check the daemon applies before accepting an explicit credential.
 func hasUserinfo(rawURL string) bool {
 	_, rest, ok := strings.Cut(rawURL, "://")
 	if !ok {
@@ -524,8 +522,6 @@ func hasUserinfo(rawURL string) bool {
 	return strings.Contains(authority, "@")
 }
 
-// asciiLower lowercases ASCII letters only, matching the daemon's
-// to_ascii_lowercase normalization for origins.
 func asciiLower(s string) string {
 	raw := []byte(s)
 	for i := range raw {
@@ -536,7 +532,6 @@ func asciiLower(s string) string {
 	return string(raw)
 }
 
-// isAllDigits reports a non-empty run of ASCII digits.
 func isAllDigits(s string) bool {
 	if s == "" {
 		return false
@@ -549,8 +544,6 @@ func isAllDigits(s string) bool {
 	return true
 }
 
-// parsePortU16 parses a decimal u16 port, rejecting empties, non-digits,
-// and values above 65535 like the daemon's parse.
 func parsePortU16(s string) (uint16, bool) {
 	if !isAllDigits(s) {
 		return 0, false

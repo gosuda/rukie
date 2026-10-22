@@ -45,23 +45,23 @@ type MirrorCredentialJSON struct {
 
 // MirrorJSON is one push mirror without secret material.
 type MirrorJSON struct {
+	LastError           MirrorErrorJSON       `json:"last_error"`
+	Credential          *MirrorCredentialJSON `json:"credential,omitempty"`
 	ID                  string                `json:"id"`
-	Repo                int64                 `json:"repo"`
 	Name                string                `json:"name"`
 	TargetURL           string                `json:"target_url"`
 	HostKind            string                `json:"host_kind"`
 	Username            string                `json:"username"`
 	Mode                string                `json:"mode"`
 	RefSelection        string                `json:"ref_selection"`
-	Globs               []string              `json:"globs"`
-	Flags               MirrorFlagsJSON       `json:"flags"`
 	State               string                `json:"state"`
+	Globs               []string              `json:"globs"`
+	Repo                int64                 `json:"repo"`
 	ConsecutiveFailures int64                 `json:"consecutive_failures"`
-	LastError           MirrorErrorJSON       `json:"last_error"`
 	LastSuccessAt       int64                 `json:"last_success_at"`
 	LastAttemptAt       int64                 `json:"last_attempt_at"`
 	NextRunAt           int64                 `json:"next_run_at"`
-	Credential          *MirrorCredentialJSON `json:"credential,omitempty"`
+	Flags               MirrorFlagsJSON       `json:"flags"`
 }
 
 // RefStateJSON is one mirror ref state.
@@ -87,14 +87,14 @@ type RunOutcomeJSON struct {
 
 // RunJSON is one mirror sync run.
 type RunJSON struct {
+	Outcome    RunOutcomeJSON `json:"outcome"`
 	ID         string         `json:"id"`
-	MirrorID   int64          `json:"mirror_id"`
 	Kind       string         `json:"kind"`
 	State      string         `json:"state"`
 	Trigger    string         `json:"trigger"`
-	AttemptNo  int64          `json:"attempt_no"`
 	PlanDigest string         `json:"plan_digest"`
-	Outcome    RunOutcomeJSON `json:"outcome"`
+	MirrorID   int64          `json:"mirror_id"`
+	AttemptNo  int64          `json:"attempt_no"`
 	StartedAt  int64          `json:"started_at"`
 	FinishedAt int64          `json:"finished_at"`
 }
@@ -110,18 +110,18 @@ type MirrorPlanJSON struct {
 
 // MirrorPlanOut is one computed sync plan.
 type MirrorPlanOut struct {
+	Digest         string           `json:"digest"`
 	Updates        []MirrorPlanJSON `json:"updates"`
 	Deletes        []MirrorPlanJSON `json:"deletes"`
 	Diverged       []MirrorPlanJSON `json:"diverged"`
 	Ignored        []MirrorPlanJSON `json:"ignored"`
-	Digest         string           `json:"digest"`
 	TargetNonEmpty bool             `json:"target_non_empty"`
 }
 
 // MirrorProbeJSON records one remote probe.
 type MirrorProbeJSON struct {
-	Ok    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	Ok    bool   `json:"ok"`
 }
 
 func parseMirrorGlobs(raw string) ([]string, error) {
@@ -422,24 +422,24 @@ func mirrorListHandler(d Deps) func(context.Context, op.Principal, MirrorListIn)
 
 // MirrorCreateBody carries one mirror create request.
 type MirrorCreateBody struct {
-	Name                     string   `json:"name" minLength:"1" maxLength:"100"`
+	Enabled                  *bool    `json:"enabled,omitzero"`
+	ReconcileIntervalSeconds *uint64  `json:"reconcile_interval_seconds,omitzero"`
+	SyncOnRefUpdate          *bool    `json:"sync_on_ref_update,omitzero"`
 	TargetURL                string   `json:"target_url" minLength:"1" maxLength:"2048"`
 	HostKind                 string   `json:"host_kind" minLength:"1" maxLength:"32"`
 	Username                 string   `json:"username,omitempty" maxLength:"256"`
 	Mode                     string   `json:"mode,omitempty" maxLength:"32"`
 	RefSelection             string   `json:"ref_selection,omitempty" maxLength:"32"`
+	Token                    string   `json:"token" minLength:"1" maxLength:"4096"`
+	Name                     string   `json:"name" minLength:"1" maxLength:"100"`
 	Globs                    []string `json:"globs,omitempty"`
-	IncludeNotes             bool     `json:"include_notes,omitzero"`
-	ProtectDefaultBranch     bool     `json:"protect_default_branch,omitzero"`
-	Enabled                  *bool    `json:"enabled,omitzero"`
-	SyncOnRefUpdate          *bool    `json:"sync_on_ref_update,omitzero"`
-	DebounceSeconds          uint64   `json:"debounce_seconds,omitzero"`
 	MaxDelaySeconds          uint64   `json:"max_delay_seconds,omitzero"`
-	ReconcileIntervalSeconds *uint64  `json:"reconcile_interval_seconds,omitzero"`
-	CreateIfMissing          bool     `json:"create_if_missing,omitzero"`
+	DebounceSeconds          uint64   `json:"debounce_seconds,omitzero"`
 	PolicyAck                bool     `json:"policy_ack,omitzero"`
 	AdoptExistingRefs        bool     `json:"adopt_existing_refs,omitzero"`
-	Token                    string   `json:"token" minLength:"1" maxLength:"4096"`
+	CreateIfMissing          bool     `json:"create_if_missing,omitzero"`
+	ProtectDefaultBranch     bool     `json:"protect_default_branch,omitzero"`
+	IncludeNotes             bool     `json:"include_notes,omitzero"`
 }
 
 // MirrorCreateIn carries one mirror create request with its idempotency key.
@@ -452,8 +452,8 @@ type MirrorCreateIn struct {
 
 // MirrorCreateOut carries the created mirror with its probe record.
 type MirrorCreateOut struct {
-	Mirror MirrorJSON      `json:"mirror"`
 	Probe  MirrorProbeJSON `json:"probe"`
+	Mirror MirrorJSON      `json:"mirror"`
 }
 
 func mirrorCreateHandler(d Deps) func(context.Context, op.Principal, MirrorCreateIn) (MirrorCreateOut, error) {
@@ -506,7 +506,7 @@ func mirrorCreateHandler(d Deps) func(context.Context, op.Principal, MirrorCreat
 		if len(cfg.Globs) == 0 {
 			globsRaw = []byte("[]")
 		}
-		probe := MirrorProbeJSON{}
+		var probe MirrorProbeJSON
 		remote := map[string]string{}
 		daemon, oerr := d.openDaemonRepo(ctx, rc.row)
 		if oerr != nil {
@@ -606,16 +606,16 @@ type MirrorGetIn struct {
 	Owner       string `path:"owner"`
 	Repo        string `path:"repo"`
 	ID          string `path:"id"`
-	IncludeRefs bool   `query:"include_refs"`
 	Cursor      string `query:"cursor"`
 	Limit       int    `query:"limit"`
+	IncludeRefs bool   `query:"include_refs"`
 }
 
 // MirrorGetOut carries one mirror with an optional ref page.
 type MirrorGetOut struct {
 	Next   string         `json:"-"`
-	Mirror MirrorJSON     `json:"mirror"`
 	Refs   []RefStateJSON `json:"refs"`
+	Mirror MirrorJSON     `json:"mirror"`
 }
 
 func mirrorGetHandler(d Deps) func(context.Context, op.Principal, MirrorGetIn) (MirrorGetOut, error) {
@@ -681,11 +681,11 @@ type MirrorUpdateBody struct {
 
 // MirrorUpdateIn carries one mirror update with its idempotency key.
 type MirrorUpdateIn struct {
+	Body           MirrorUpdateBody
 	IdempotencyKey string `header:"Idempotency-Key"`
 	Owner          string `path:"owner"`
 	Repo           string `path:"repo"`
 	ID             string `path:"id"`
-	Body           MirrorUpdateBody
 }
 
 // MirrorUpdateOut carries the updated mirror.
@@ -973,9 +973,9 @@ func mirrorDeleteHandler(d Deps) func(context.Context, op.Principal, MirrorDelet
 
 // MirrorSyncBody carries one manual sync request.
 type MirrorSyncBody struct {
-	DryRun        bool   `json:"dry_run,omitzero"`
 	ConfirmDigest string `json:"confirm_digest,omitempty" maxLength:"128"`
 	Mode          string `json:"mode,omitempty" maxLength:"32"`
+	DryRun        bool   `json:"dry_run,omitzero"`
 }
 
 // MirrorSyncIn carries one mirror sync with its idempotency key.
@@ -990,9 +990,9 @@ type MirrorSyncIn struct {
 // MirrorSyncOut carries the plan preview or the queued run.
 type MirrorSyncOut struct {
 	Plan            *MirrorPlanOut `json:"plan,omitempty"`
+	Run             *RunJSON       `json:"run,omitempty"`
 	Digest          string         `json:"digest,omitempty"`
 	AdoptedRequired bool           `json:"adopted_required"`
-	Run             *RunJSON       `json:"run,omitempty"`
 }
 
 const manualSyncThrottleMs = int64(60000)
@@ -1047,8 +1047,12 @@ func mirrorSyncHandler(d Deps) func(context.Context, op.Principal, MirrorSyncIn)
 		if len(d.SealKey) == 0 {
 			return MirrorSyncOut{}, op.Errorf(op.CodeInternal, "mirror seal key is not configured")
 		}
+		keyVersion, kerr := mirror.CheckedUint32(cred.KeyVersion)
+		if kerr != nil {
+			return MirrorSyncOut{}, op.Errorf(op.CodeConflict, "mirror credential version is not usable")
+		}
 		token, oerr := mirror.Open(d.SealKey, mirror.SealedCredential{
-			KeyVersion: uint32(cred.KeyVersion), Nonce: cred.Nonce, Ciphertext: cred.Ciphertext,
+			KeyVersion: keyVersion, Nonce: cred.Nonce, Ciphertext: cred.Ciphertext,
 		}, "mirror:"+row.PublicID)
 		if oerr != nil {
 			return MirrorSyncOut{}, op.Errorf(op.CodeConflict, "mirror credential cannot be decrypted")

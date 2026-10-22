@@ -20,7 +20,7 @@ const (
 	testOID2   = "abcdef0123456789abcdef0123456789abcdef01"
 )
 
-func mustMarshal(t *testing.T, v any) string {
+func mustMarshalJSON(t *testing.T, v any) string {
 	t.Helper()
 	raw, err := jsonv2.Marshal(v)
 	if err != nil {
@@ -45,13 +45,13 @@ func TestTransportAuthMarshalGolden(t *testing.T) {
 		Origin:     "https://host.x:443",
 	}
 	want := `{"kind":"basic","credential":"alice:` + testCanary + `","origin":"https://host.x:443"}`
-	if got := mustMarshal(t, auth); got != want {
+	if got := mustMarshalJSON(t, auth); got != want {
 		t.Fatalf("auth JSON = %s, want %s", got, want)
 	}
 }
 
 func TestInvocationOpenAuthOmission(t *testing.T) {
-	bare := mustMarshal(t, wire.InvocationOpen{Repo: "r", Method: "push"})
+	bare := mustMarshalJSON(t, wire.InvocationOpen{Repo: "r", Method: "push"})
 	if want := `{"repo":"r","method":"push"}`; bare != want {
 		t.Fatalf("bare open = %s, want %s", bare, want)
 	}
@@ -60,7 +60,7 @@ func TestInvocationOpenAuthOmission(t *testing.T) {
 		Credential: "tok",
 		Origin:     "https://host.x:443",
 	}
-	with := mustMarshal(t, wire.InvocationOpen{Repo: "r", Method: "push", TransportAuth: &auth})
+	with := mustMarshalJSON(t, wire.InvocationOpen{Repo: "r", Method: "push", TransportAuth: &auth})
 	want := `{"repo":"r","method":"push","transport_auth":{"kind":"bearer","credential":"tok","origin":"https://host.x:443"}}`
 	if with != want {
 		t.Fatalf("auth open = %s, want %s", with, want)
@@ -224,14 +224,14 @@ func TestAuthForMirror(t *testing.T) {
 }
 
 func TestPushSourceRoundTrip(t *testing.T) {
-	if got := mustMarshal(t, DeleteSource()); got != `"delete"` {
+	if got := mustMarshalJSON(t, DeleteSource()); got != `"delete"` {
 		t.Fatalf("delete source = %s", got)
 	}
 	if got := mustUnmarshal[PushSource](t, `"delete"`); !got.IsDelete() {
 		t.Fatalf("delete source decoded as commit: %+v", got)
 	}
 	commit := CommitSource(testOID)
-	if got := mustMarshal(t, commit); got != `{"commit":{"oid":"`+testOID+`"}}` {
+	if got := mustMarshalJSON(t, commit); got != `{"commit":{"oid":"`+testOID+`"}}` {
 		t.Fatalf("commit source = %s", got)
 	}
 	if got := mustUnmarshal[PushSource](t, `{"commit":{"oid":"`+testOID+`"}}`); got.Commit == nil || *got.Commit != testOID {
@@ -246,11 +246,11 @@ func TestPushSourceRoundTrip(t *testing.T) {
 }
 
 func TestRemoteExpectRoundTrip(t *testing.T) {
-	if got := mustMarshal(t, AbsentExpect()); got != `"absent"` {
+	if got := mustMarshalJSON(t, AbsentExpect()); got != `"absent"` {
 		t.Fatalf("absent = %s", got)
 	}
 	present := PresentExpect(testOID)
-	if got := mustMarshal(t, present); got != `{"present":{"oid":"`+testOID+`"}}` {
+	if got := mustMarshalJSON(t, present); got != `{"present":{"oid":"`+testOID+`"}}` {
 		t.Fatalf("present = %s", got)
 	}
 	if got := mustUnmarshal[RemoteExpect](t, `"absent"`); !got.IsAbsent() {
@@ -265,24 +265,24 @@ func TestRemoteExpectRoundTrip(t *testing.T) {
 }
 
 func TestPushRefStatusRoundTrip(t *testing.T) {
-	if got := mustMarshal(t, UncertainStatus()); got != `"uncertain"` {
+	if got := mustMarshalJSON(t, UncertainStatus()); got != `"uncertain"` {
 		t.Fatalf("uncertain = %s", got)
 	}
 	if got := mustUnmarshal[PushRefStatus](t, `"uncertain"`); got.Kind != "uncertain" {
 		t.Fatalf("uncertain decoded as %+v", got)
 	}
 	confirmed := ConfirmedStatus(&[]string{testOID}[0])
-	if got := mustMarshal(t, confirmed); got != `{"confirmed":{"new":"`+testOID+`"}}` {
+	if got := mustMarshalJSON(t, confirmed); got != `{"confirmed":{"new":"`+testOID+`"}}` {
 		t.Fatalf("confirmed = %s", got)
 	}
-	if got := mustMarshal(t, ConfirmedStatus(nil)); got != `{"confirmed":{"new":null}}` {
+	if got := mustMarshalJSON(t, ConfirmedStatus(nil)); got != `{"confirmed":{"new":null}}` {
 		t.Fatalf("confirmed delete = %s", got)
 	}
 	if got := mustUnmarshal[PushRefStatus](t, `{"confirmed":{}}`); got.Kind != "confirmed" || got.New != nil {
 		t.Fatalf("empty confirmed decoded as %+v", got)
 	}
 	rejected := RejectedStatus("non-fast-forward")
-	if got := mustMarshal(t, rejected); got != `{"rejected":{"reason":"non-fast-forward"}}` {
+	if got := mustMarshalJSON(t, rejected); got != `{"rejected":{"reason":"non-fast-forward"}}` {
 		t.Fatalf("rejected = %s", got)
 	}
 	if got := mustUnmarshal[PushRefStatus](t, `{"rejected":{"reason":"stale"}}`); got.Kind != "rejected" || got.Reason != "stale" {
@@ -308,11 +308,11 @@ func TestPushArgsMarshalGolden(t *testing.T) {
 	want := `{"remote":{"url":{"url":"https://host.x/r.git"}},"updates":[` +
 		`{"remote_ref":"refs/heads/main","source":{"commit":{"oid":"` + testOID + `"}},"expected_old":{"present":{"oid":"` + testOID2 + `"}},"force":false},` +
 		`{"remote_ref":"refs/heads/old","source":"delete","expected_old":null,"force":true}],"atomicity":"non_atomic"}`
-	if got := mustMarshal(t, args); got != want {
+	if got := mustMarshalJSON(t, args); got != want {
 		t.Fatalf("push args = %s, want %s", got, want)
 	}
 	explicit := PushArgs{RemoteURL: "https://host.x/r.git", Atomicity: "non_atomic"}
-	if got, want := mustMarshal(t, explicit), `{"remote":{"url":{"url":"https://host.x/r.git"}},"updates":[],"atomicity":"non_atomic"}`; got != want {
+	if got, want := mustMarshalJSON(t, explicit), `{"remote":{"url":{"url":"https://host.x/r.git"}},"updates":[],"atomicity":"non_atomic"}`; got != want {
 		t.Fatalf("empty push args = %s, want %s", got, want)
 	}
 }
@@ -386,18 +386,18 @@ func TestRemoteRefsReplyDecode(t *testing.T) {
 	if got := reply.Refs[0].Target.Hex(); got != testOID {
 		t.Fatalf("target = %q", got)
 	}
-	if got := mustMarshal(t, RemoteRefsArgs{URL: "https://host.x/r.git"}); got != `{"url":"https://host.x/r.git"}` {
+	if got := mustMarshalJSON(t, RemoteRefsArgs{URL: "https://host.x/r.git"}); got != `{"url":"https://host.x/r.git"}` {
 		t.Fatalf("remote.refs args = %s", got)
 	}
 }
 
-func TestHttpDetailOf(t *testing.T) {
+func TestHTTPDetailOf(t *testing.T) {
 	detailOf := func(doc string) *Error {
 		return &Error{Detail: jsonv1.RawMessage(doc)}
 	}
-	full, ok := HttpDetailOf(detailOf(`{"http":{"status":429,"retry_after_seconds":7,"location":null,"body_preview":"slow down"}}`))
+	full, ok := HTTPDetailOf(detailOf(`{"http":{"status":429,"retry_after_seconds":7,"location":null,"body_preview":"slow down"}}`))
 	if !ok {
-		t.Fatal("HttpDetailOf missed an http envelope")
+		t.Fatal("HTTPDetailOf missed an http envelope")
 	}
 	if full.Status != 429 || full.BodyPreview != "slow down" {
 		t.Fatalf("detail = %+v", full)
@@ -408,27 +408,27 @@ func TestHttpDetailOf(t *testing.T) {
 	if full.Location != nil {
 		t.Fatalf("location = %+v, want nil", full.Location)
 	}
-	moved, ok := HttpDetailOf(detailOf(`{"http":{"status":301,"body_preview":"","location":"https://new.example/r.git"}}`))
+	moved, ok := HTTPDetailOf(detailOf(`{"http":{"status":301,"body_preview":"","location":"https://new.example/r.git"}}`))
 	if !ok || moved.Status != 301 || moved.Location == nil || *moved.Location != "https://new.example/r.git" {
 		t.Fatalf("moved detail = %+v ok=%v", moved, ok)
 	}
 	wrapped := fmt.Errorf("push: %w", &refusalError{err: detailOf(`{"http":{"status":503,"body_preview":"down"}}`)})
-	if got, ok := HttpDetailOf(wrapped); !ok || got.Status != 503 {
+	if got, ok := HTTPDetailOf(wrapped); !ok || got.Status != 503 {
 		t.Fatalf("wrapped detail = %+v ok=%v", got, ok)
 	}
 	for _, row := range []struct {
-		name string
 		err  error
+		name string
 	}{
-		{"nil", nil},
-		{"plain", errors.New("boom")},
-		{"no detail", &Error{}},
-		{"push detail", detailOf(`{"push":{"plan":"p","state":"s","refs":[]}}`)},
-		{"null http", detailOf(`{"http":null}`)},
-		{"garbage", detailOf(`not json`)},
+		{nil, "nil"},
+		{errors.New("boom"), "plain"},
+		{&Error{}, "no detail"},
+		{detailOf(`{"push":{"plan":"p","state":"s","refs":[]}}`), "push detail"},
+		{detailOf(`{"http":null}`), "null http"},
+		{detailOf(`not json`), "garbage"},
 	} {
-		if _, ok := HttpDetailOf(row.err); ok {
-			t.Fatalf("%s: HttpDetailOf = true, want false", row.name)
+		if _, ok := HTTPDetailOf(row.err); ok {
+			t.Fatalf("%s: HTTPDetailOf = true, want false", row.name)
 		}
 	}
 }

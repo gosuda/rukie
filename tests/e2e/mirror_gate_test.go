@@ -35,7 +35,7 @@ type mirrorGate struct {
 
 func newMirrorGate(t *testing.T) *mirrorGate {
 	t.Helper()
-	s := newStack(t, nil)
+	s := newStackWithConfig(t, nil, "egress_allow = [\"127.0.0.0/8\", \"::1/128\"]\n", 0)
 	h := mountAPI(t, s)
 	s.addAdmin(t, "ada", "repo:read", "repo:write")
 	session := apiLogin(t, h, "ada", "long-test-password-01")
@@ -244,13 +244,13 @@ func mirrorKillReconcile(t *testing.T) {
 			}
 			var terminal string
 			err = g.s.st.Read(ctx, func(tx *store.ReadTx) error {
-				row, err := tx.GetMirrorByPublicID(id)
-				if err != nil {
-					return err
+				row, rerr := tx.GetMirrorByPublicID(id)
+				if rerr != nil {
+					return rerr
 				}
-				runs, _, err := tx.ListRuns(row.ID, "", "", 100)
-				if err != nil {
-					return err
+				runs, _, lerr := tx.ListRuns(row.ID, "", "", 100)
+				if lerr != nil {
+					return lerr
 				}
 				for _, run := range runs {
 					if run.State == "failed" || run.State == "succeeded" || run.State == "partial" {
@@ -284,7 +284,8 @@ func mirrorKillReconcile(t *testing.T) {
 	_ = g.s.child.Kill()
 	close(f.release)
 	select {
-	case <-driven:
+	case derr := <-driven:
+		t.Logf("mirror worker stopped: %v", derr)
 	case <-ctx.Done():
 		t.Fatalf("worker did not stop after kill: %v", ctx.Err())
 	}
@@ -354,8 +355,11 @@ func mirrorAgentFlow(t *testing.T) {
 		id := g.create(t, f, "fast-forward-only", "all", nil)
 		run := g.run(t, id)
 		row := g.get(t, id)
-		mirrorContains(t, fmt.Sprint(row), "needs_attention", "%v", run)
-		mirrorContains(t, fmt.Sprint(row), "auth_failed")
+		got, ok := row["mirror"].(map[string]any)
+		mirrorTrue(t, ok, "%v", row)
+		mirrorEqual(t, "auth_failed", got["state"], "%v", run)
+		mirrorEqual(t, "auth", got["last_error"].(map[string]any)["class"], "%v", run)
+		mirrorEqual(t, float64(0), got["next_run_at"], "%v", run)
 		for range 3 {
 			_, err := g.worker().DriveOnce(t.Context(), "e2e-mirror")
 			mirrorNoError(t, err)

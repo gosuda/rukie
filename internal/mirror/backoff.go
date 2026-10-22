@@ -32,6 +32,8 @@ func LimitsFor(host HostKind) HostLimits {
 		return HostLimits{10 * time.Second, 2}
 	case HostGitLab, HostForgejo:
 		return HostLimits{5 * time.Second, 2}
+	case HostGeneric:
+		return HostLimits{10 * time.Second, 1}
 	default:
 		return HostLimits{10 * time.Second, 1}
 	}
@@ -43,15 +45,15 @@ func LimitsForHost(host HostKind, rawURL string) HostLimits {
 	}
 	return LimitsFor(host)
 }
-func BackoffDelay(attempt int, base, cap time.Duration, rand01 float64) time.Duration {
+func BackoffDelay(attempt int, base, maxDelay time.Duration, rand01 float64) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
 	if base < 0 {
 		base = 0
 	}
-	if cap < 0 {
-		cap = 0
+	if maxDelay < 0 {
+		maxDelay = 0
 	}
 	if math.IsNaN(rand01) || rand01 < 0 {
 		rand01 = 0
@@ -60,15 +62,15 @@ func BackoffDelay(attempt int, base, cap time.Duration, rand01 float64) time.Dur
 		rand01 = 1
 	}
 	d := base
-	for n := 1; n < attempt && d < cap; n++ {
+	for n := 1; n < attempt && d < maxDelay; n++ {
 		if d > time.Duration(math.MaxInt64/2) {
-			d = cap
+			d = maxDelay
 			break
 		}
 		d *= 2
 	}
-	if d > cap {
-		d = cap
+	if d > maxDelay {
+		d = maxDelay
 	}
 	return time.Duration(float64(d) * rand01)
 }
@@ -90,13 +92,13 @@ func RateLimitDelay(retryAfter time.Duration, hasHeader bool, rand01 float64) ti
 }
 
 type Circuit struct {
+	openedAt         time.Time
 	mu               sync.Mutex
 	failures         int
-	open             bool
-	probe            bool
-	openedAt         time.Time
 	duration         time.Duration
 	consecutiveOpens int
+	open             bool
+	probe            bool
 }
 
 func (c *Circuit) Allow(now time.Time) bool {
@@ -129,11 +131,12 @@ func (c *Circuit) Record(now time.Time, success bool, class Class) {
 		c.probe = false
 		c.openedAt = now
 		c.consecutiveOpens++
-		if c.duration == 0 {
+		switch {
+		case c.duration == 0:
 			c.duration = CircuitBase
-		} else if c.duration < CircuitMax/2 {
+		case c.duration < CircuitMax/2:
 			c.duration *= 2
-		} else {
+		default:
 			c.duration = CircuitMax
 		}
 		return
@@ -167,6 +170,9 @@ func ShouldRetry(v Verdict, consecutive, protectedSameReason int) (bool, string)
 		if consecutive >= 3 {
 			return false, "needs_attention"
 		}
+	case ClassRateLimited, ClassServer, ClassNetwork, ClassUncertain,
+		ClassRefHidden, ClassRefHook, ClassRefOther, ClassDiverged,
+		ClassBusy, ClassOK:
 	}
 	if !v.Retry {
 		return false, v.State

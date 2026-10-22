@@ -164,8 +164,8 @@ type PushUpdate struct {
 // {"remote":{"url":{"url":...}},"updates":[...],"atomicity":"non_atomic"}.
 type PushArgs struct {
 	RemoteURL string
-	Updates   []PushUpdate
 	Atomicity string
+	Updates   []PushUpdate
 }
 
 // MarshalJSON writes the daemon push args shape.
@@ -323,9 +323,9 @@ type PushReconcileArgs struct {
 // ReconcileObservation is what observation found for one ref; a nil
 // Observed means the ref does not exist remotely.
 type ReconcileObservation struct {
+	Observed  *string `json:"observed"`
 	RemoteRef string  `json:"remote_ref"`
 	Verdict   string  `json:"verdict"`
-	Observed  *string `json:"observed"`
 }
 
 // PushReconcileReply answers push.reconcile: the plan, its state, and one
@@ -370,39 +370,37 @@ func PushReconcile(ctx context.Context, c *Client, repo Repo, args PushReconcile
 	return CallAuth[PushReconcileArgs, PushReconcileReply](ctx, c, repo, wire.MethodPushReconcile, args, auth)
 }
 
-// boundedList is one daemon BoundedList envelope {items, total,
-// truncated}: only items are kept.
 type boundedList[T any] struct {
 	Items []T `json:"items"`
 }
 
-// HttpDetail carries the facts behind one HTTP refusal: the status, the
+// HTTPDetail carries the facts behind one HTTP refusal: the status, the
 // Retry-After delay, the redirect target, and a scrubbed body preview.
-type HttpDetail struct {
-	Status            uint16  `json:"status"`
+type HTTPDetail struct {
 	RetryAfterSeconds *uint64 `json:"retry_after_seconds"`
 	Location          *string `json:"location"`
 	BodyPreview       string  `json:"body_preview"`
+	Status            uint16  `json:"status"`
 }
 
-// HttpDetailOf extracts the {"http":{...}} detail envelope from a call
+// HTTPDetailOf extracts the {"http":{...}} detail envelope from a call
 // error, reporting false when the error carries no HTTP detail.
-func HttpDetailOf(err error) (HttpDetail, bool) {
+func HTTPDetailOf(err error) (HTTPDetail, bool) {
 	callErr, ok := errors.AsType[*Error](err)
 	if !ok || callErr == nil {
-		return HttpDetail{}, false
+		return HTTPDetail{}, false
 	}
 	if len(callErr.Detail) == 0 {
-		return HttpDetail{}, false
+		return HTTPDetail{}, false
 	}
 	var env struct {
-		HTTP *HttpDetail `json:"http"`
+		HTTP *HTTPDetail `json:"http"`
 	}
 	if err := jsonv2.Unmarshal(callErr.Detail, &env, jsonv1.DefaultOptionsV1()); err != nil {
-		return HttpDetail{}, false
+		return HTTPDetail{}, false
 	}
 	if env.HTTP == nil {
-		return HttpDetail{}, false
+		return HTTPDetail{}, false
 	}
 	return *env.HTTP, true
 }

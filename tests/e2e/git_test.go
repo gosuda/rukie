@@ -106,10 +106,10 @@ func newStackSetup(t *testing.T, limits *wire.GitLimits, extraConfig string, htt
 	}
 	svc := auth.New(st)
 	socket := filepath.Join(dir, "ruk.sock")
-	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 5000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n%s",
+	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 60000\nretention_interval_ms = 0\nhook_timeout_ms = 5000\n%s",
 		socket, roots, os.Getuid(), adminLine, extraConfig)
 	if strings.Contains(extraConfig, "retention_interval_ms") {
-		config = fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 5000\nhook_timeout_ms = 5000\n%s",
+		config = fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%d]\n%sframe_timeout_ms = 60000\nhook_timeout_ms = 5000\n%s",
 			socket, roots, os.Getuid(), adminLine, extraConfig)
 	}
 	configPath := filepath.Join(dir, "daemon.toml")

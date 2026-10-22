@@ -1,7 +1,8 @@
 package mirror
 
 import (
-	"encoding/json"
+	jsonv1 "encoding/json"
+	jsonv2 "encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
@@ -12,11 +13,11 @@ func validMirror() Mirror {
 }
 func TestMirrorValidate(t *testing.T) {
 	cases := []struct {
-		name    string
 		edit    func(*Mirror)
+		name    string
 		wantErr bool
 	}{
-		{"valid", func(*Mirror) {}, false}, {"empty name", func(m *Mirror) { m.Name = "" }, true}, {"long name", func(m *Mirror) { m.Name = strings.Repeat("x", 101) }, true}, {"space", func(m *Mirror) { m.Name = "a b" }, true}, {"control", func(m *Mirror) { m.Name = "a\nb" }, true}, {"userinfo", func(m *Mirror) { m.TargetURL = "https://user:pass@example.com/x" }, true}, {"scheme", func(m *Mirror) { m.TargetURL = "ssh://example.com/x" }, true}, {"http public", func(m *Mirror) { m.TargetURL = "http://example.com/x" }, true}, {"http loopback", func(m *Mirror) { m.TargetURL = "http://127.0.0.1:123/x" }, false}, {"private ip", func(m *Mirror) { m.TargetURL = "https://192.168.1.2/x" }, true}, {"codeberg ack", func(m *Mirror) { m.HostKind = HostForgejo; m.TargetURL = "https://CodeBerg.org:443/x" }, true}, {"codeberg accepted", func(m *Mirror) { m.HostKind = HostForgejo; m.TargetURL = "https://codeberg.org/x"; m.PolicyAck = true }, false}, {"host kind", func(m *Mirror) { m.HostKind = "wat" }, true}, {"mode", func(m *Mirror) { m.Mode = "ff_only" }, true}, {"selection", func(m *Mirror) { m.RefSelection = "nope" }, true}, {"glob", func(m *Mirror) { m.RefSelection = RefSelectionGlobs; m.Globs = []string{"["} }, true}, {"debounce 9", func(m *Mirror) { m.SyncOnRefUpdate = true; m.DebounceSeconds = 9 }, true}, {"debounce 10", func(m *Mirror) { m.SyncOnRefUpdate = true; m.DebounceSeconds = 10 }, false}, {"debounce 11", func(m *Mirror) { m.SyncOnRefUpdate = true; m.DebounceSeconds = 11 }, false}, {"max less", func(m *Mirror) { m.DebounceSeconds = 11; m.MaxDelaySeconds = 10 }, true}, {"reconcile over 24h", func(m *Mirror) { m.ReconcileIntervalSeconds = 86401 }, true}, {"reconcile 24h", func(m *Mirror) { m.ReconcileIntervalSeconds = 86400 }, false}, {"reconcile zero", func(m *Mirror) { m.ReconcileIntervalSeconds = 0 }, false},
+		{edit: func(*Mirror) {}, name: "valid"}, {edit: func(m *Mirror) { m.Name = "" }, name: "empty name", wantErr: true}, {edit: func(m *Mirror) { m.Name = strings.Repeat("x", 101) }, name: "long name", wantErr: true}, {edit: func(m *Mirror) { m.Name = "a b" }, name: "space", wantErr: true}, {edit: func(m *Mirror) { m.Name = "a\nb" }, name: "control", wantErr: true}, {edit: func(m *Mirror) { m.TargetURL = "https://user:pass@example.com/x" }, name: "userinfo", wantErr: true}, {edit: func(m *Mirror) { m.TargetURL = "ssh://example.com/x" }, name: "scheme", wantErr: true}, {edit: func(m *Mirror) { m.TargetURL = "http://example.com/x" }, name: "http public", wantErr: true}, {edit: func(m *Mirror) { m.TargetURL = "http://127.0.0.1:123/x" }, name: "http loopback"}, {edit: func(m *Mirror) { m.TargetURL = "https://192.168.1.2/x" }, name: "private ip", wantErr: true}, {edit: func(m *Mirror) { m.HostKind = HostForgejo; m.TargetURL = "https://CodeBerg.org:443/x" }, name: "codeberg ack", wantErr: true}, {edit: func(m *Mirror) { m.HostKind = HostForgejo; m.TargetURL = "https://codeberg.org/x"; m.PolicyAck = true }, name: "codeberg accepted"}, {edit: func(m *Mirror) { m.HostKind = "wat" }, name: "host kind", wantErr: true}, {edit: func(m *Mirror) { m.Mode = "ff_only" }, name: "mode", wantErr: true}, {edit: func(m *Mirror) { m.RefSelection = "nope" }, name: "selection", wantErr: true}, {edit: func(m *Mirror) { m.RefSelection = RefSelectionGlobs; m.Globs = []string{"["} }, name: "glob", wantErr: true}, {edit: func(m *Mirror) { m.SyncOnRefUpdate = true; m.DebounceSeconds = 9 }, name: "debounce 9", wantErr: true}, {edit: func(m *Mirror) { m.SyncOnRefUpdate = true; m.DebounceSeconds = 10 }, name: "debounce 10"}, {edit: func(m *Mirror) { m.SyncOnRefUpdate = true; m.DebounceSeconds = 11 }, name: "debounce 11"}, {edit: func(m *Mirror) { m.DebounceSeconds = 11; m.MaxDelaySeconds = 10 }, name: "max less", wantErr: true}, {edit: func(m *Mirror) { m.ReconcileIntervalSeconds = 86401 }, name: "reconcile over 24h", wantErr: true}, {edit: func(m *Mirror) { m.ReconcileIntervalSeconds = 86400 }, name: "reconcile 24h"}, {edit: func(m *Mirror) { m.ReconcileIntervalSeconds = 0 }, name: "reconcile zero"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -30,7 +31,7 @@ func TestMirrorValidate(t *testing.T) {
 	}
 }
 func TestMirrorJSONHasNoToken(t *testing.T) {
-	b, err := json.Marshal(validMirror())
+	b, err := jsonv2.Marshal(validMirror(), jsonv1.DefaultOptionsV1())
 	if err != nil {
 		t.Fatal(err)
 	}

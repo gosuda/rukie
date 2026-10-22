@@ -24,8 +24,6 @@ func mirrorMillis(ms int64) string {
 	return strconv.FormatInt(ms, 10)
 }
 
-// mirrorHasBacklog reports whether a mirror belongs on the console backlog
-// panel: an unsettled state, or scheduled work on an enabled mirror.
 func mirrorHasBacklog(m MirrorJSON) bool {
 	switch m.State {
 	case "ok", "idle", "disabled", "":
@@ -64,10 +62,6 @@ func mirrorTrueFlags(m MirrorJSON) string {
 	return strings.Join(on, ", ")
 }
 
-// writeMirrorList renders one repository's push mirrors. There is no console
-// page in the tree; the console backlog panel lives here, on the mirrors
-// list. MirrorListOut carries no run rows, so the panel surfaces per-mirror
-// queue links for mirrors with pending work rather than individual runs.
 func writeMirrorList(w io.Writer, c op.ViewCtx, out MirrorListOut) error {
 	base := c.Path
 	var b strings.Builder
@@ -139,9 +133,6 @@ func writeMirrorList(w io.Writer, c op.ViewCtx, out MirrorListOut) error {
 	return err
 }
 
-// writeMirrorDetail renders one push mirror: config, credential metadata
-// (last4 and versions only, never secrets), ref state, and the sync,
-// token-rotate, and delete forms.
 func writeMirrorDetail(w io.Writer, c op.ViewCtx, out MirrorGetOut) error {
 	m := out.Mirror
 	listBase := c.Path
@@ -207,7 +198,6 @@ func writeMirrorDetail(w io.Writer, c op.ViewCtx, out MirrorGetOut) error {
 	return err
 }
 
-// writeMirrorRunList renders one mirror's sync run queue.
 func writeMirrorRunList(w io.Writer, c op.ViewCtx, out MirrorRunListOut) error {
 	mirrorBase := strings.TrimSuffix(c.Path, "/runs")
 	var b strings.Builder
@@ -229,9 +219,6 @@ func writeMirrorRunList(w io.Writer, c op.ViewCtx, out MirrorRunListOut) error {
 	return err
 }
 
-// writeMirrorRunPage renders one sync run. Runs carry no ref snapshot, so
-// per-ref state lives on the mirror detail page; the run page carries the
-// run header and its outcome.
 func writeMirrorRunPage(w io.Writer, c op.ViewCtx, out MirrorRunGetOut) error {
 	r := out.Run
 	mirrorBase := c.Path

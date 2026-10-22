@@ -35,8 +35,6 @@ func assertMirrorZeroJS(t *testing.T, body string) {
 	if strings.Contains(body, "srcdoc=") {
 		t.Fatalf("page contains srcdoc")
 	}
-	// The token password field is always rendered empty, so a token fed
-	// through the request inputs must never surface in the page.
 	if strings.Contains(body, mirrorViewCanary) {
 		t.Fatalf("page carries the canary token")
 	}

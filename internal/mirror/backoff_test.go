@@ -69,11 +69,11 @@ func TestCircuit(t *testing.T) {
 func TestShouldRetry(t *testing.T) {
 	cases := []struct {
 		cl           Class
-		retry        bool
-		n, protected int
-		want         bool
 		state        string
-	}{{ClassAuth, true, 0, 0, false, "needs_attention"}, {ClassRepoMoved, true, 0, 0, false, "needs_attention"}, {ClassTooLarge, true, 0, 0, false, "needs_attention"}, {ClassPolicy, true, 0, 0, false, "needs_attention"}, {ClassSecret, true, 0, 0, false, "needs_attention"}, {ClassRepoMissing, true, 0, 0, true, "failing"}, {ClassRepoMissing, true, 1, 0, false, "needs_attention"}, {ClassRefProtected, true, 0, 2, true, "partial"}, {ClassRefProtected, true, 0, 3, false, "needs_attention"}, {ClassProtocol, true, 2, 0, true, "failing"}, {ClassProtocol, true, 3, 0, false, "needs_attention"}, {ClassServer, true, 8, 0, true, "failing"}}
+		n, protected int
+		retry        bool
+		want         bool
+	}{{ClassAuth, "needs_attention", 0, 0, true, false}, {ClassRepoMoved, "needs_attention", 0, 0, true, false}, {ClassTooLarge, "needs_attention", 0, 0, true, false}, {ClassPolicy, "needs_attention", 0, 0, true, false}, {ClassSecret, "needs_attention", 0, 0, true, false}, {ClassRepoMissing, "failing", 0, 0, true, true}, {ClassRepoMissing, "needs_attention", 1, 0, true, false}, {ClassRefProtected, "partial", 0, 2, true, true}, {ClassRefProtected, "needs_attention", 0, 3, true, false}, {ClassProtocol, "failing", 2, 0, true, true}, {ClassProtocol, "needs_attention", 3, 0, true, false}, {ClassServer, "failing", 8, 0, true, true}}
 	for _, tc := range cases {
 		v := Verdict{Class: tc.cl, Retry: tc.retry, State: "failing"}
 		if tc.cl == ClassRefProtected {

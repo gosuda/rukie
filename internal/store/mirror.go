@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -12,9 +13,7 @@ import (
 // MirrorRow is one configured push mirror with its runtime status. Time
 // fields are Unix milliseconds; zero means unset.
 type MirrorRow struct {
-	ID                       int64
 	PublicID                 string
-	RepoID                   int64
 	Name                     string
 	TargetURL                string
 	HostKind                 string
@@ -22,18 +21,14 @@ type MirrorRow struct {
 	Mode                     string
 	RefSelection             string
 	Globs                    string
-	IncludeNotes             bool
-	ProtectDefaultBranch     bool
-	Enabled                  bool
-	SyncOnRefUpdate          bool
-	CreateIfMissing          bool
-	PolicyAck                bool
-	AdoptExistingRefs        bool
-	Adopted                  bool
+	State                    string
+	LastErrorClass           string
+	LastError                string
+	ID                       int64
+	RepoID                   int64
 	DebounceSeconds          uint64
 	MaxDelaySeconds          uint64
 	ReconcileIntervalSeconds uint64
-	State                    string
 	ConsecutiveFailures      int64
 	LastHTTPStatus           int64
 	LastAttemptAt            int64
@@ -44,20 +39,6 @@ type MirrorRow struct {
 	EventCursor              int64
 	CreatedAt                int64
 	UpdatedAt                int64
-	LastErrorClass           string
-	LastError                string
-}
-
-// MirrorInsert carries one new mirror's configuration plus its initial state.
-type MirrorInsert struct {
-	RepoID                   int64
-	Name                     string
-	TargetURL                string
-	HostKind                 string
-	Username                 string
-	Mode                     string
-	RefSelection             string
-	Globs                    string
 	IncludeNotes             bool
 	ProtectDefaultBranch     bool
 	Enabled                  bool
@@ -65,10 +46,30 @@ type MirrorInsert struct {
 	CreateIfMissing          bool
 	PolicyAck                bool
 	AdoptExistingRefs        bool
+	Adopted                  bool
+}
+
+// MirrorInsert carries one new mirror's configuration plus its initial state.
+type MirrorInsert struct {
+	Name                     string
+	TargetURL                string
+	HostKind                 string
+	Username                 string
+	Mode                     string
+	RefSelection             string
+	Globs                    string
+	State                    string
+	RepoID                   int64
 	DebounceSeconds          uint64
 	MaxDelaySeconds          uint64
 	ReconcileIntervalSeconds uint64
-	State                    string
+	IncludeNotes             bool
+	ProtectDefaultBranch     bool
+	Enabled                  bool
+	SyncOnRefUpdate          bool
+	CreateIfMissing          bool
+	PolicyAck                bool
+	AdoptExistingRefs        bool
 }
 
 // MirrorPatch carries a partial mirror update. A nil pointer leaves the
@@ -96,11 +97,11 @@ type MirrorPatch struct {
 // CredentialRow is one sealed mirror credential. Nonce and Ciphertext hold
 // the AES-GCM seal output; Last4 is the plaintext token suffix.
 type CredentialRow struct {
-	MirrorID   int64
-	KeyVersion int64
+	Last4      string
 	Nonce      []byte
 	Ciphertext []byte
-	Last4      string
+	MirrorID   int64
+	KeyVersion int64
 	CreatedAt  int64
 	RotatedAt  int64
 	LastUsedAt int64
@@ -108,9 +109,7 @@ type CredentialRow struct {
 
 // MirrorRunRow is one mirror sync run.
 type MirrorRunRow struct {
-	ID              int64
 	PublicID        string
-	MirrorID        int64
 	Kind            string
 	State           string
 	Trigger         string
@@ -120,23 +119,25 @@ type MirrorRunRow struct {
 	OutcomeClass    string
 	OutcomeSummary  string
 	Counts          string
-	DryRun          bool
+	ID              int64
+	MirrorID        int64
 	AttemptNo       int64
 	StartedAt       int64
 	FinishedAt      int64
 	CreatedAt       int64
 	UpdatedAt       int64
+	DryRun          bool
 }
 
 // RefStateRow is one mirror ref's last observed local and remote state.
 type RefStateRow struct {
-	MirrorID            int64
 	Ref                 string
 	LocalOid            string
 	RemoteOid           string
 	Status              string
 	Reason              string
 	ReasonClass         string
+	MirrorID            int64
 	FirstFailedAt       int64
 	LastAttemptAt       int64
 	LastSuccessAt       int64
@@ -145,12 +146,12 @@ type RefStateRow struct {
 
 // AttemptRow is one daemon attempt of one run.
 type AttemptRow struct {
-	ID         int64
-	RunID      int64
-	AttemptNo  int64
 	RukPlan    string
 	Outcome    string
 	Summary    string
+	ID         int64
+	RunID      int64
+	AttemptNo  int64
 	StartedAt  int64
 	FinishedAt int64
 }
@@ -159,14 +160,14 @@ type AttemptRow struct {
 // dirty_since; Adopted records a completed adoption.
 type MirrorResult struct {
 	State               string
+	LastErrorClass      string
+	LastError           string
 	ConsecutiveFailures int64
 	LastHTTPStatus      int64
 	LastAttemptAt       int64
 	LastSuccessAt       int64
 	NextRunAt           int64
 	EventCursor         int64
-	LastErrorClass      string
-	LastError           string
 	Adopted             bool
 	ClearDirty          bool
 }
@@ -187,7 +188,7 @@ first_failed_at, last_attempt_at, last_success_at, consecutive_failures`
 
 const sqlAttemptColumns = `id, run_id, attempt_no, ruk_plan, started_at, finished_at, outcome, summary`
 
-const sqlCredentialColumns = `mirror_id, key_version, nonce, ciphertext, last4, created_at, rotated_at, last_used_at`
+const sqlSealColumns = `mirror_id, key_version, nonce, ciphertext, last4, created_at, rotated_at, last_used_at`
 
 func scanMirrorRow(scan func(dest ...any) error) (MirrorRow, error) {
 	var row MirrorRow
@@ -214,10 +215,36 @@ func scanMirrorRow(scan func(dest ...any) error) (MirrorRow, error) {
 	row.PolicyAck = policyAck == 1
 	row.AdoptExistingRefs = adoptExisting == 1
 	row.Adopted = adopted == 1
-	row.DebounceSeconds = uint64(debounceSeconds)
-	row.MaxDelaySeconds = uint64(maxDelaySeconds)
-	row.ReconcileIntervalSeconds = uint64(reconcileIntervalSeconds)
+	debounce, derr := u64fromStored(debounceSeconds, "debounce_seconds")
+	if derr != nil {
+		return MirrorRow{}, derr
+	}
+	maxDelay, derr := u64fromStored(maxDelaySeconds, "max_delay_seconds")
+	if derr != nil {
+		return MirrorRow{}, derr
+	}
+	reconcile, derr := u64fromStored(reconcileIntervalSeconds, "reconcile_interval_seconds")
+	if derr != nil {
+		return MirrorRow{}, derr
+	}
+	row.DebounceSeconds = debounce
+	row.MaxDelaySeconds = maxDelay
+	row.ReconcileIntervalSeconds = reconcile
 	return row, nil
+}
+
+func u64fromStored(v int64, what string) (uint64, error) {
+	if v < 0 {
+		return 0, fmt.Errorf("mirror row: %w: stored %s is negative", ErrInvalid, what)
+	}
+	return uint64(v), nil
+}
+
+func i64fromConfig(v uint64, what string) (int64, error) {
+	if v > math.MaxInt64 {
+		return 0, fmt.Errorf("mirror config: %w: %s exceeds int64", ErrInvalid, what)
+	}
+	return int64(v), nil
 }
 
 func scanRunRow(scan func(dest ...any) error) (MirrorRunRow, error) {
@@ -352,6 +379,18 @@ func (tx *WriteTx) InsertMirror(now time.Time, in MirrorInsert) (MirrorRow, erro
 	if state == "" {
 		state = "idle"
 	}
+	debounce, derr := i64fromConfig(in.DebounceSeconds, "debounce_seconds")
+	if derr != nil {
+		return MirrorRow{}, fmt.Errorf("InsertMirror: %w", derr)
+	}
+	maxDelay, derr := i64fromConfig(in.MaxDelaySeconds, "max_delay_seconds")
+	if derr != nil {
+		return MirrorRow{}, fmt.Errorf("InsertMirror: %w", derr)
+	}
+	reconcile, derr := i64fromConfig(in.ReconcileIntervalSeconds, "reconcile_interval_seconds")
+	if derr != nil {
+		return MirrorRow{}, fmt.Errorf("InsertMirror: %w", derr)
+	}
 	at := msOf(now)
 	res, ierr := inner.ExecContext(tx.ctx, `INSERT INTO mirrors
 (public_id, repo_id, name, target_url, host_kind, username, mode, ref_selection, globs_json,
@@ -365,8 +404,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, '', ''
 		in.Mode, in.RefSelection, globs,
 		boolInt(in.IncludeNotes), boolInt(in.ProtectDefaultBranch), boolInt(in.Enabled),
 		boolInt(in.SyncOnRefUpdate), boolInt(in.CreateIfMissing), boolInt(in.PolicyAck),
-		boolInt(in.AdoptExistingRefs), int64(in.DebounceSeconds), int64(in.MaxDelaySeconds),
-		int64(in.ReconcileIntervalSeconds), state, at, at)
+		boolInt(in.AdoptExistingRefs), debounce, maxDelay,
+		reconcile, state, at, at)
 	if ierr != nil {
 		return MirrorRow{}, mirrorNameConflict("InsertMirror", ierr, in.Name)
 	}
@@ -377,7 +416,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, '', ''
 	return tx.getMirrorForUpdate(id)
 }
 
-// getMirrorForUpdate loads one mirror inside a write transaction.
 func (tx *WriteTx) getMirrorForUpdate(id int64) (MirrorRow, error) {
 	inner, err := tx.live()
 	if err != nil {
@@ -459,16 +497,28 @@ func (tx *WriteTx) UpdateMirror(now time.Time, id int64, p MirrorPatch) (MirrorR
 		args = append(args, boolInt(*p.AdoptExistingRefs))
 	}
 	if p.DebounceSeconds != nil {
+		debounce, derr := i64fromConfig(*p.DebounceSeconds, "debounce_seconds")
+		if derr != nil {
+			return MirrorRow{}, fmt.Errorf("UpdateMirror: %w", derr)
+		}
 		query += `, debounce_seconds = ?`
-		args = append(args, int64(*p.DebounceSeconds))
+		args = append(args, debounce)
 	}
 	if p.MaxDelaySeconds != nil {
+		maxDelay, derr := i64fromConfig(*p.MaxDelaySeconds, "max_delay_seconds")
+		if derr != nil {
+			return MirrorRow{}, fmt.Errorf("UpdateMirror: %w", derr)
+		}
 		query += `, max_delay_seconds = ?`
-		args = append(args, int64(*p.MaxDelaySeconds))
+		args = append(args, maxDelay)
 	}
 	if p.ReconcileIntervalSeconds != nil {
+		reconcile, derr := i64fromConfig(*p.ReconcileIntervalSeconds, "reconcile_interval_seconds")
+		if derr != nil {
+			return MirrorRow{}, fmt.Errorf("UpdateMirror: %w", derr)
+		}
 		query += `, reconcile_interval_seconds = ?`
-		args = append(args, int64(*p.ReconcileIntervalSeconds))
+		args = append(args, reconcile)
 	}
 	query += ` WHERE id = ?`
 	args = append(args, id)
@@ -861,7 +911,7 @@ func (tx *ReadTx) GetCredential(mirrorID int64) (CredentialRow, error) {
 		return CredentialRow{}, err
 	}
 	row, serr := scanCredentialRow(inner.QueryRowContext(tx.ctx,
-		`SELECT `+sqlCredentialColumns+` FROM mirror_credentials WHERE mirror_id = ?`, mirrorID).Scan)
+		`SELECT `+sqlSealColumns+` FROM mirror_credentials WHERE mirror_id = ?`, mirrorID).Scan)
 	if errors.Is(serr, sql.ErrNoRows) {
 		return CredentialRow{}, fmt.Errorf("GetCredential: %w: mirror %d", ErrNotFound, mirrorID)
 	}

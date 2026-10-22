@@ -8,13 +8,42 @@ import (
 
 func TestClassify(t *testing.T) {
 	cases := []struct {
-		code          string
-		status        int
-		after, reason string
-		class         Class
-		retry         bool
-		state         string
-	}{{"E_FORBIDDEN", 403, "", "", ClassAuth, false, "auth_failed"}, {"", 429, "", "", ClassRateLimited, true, "failing"}, {"", 403, "10", "", ClassRateLimited, true, "failing"}, {"E_NOT_FOUND", 404, "", "", ClassRepoMissing, true, "failing"}, {"E_REMOTE_MOVED", 0, "", "", ClassRepoMoved, false, "needs_attention"}, {"", 302, "", "", ClassRepoMoved, false, "needs_attention"}, {"", 500, "", "", ClassServer, true, "failing"}, {"E_OFFLINE", 0, "", "", ClassNetwork, true, "failing"}, {"", 0, "", "timeout", ClassNetwork, true, "failing"}, {"E_PUSH_UNCERTAIN", 0, "", "", ClassUncertain, true, "failing"}, {"", 0, "", "deny updating a hidden ref", ClassRefHidden, false, "partial"}, {"", 0, "", "protected branch", ClassRefProtected, false, "partial"}, {"", 0, "", "push protection GH013", ClassRefPolicy, false, "needs_attention"}, {"", 0, "", "file size limit exceeded", ClassTooLarge, false, "needs_attention"}, {"", 0, "", "pre-receive hook declined", ClassRefHook, false, "partial"}, {"E_CORRUPT", 0, "", "", ClassProtocol, true, "failing"}, {"E_CAPACITY", 0, "", "", ClassBusy, true, "failing"}, {"E_CANCELLED", 0, "", "", ClassBusy, true, "failing"}, {"E_DIVERGED", 0, "", "", ClassDiverged, false, "partial"}, {"E_SECRET", 0, "", "", ClassSecret, false, "needs_attention"}, {"E_POLICY", 0, "", "", ClassPolicy, false, "needs_attention"}, {"", 0, "", "mystery", ClassRefOther, false, "partial"}, {"", 0, "", "", ClassOK, false, "ok"}, {"E_PUSH_REJECTED", 0, "", "", ClassRefOther, false, "partial"}, {"E_PUSH_REJECTED", 0, "", "protected branch", ClassRefProtected, false, "partial"}, {"E_PUSH_REJECTED", 0, "", "pre-receive hook declined", ClassRefHook, false, "partial"}, {"E_FORBIDDEN", 403, "", "rate limit", ClassRateLimited, true, "failing"}}
+		code   string
+		after  string
+		reason string
+		class  Class
+		state  string
+		status int
+		retry  bool
+	}{
+		{code: "E_FORBIDDEN", status: 403, class: ClassAuth, retry: false, state: "auth_failed"},
+		{code: "", status: 429, class: ClassRateLimited, retry: true, state: "failing"},
+		{code: "", status: 403, after: "10", class: ClassRateLimited, retry: true, state: "failing"},
+		{code: "E_NOT_FOUND", status: 404, class: ClassRepoMissing, retry: true, state: "failing"},
+		{code: "E_REMOTE_MOVED", class: ClassRepoMoved, retry: false, state: "needs_attention"},
+		{code: "", status: 302, class: ClassRepoMoved, retry: false, state: "needs_attention"},
+		{code: "", status: 500, class: ClassServer, retry: true, state: "failing"},
+		{code: "E_OFFLINE", class: ClassNetwork, retry: true, state: "failing"},
+		{code: "", reason: "timeout", class: ClassNetwork, retry: true, state: "failing"},
+		{code: "E_PUSH_UNCERTAIN", class: ClassUncertain, retry: true, state: "failing"},
+		{code: "", reason: "deny updating a hidden ref", class: ClassRefHidden, retry: false, state: "partial"},
+		{code: "", reason: "protected branch", class: ClassRefProtected, retry: false, state: "partial"},
+		{code: "", reason: "push protection GH013", class: ClassRefPolicy, retry: false, state: "needs_attention"},
+		{code: "", reason: "file size limit exceeded", class: ClassTooLarge, retry: false, state: "needs_attention"},
+		{code: "", reason: "pre-receive hook declined", class: ClassRefHook, retry: false, state: "partial"},
+		{code: "E_CORRUPT", class: ClassProtocol, retry: true, state: "failing"},
+		{code: "E_CAPACITY", class: ClassBusy, retry: true, state: "failing"},
+		{code: "E_CANCELLED", class: ClassBusy, retry: true, state: "failing"},
+		{code: "E_DIVERGED", class: ClassDiverged, retry: false, state: "partial"},
+		{code: "E_SECRET", class: ClassSecret, retry: false, state: "needs_attention"},
+		{code: "E_POLICY", class: ClassPolicy, retry: false, state: "needs_attention"},
+		{code: "", reason: "mystery", class: ClassRefOther, retry: false, state: "partial"},
+		{code: "", class: ClassOK, retry: false, state: "ok"},
+		{code: "E_PUSH_REJECTED", class: ClassRefOther, retry: false, state: "partial"},
+		{code: "E_PUSH_REJECTED", reason: "protected branch", class: ClassRefProtected, retry: false, state: "partial"},
+		{code: "E_PUSH_REJECTED", reason: "pre-receive hook declined", class: ClassRefHook, retry: false, state: "partial"},
+		{code: "E_FORBIDDEN", status: 403, reason: "rate limit", class: ClassRateLimited, retry: true, state: "failing"},
+	}
 	for _, tc := range cases {
 		v := Classify(tc.code, tc.status, tc.after, tc.reason)
 		if v.Class != tc.class || v.Retry != tc.retry || v.State != tc.state {
