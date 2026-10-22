@@ -48,6 +48,7 @@ type SelfUpdateOut struct {
 	Name     string `json:"name"`
 	FullName string `json:"full_name"`
 	Email    string `json:"email"`
+	ETag     string `json:"etag"`
 }
 
 type SelfDeleteIn struct {
@@ -133,7 +134,7 @@ func RegisterUser(t *op.Table, deps Deps) error {
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeValidation, op.CodeStale, op.CodePreconditionReq},
 		Concurrency: op.ConcurrencyIfMatchRequired,
 		ETag: func(out SelfUpdateOut) string {
-			return "user-" + out.Name
+			return out.ETag
 		},
 		Location: func(SelfUpdateOut) string { return "/settings" },
 		Handler: func(ctx context.Context, p op.Principal, in SelfUpdateIn) (SelfUpdateOut, error) {
@@ -147,7 +148,11 @@ func RegisterUser(t *op.Table, deps Deps) error {
 			if err != nil {
 				return SelfUpdateOut{}, mapAuthError(err)
 			}
-			return SelfUpdateOut{Name: u.Name, FullName: u.FullName, Email: u.Email}, nil
+			tag, err := deps.Service.ETagFor(ctx, userID)
+			if err != nil {
+				return SelfUpdateOut{}, mapAuthError(err)
+			}
+			return SelfUpdateOut{Name: u.Name, FullName: u.FullName, Email: u.Email, ETag: tag}, nil
 		},
 	}); err != nil {
 		return err
