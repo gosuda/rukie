@@ -797,6 +797,9 @@ func updateRepoHandler(d Deps) func(context.Context, op.Principal, RepoUpdateIn)
 			if berr := checkBranchName(*body.DefaultBranch); berr != nil {
 				return RepoUpdateOut{}, berr
 			}
+			if *body.DefaultBranch != rc.row.DefaultBranch {
+				return RepoUpdateOut{}, op.Errorf(op.CodeConflict, "changing the default branch through metadata is not supported")
+			}
 		}
 		now := d.now()
 		var updated store.RepoRow
@@ -852,15 +855,15 @@ func visibilityRepoHandler(d Deps) func(context.Context, op.Principal, RepoVisib
 		if verr := checkVisibility(in.Body.Visibility); verr != nil {
 			return RepoVisibilityOut{}, verr
 		}
-		if in.Body.Confirm != fullName(rc.owner, rc.row.Name) {
-			return RepoVisibilityOut{}, op.Errorf(op.CodeValidation, "confirmation must repeat the repository full name")
-		}
 		action := "repo.visibility"
 		if widensVisibility(rc.row.Visibility, in.Body.Visibility) {
 			action = "repo.visibility_widen"
 		}
 		if derr := d.checkRepoAccess(rq, rc.row, action, ""); derr != nil {
 			return RepoVisibilityOut{}, derr
+		}
+		if in.Body.Confirm != fullName(rc.owner, rc.row.Name) {
+			return RepoVisibilityOut{}, op.Errorf(op.CodeValidation, "confirmation must repeat the repository full name")
 		}
 		now := d.now()
 		visibility := in.Body.Visibility
@@ -950,6 +953,7 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 		newPath := newOwnerName + "/" + in.Body.Name + ".git"
 		now := d.now()
 		var updated store.RepoRow
+		renamed := false
 		werr := st.Write(ctx, func(tx *store.WriteTx) error {
 			current, gerr := tx.GetRepoForUpdate(rc.row.ID, false)
 			if gerr != nil {
@@ -966,6 +970,9 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 					map[string]any{"repo": oldPath, "new_path": newPath}, &map[string]any{}); rerr != nil {
 					return rerr
 				}
+				// The daemon has already moved; put it back unless the
+				// metadata commit below succeeds.
+				renamed = true
 			}
 			if rerr := tx.RenameRepo(rc.row.ID, newUser.ID, in.Body.Name, newPath, now); rerr != nil {
 				if isUniqueViolation(rerr) {
@@ -983,6 +990,10 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 			return ferr
 		})
 		if werr != nil {
+			if renamed {
+				_ = d.callRuk(context.WithoutCancel(ctx), ruk.Repo{}, wire.MethodRepoRename,
+					map[string]any{"repo": newPath, "new_path": oldPath}, &map[string]any{})
+			}
 			if _, ok := errors.AsType[*op.Error](werr); ok {
 				return RepoRenameOut{}, werr
 			}
@@ -1047,14 +1058,23 @@ func deleteRepoHandler(d Deps) func(context.Context, op.Principal, RepoDeleteIn)
 				"path":       rc.row.RukPath,
 				"not_before": purgeAfter.UnixMilli(),
 			})
-			_, jerr := tx.EnqueueJob(store.JobSpec{
+			spec := store.JobSpec{
 				ID:      fmt.Sprintf("repo-purge:%d", rc.row.ID),
 				Kind:    "repo_purge",
 				RepoID:  rc.row.ID,
 				Payload: string(payload),
 				At:      now,
-			})
-			return jerr
+			}
+			fresh, jerr := tx.EnqueueJob(spec)
+			if jerr != nil {
+				return jerr
+			}
+			if !fresh {
+				// A row left over from an earlier delete/restore cycle must
+				// pick up this horizon instead of the old payload.
+				return tx.ResetJob(spec, now)
+			}
+			return nil
 		})
 		if werr != nil {
 			if _, ok := errors.AsType[*op.Error](werr); ok {
@@ -1142,8 +1162,16 @@ func restoreRepoHandler(d Deps) func(context.Context, op.Principal, RepoRestoreI
 			if merr := matchRepoETag(in.IfMatch, rc.owner, current); merr != nil {
 				return merr
 			}
+			// The purge job is keyed on a fixed id and survives its own run,
+			// so a stale row would still delete the repository after restore.
+			if current.PurgeAfter.Valid && current.PurgeAfter.Int64 <= now.UnixMilli() {
+				return op.Errorf(op.CodeConflict, "purge horizon has passed")
+			}
 			if rerr := tx.RestoreRepo(rc.row.ID, now); rerr != nil {
 				return rerr
+			}
+			if jerr := tx.DeleteJob(fmt.Sprintf("repo-purge:%d", rc.row.ID)); jerr != nil {
+				return jerr
 			}
 			var ferr error
 			updated, ferr = tx.GetRepoForUpdate(rc.row.ID, false)
@@ -1206,7 +1234,7 @@ func listCollaboratorsHandler(d Deps) func(context.Context, op.Principal, Collab
 				continue
 			}
 			if len(out.Collaborators) >= limit {
-				out.Next = grant.Username
+				out.Next = out.Collaborators[len(out.Collaborators)-1].User
 				break
 			}
 			out.Collaborators = append(out.Collaborators, CollaboratorItem{

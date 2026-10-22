@@ -2006,7 +2006,7 @@ func writeOrgSettings(w io.Writer, c op.ViewCtx, out OrgSettingsPageOut) error {
 
 func writeOrgMembers(w io.Writer, c op.ViewCtx, out OrgMemberListOut) error {
 	base := strings.TrimSuffix(c.Path, "/members")
-	org := strings.TrimPrefix(base, "/")
+	org := strings.TrimPrefix(strings.TrimSuffix(base, "/-"), "/")
 	var b strings.Builder
 	b.WriteString(heading("Members"))
 	b.WriteString(errorList(c.Errors))
@@ -2029,7 +2029,7 @@ func writeOrgMembers(w io.Writer, c op.ViewCtx, out OrgMemberListOut) error {
 
 func writeTeamList(w io.Writer, c op.ViewCtx, out TeamListOut) error {
 	base := strings.TrimSuffix(c.Path, "/teams")
-	org := strings.TrimPrefix(base, "/")
+	org := strings.TrimPrefix(strings.TrimSuffix(base, "/-"), "/")
 	var b strings.Builder
 	b.WriteString(heading("Teams"))
 	b.WriteString(errorList(c.Errors))

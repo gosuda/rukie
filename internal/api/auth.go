@@ -198,7 +198,7 @@ func RegisterAuth(t *op.Table, deps Deps) error {
 	}
 	if err := op.Register(t, op.Op[PasswordChangeIn, PasswordChangeOut]{
 		Name: "auth.password.change", Kind: op.KindMutation, Method: http.MethodPost, Path: "/settings/security/password",
-		Scope: op.ScopeRepoRead, Summary: "Change the account password",
+		Scope: op.ScopePublicRead, Summary: "Change the account password",
 		Description: "Requires a fresh session. Revokes every session including the current one.",
 		Problems:    []op.Code{op.CodeUnauthorized, op.CodeValidation},
 		Location:    func(PasswordChangeOut) string { return "/login" },

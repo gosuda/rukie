@@ -318,6 +318,16 @@ func (c *Config) Validate() error {
 	if c.Ruk.StreamWindowBytes < 1 || c.Ruk.StreamWindowBytes > 16777216 {
 		return fmt.Errorf("config: ruk.stream_window_bytes must be 1..16777216")
 	}
+	if c.Auth.TOTPRequired {
+		return fmt.Errorf("config: auth.totp_required is not supported")
+	}
+	defaults := Defaults().Auth
+	if c.Auth.TOTPIssuer != defaults.TOTPIssuer || c.Auth.TokenPrefix != defaults.TokenPrefix ||
+		c.Auth.PasswordMinLength != defaults.PasswordMinLength || c.Auth.SessionTTWHours != defaults.SessionTTWHours ||
+		c.Auth.Argon2MemoryKib != defaults.Argon2MemoryKib || c.Auth.Argon2Iterations != defaults.Argon2Iterations ||
+		c.Auth.Argon2Parallelism != defaults.Argon2Parallelism {
+		return fmt.Errorf("config: non-default auth parameters are not supported")
+	}
 	if c.Auth.PasswordMinLength < 1 {
 		return fmt.Errorf("config: auth.password_min_length must be positive")
 	}

@@ -375,7 +375,7 @@ func TestMirrorDueGating(t *testing.T) {
 		if derr != nil {
 			return derr
 		}
-		want := map[int64]bool{ids["dirty"]: true, ids["past"]: true}
+		want := map[int64]bool{ids["past"]: true}
 		if len(due) != len(want) {
 			t.Fatalf("due = %v, want %v", due, want)
 		}

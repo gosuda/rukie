@@ -297,6 +297,9 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		open.RequestID = &request
 		requestID = request
 		handle = s.hookHandler(id.caller, repoID, request)
+		// The reconciled-want stash is consumed by reconcileUnknownPush on an
+		// unknown outcome; every other exit would otherwise retain it.
+		defer func() { s.takeWant(request) }()
 	}
 	w.Header().Set("Content-Type", resultType(name))
 	w.Header().Set("Cache-Control", "no-cache")

@@ -54,6 +54,20 @@ type Mirror struct {
 	AdoptExistingRefs        bool         `json:"adopt_existing_refs"`
 }
 
+func forbiddenMirrorIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		// RFC 6598 shared address space (100.64.0.0/10) is not public.
+		return v4[0] == 100 && v4[1]&0xc0 == 0x40
+	}
+	return false
+}
+
 func (m Mirror) Validate(_ time.Time) error {
 	if m.Name == "" || len([]rune(m.Name)) > 100 {
 		return fmt.Errorf("Mirror.Validate: invalid name")
@@ -67,17 +81,18 @@ func (m Mirror) Validate(_ time.Time) error {
 	if err != nil || u.Hostname() == "" || u.User != nil {
 		return fmt.Errorf("Mirror.Validate: invalid target URL")
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("Mirror.Validate: target URL must use HTTP or HTTPS")
+	if u.Scheme != "https" {
+		return fmt.Errorf("Mirror.Validate: target URL must use HTTPS")
 	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-	ip := net.ParseIP(host)
-	loopbackAllowed := host == "localhost" || (ip != nil && ip.IsLoopback())
-	if u.Scheme == "http" && !loopbackAllowed {
-		return fmt.Errorf("Mirror.Validate: HTTP target must be loopback")
+	ips, lerr := net.LookupIP(host)
+	if lerr != nil || len(ips) == 0 {
+		return fmt.Errorf("Mirror.Validate: target host does not resolve")
 	}
-	if ip != nil && !ip.IsLoopback() && (ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsLoopback()) {
-		return fmt.Errorf("Mirror.Validate: private target IP")
+	for _, ip := range ips {
+		if forbiddenMirrorIP(ip) {
+			return fmt.Errorf("Mirror.Validate: target resolves to a private or reserved IP")
+		}
 	}
 	switch m.HostKind {
 	case HostGitHub, HostGitLab, HostForgejo, HostGeneric:

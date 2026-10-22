@@ -143,10 +143,10 @@ func placeFilesStaged(cfg config.Config, backupDir string, doc ManifestDoc) (Res
 	rollback := func() {
 		for i := len(placements) - 1; i >= 0; i-- {
 			p := placements[i]
-			if !p.installed {
-				continue
-			}
 			if p.moved {
+				if p.installed {
+					_ = os.Remove(p.dst)
+				}
 				_ = os.Rename(p.aside, p.dst)
 				for _, suffix := range []string{"-wal", "-shm"} {
 					if _, serr := os.Stat(p.aside + suffix); serr == nil {

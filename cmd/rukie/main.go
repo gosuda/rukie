@@ -326,7 +326,12 @@ func runServe(argv []string) int {
 	}()
 	mirrorDone := make(chan error, 1)
 	go func() {
-		mirrorDone <- app.mirror.Scheduler(workerCtx, 10*time.Second, "serve-mirror")
+		// A drain error is transient (a store hiccup, a rejected run). Let the
+		// scheduler restart instead of silently dropping every later mirror.
+		superviseWorker(workerCtx, time.Minute, func(error) bool { return true }, func(ctx context.Context) error {
+			return app.mirror.Scheduler(ctx, 10*time.Second, "serve-mirror")
+		})
+		mirrorDone <- workerCtx.Err()
 	}()
 	ownedDrainRunners["followers"] = app.watcher.StopAll
 	ownedDrainRunners["queue"] = func(context.Context) error {

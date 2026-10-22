@@ -877,9 +877,9 @@ func (tx *ReadTx) ListMirrors(repoID int64, after string, limit int) ([]MirrorRo
 	return out, next, nil
 }
 
-// DueMirrors lists enabled mirrors needing a run: a dirty marker older than
-// its per-mirror debounce, or a reached next_run_at. Zero next_run_at means
-// unscheduled and never due.
+// DueMirrors lists enabled mirrors needing a run after their scheduled time.
+// Dirty markers only make a mirror eligible when next_run_at is set and due;
+// queued work is already represented by the queue and must not be duplicated.
 func (tx *ReadTx) DueMirrors(nowMs int64, limit int) ([]MirrorRow, error) {
 	inner, err := tx.live()
 	if err != nil {
@@ -887,8 +887,10 @@ func (tx *ReadTx) DueMirrors(nowMs int64, limit int) ([]MirrorRow, error) {
 	}
 	limit = clampMirrorLimit(limit)
 	rows, qerr := inner.QueryContext(tx.ctx, `SELECT `+sqlMirrorColumns+` FROM mirrors
-WHERE enabled = 1 AND ((dirty_since <> 0 AND dirty_since + debounce_seconds * 1000 <= ?) OR (next_run_at <> 0 AND next_run_at <= ?))
-ORDER BY next_run_at, id LIMIT ?`, nowMs, nowMs, limit)
+WHERE enabled = 1 AND next_run_at <> 0 AND next_run_at <= ? AND NOT EXISTS (
+    SELECT 1 FROM mirror_runs r WHERE r.mirror_id = mirrors.id AND r.state = 'queued'
+)
+ORDER BY next_run_at, id LIMIT ?`, nowMs, limit)
 	if qerr != nil {
 		return nil, qerr
 	}

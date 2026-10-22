@@ -7,7 +7,7 @@ Change the account password
 Requires a fresh session. Revokes every session including the current one.
 
 - Method and path: `POST /settings/security/password`
-- Scope: `repo:read`
+- Scope: `public:read`
 - Kind: `mutation`
 - CLI: `rukie auth password change`
 - MCP: `auth_password_change`

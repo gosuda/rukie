@@ -873,6 +873,25 @@ func viewCreateHandler(d Deps) func(context.Context, op.Principal, ViewCreateIn)
 	}
 }
 
+// canSeeView reports whether the caller may read one saved view. Shared views
+// are open to anyone who can see the repository; private ones belong to their
+// owner and to repository administrators.
+func canSeeView(rq requester, repo store.RepoRow, view store.ViewRow) bool {
+	if view.Shared {
+		return true
+	}
+	if !rq.authed {
+		return false
+	}
+	if rq.caller.IsAdmin {
+		return true
+	}
+	if view.OwnerUserID.Valid && view.OwnerUserID.Int64 == rq.userID {
+		return true
+	}
+	return repo.OwnerUserID.Valid && repo.OwnerUserID.Int64 == rq.userID
+}
+
 func viewGetHandler(d Deps) func(context.Context, op.Principal, ViewGetIn) (ViewGetOut, error) {
 	return func(ctx context.Context, p op.Principal, in ViewGetIn) (ViewGetOut, error) {
 		rq, rerr := d.requester(ctx, p)
@@ -891,6 +910,11 @@ func viewGetHandler(d Deps) func(context.Context, op.Principal, ViewGetIn) (View
 			row, gerr := tx.ReadViewByPublicID(rc.row.ID, in.View)
 			if gerr != nil {
 				return gerr
+			}
+			// change.view only proves the repo is visible. A private view is
+			// visible to its owner and to users who may administer the repo.
+			if !canSeeView(rq, rc.row, row) {
+				return store.ErrNotFound
 			}
 			out.View = ViewJSON{ID: row.PublicID, Name: row.Name, Version: row.Version, Shared: row.Shared}
 			out.Revset = row.Revset
@@ -924,6 +948,9 @@ func viewListHandler(d Deps) func(context.Context, op.Principal, ViewListIn) (Vi
 				return lerr
 			}
 			for _, row := range rows {
+				if !canSeeView(rq, rc.row, row) {
+					continue
+				}
 				out.Views = append(out.Views, ViewJSON{ID: row.PublicID, Name: row.Name, Version: row.Version, Shared: row.Shared})
 			}
 			return nil

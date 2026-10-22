@@ -259,6 +259,45 @@ func (tx *WriteTx) CompleteJob(owner, id, token string, now time.Time) error {
 	return tx.finishLease(sqlJobDone, "CompleteJob", owner, id, token, now)
 }
 
+// DeleteJob drops a job row so a fixed id can be enqueued afresh later.
+func (tx *WriteTx) DeleteJob(id string) error {
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM jobs WHERE id = ?1`, id); derr != nil {
+		return fmt.Errorf("DeleteJob: %w", mapErr(derr))
+	}
+	return nil
+}
+
+// ResetJob revives a queued, leased, or dead job under a new payload and run
+// time. Callers that re-queue a fixed job id while a stale row still exists
+// (after a restore, for instance) need this because EnqueueJob leaves an
+// existing row alone.
+func (tx *WriteTx) ResetJob(spec JobSpec, now time.Time) error {
+	if err := checkJobSpec(spec); err != nil {
+		return err
+	}
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	at := msOf(spec.At)
+	moved, merr := execAffected(tx.ctx, inner, `UPDATE jobs
+SET kind = ?2, repo_id = ?3, payload = ?4, state = 'queued', attempts = 0,
+    lease_owner = '', lease_token = '', lease_expires_at = 0, run_after = ?5, updated_at = ?6
+WHERE id = ?1`,
+		spec.ID, spec.Kind, spec.RepoID, spec.Payload, at, msOf(now))
+	if merr != nil {
+		return fmt.Errorf("ResetJob: %w", mapErr(merr))
+	}
+	if moved == 0 {
+		return fmt.Errorf("ResetJob: %w: job %s", ErrNotFound, spec.ID)
+	}
+	return nil
+}
+
 // RequeueJob records one handler failure: attempts grows, the next run
 // waits out failBackoff, and at jobMaxAttempts the row moves to dead so
 // a poison job stops spinning the single writer. Only the lease-token

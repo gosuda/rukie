@@ -80,6 +80,11 @@ func AppliedSchemaVersion(dbPath string) (int64, error) {
 		}
 		return 0, fmt.Errorf("AppliedSchemaVersion: %w", serr)
 	}
+	// OFD locking is process-wide and can only be armed before the first
+	// SQLite connection exists; opening first would freeze POSIX locking in.
+	if perr := setupProcess(false); perr != nil {
+		return 0, fmt.Errorf("AppliedSchemaVersion: %w", perr)
+	}
 	dsn := fileDSN(abs, "mode=ro&_query_only=on&_busy_timeout=5000")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

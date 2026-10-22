@@ -623,10 +623,11 @@ const (
 )
 
 type Principal struct {
-	UserID  int64
-	Kind    PrincipalKind
-	TokenID int64
-	Grants  Scopes
+	UserID             int64
+	TokenID            int64
+	Grants             Scopes
+	Kind               PrincipalKind
+	MustChangePassword bool
 }
 
 func (p Principal) Can(s Scope) bool { return p.Grants.Has(s) }

@@ -209,6 +209,48 @@ func TestTOTPFailuresFeedLockout(t *testing.T) {
 	}
 }
 
+func TestRecoveryCodesReenroll(t *testing.T) {
+	svc, setNow := openTestService(t)
+	svc.SetSealKey(testSealKey())
+	now := time.Unix(1754000000, 0).UTC()
+	setNow(now)
+	u := mustCreateWithPassword(t, svc, "reenroll", false)
+	first := enrollEnabled(t, svc, u, now)
+	if err := svc.store.ClearTOTP(t.Context(), u.ID, millis(now)); err != nil {
+		t.Fatalf("clear totp: %v", err)
+	}
+	setNow(now.Add(time.Minute))
+	enrollment, err := svc.EnrollTOTP(t.Context(), u.ID, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("reenroll: %v", err)
+	}
+	secret, err := base32NoPad.DecodeString(enrollment.SecretBase32)
+	if err != nil {
+		t.Fatalf("decode reenrollment secret: %v", err)
+	}
+	login, err := svc.Login(t.Context(), LoginInput{Username: u.Name, Password: testPasswords[u.Name], IP: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("reenrollment login: %v", err)
+	}
+	out, err := svc.VerifyTOTP(t.Context(), VerifyTOTPInput{
+		SessionSecret: login.Secret, Code: TOTPCode(secret, TOTPCounter(now.Add(time.Minute))), IP: "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("promote reenrollment: %v", err)
+	}
+	second := out.RecoveryCodes
+	if len(second) != recoveryCodeCount || second[0] == first[0] {
+		t.Fatalf("reenrollment recovery codes = %d or unexpectedly reused", len(second))
+	}
+	res, err := svc.Login(t.Context(), LoginInput{Username: u.Name, Password: testPasswords[u.Name], IP: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("reenrollment login: %v", err)
+	}
+	if _, err := svc.VerifyTOTP(t.Context(), VerifyTOTPInput{SessionSecret: res.Secret, Code: second[0], IP: "127.0.0.1"}); err != nil {
+		t.Fatalf("reenrollment recovery code: %v", err)
+	}
+}
+
 func TestRecoveryCodesSingleUse(t *testing.T) {
 	svc, setNow := openTestService(t)
 	svc.SetSealKey(testSealKey())

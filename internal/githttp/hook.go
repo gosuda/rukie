@@ -113,6 +113,11 @@ func (s *Server) judge(ctx context.Context, caller access.Caller, repoID int64, 
 	if phase == wire.HookPostReceive {
 		return wire.AcceptVerdict()
 	}
+	if s.resolver != nil {
+		if repo, ok := s.resolver.Repo(repoID); ok && repo.Archived {
+			return wire.RejectVerdict(truncateReason("repository is archived"))
+		}
+	}
 	if isRefsFor(cmd.Name) {
 		return s.divertChange(ctx, caller, repoID, cmd)
 	}
@@ -129,9 +134,6 @@ func (s *Server) judge(ctx context.Context, caller access.Caller, repoID int64, 
 	}
 	if !decision.Allow {
 		return wire.RejectVerdict(truncateReason(pushDenyReason(cmd.Name, decision.Reason)))
-	}
-	if repo, ok := s.resolver.Repo(repoID); ok && repo.Archived {
-		return wire.RejectVerdict(truncateReason("repository is archived"))
 	}
 	return wire.AcceptVerdict()
 }
@@ -157,6 +159,10 @@ func (s *Server) divertChange(ctx context.Context, caller access.Caller, repoID 
 	if !decision.Allow {
 		return wire.RejectVerdict(truncateReason("push to " + cmd.Name + " is not allowed by policy"))
 	}
+	edit := access.Check(s.resolver, caller, "change.edit", access.Resource{
+		Kind:   access.KindRepo,
+		RepoID: repoID,
+	})
 	hookCtx, cancel := context.WithTimeout(ctx, s.hookTimeout)
 	defer cancel()
 	spans := s.changeSpans(hookCtx, repoID, caller.UserID, branch, topic, cmd.New)
@@ -164,7 +170,7 @@ func (s *Server) divertChange(ctx context.Context, caller access.Caller, repoID 
 	werr := s.store.Write(hookCtx, func(tx *store.WriteTx) error {
 		_, ref, ierr := review.IngressChange(tx, s.clock(), review.Ingress{
 			RepoID: repoID, AuthorID: caller.UserID, Branch: branch,
-			Topic: topic, HeadOid: cmd.New, Spans: spans,
+			Topic: topic, HeadOid: cmd.New, Spans: spans, MayEdit: edit.Allow,
 		})
 		if ierr != nil {
 			return ierr
