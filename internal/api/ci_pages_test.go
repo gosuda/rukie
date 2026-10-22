@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/web/zerojs"
 )
 
@@ -38,6 +39,25 @@ func TestMatchCIPage(t *testing.T) {
 			t.Fatalf("matchCIPage(%q) = %d, %q, %q, %q, %q, %v; want %d, %q, %q, %q, %q, true",
 				tc.path, kind, owner, repo, run, job, ok, tc.kind, tc.owner, tc.repo, tc.run, tc.job)
 		}
+	}
+}
+
+func TestLatestRunBreaksTiesByID(t *testing.T) {
+	if latestRun(nil) != nil {
+		t.Fatal("empty runs picked a badge run")
+	}
+	runs := []ci.Run{
+		{ID: "b", CreatedAt: 7, State: "failed"},
+		{ID: "a", CreatedAt: 7, State: "succeeded"},
+		{ID: "c", CreatedAt: 6, State: "failed"},
+	}
+	latest := latestRun(runs)
+	if latest == nil || latest.ID != "b" {
+		t.Fatalf("badge run = %+v, want id b", latest)
+	}
+	runs[2].CreatedAt = 8
+	if latest := latestRun(runs); latest == nil || latest.ID != "c" {
+		t.Fatalf("badge run = %+v, want id c", latest)
 	}
 }
 

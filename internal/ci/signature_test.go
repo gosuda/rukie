@@ -207,8 +207,9 @@ func TestCIStatementDigestGolden(t *testing.T) {
 		t.Fatalf("payload: %v", err)
 	}
 	digest := ci.Digest(payload)
-	if !strings.HasPrefix(digest, "sha256:") || len(digest) != len("sha256:")+64 {
-		t.Fatalf("digest shape = %q", digest)
+	const want = "sha256:95fc32ba188440d8a7099200a974e445f9e79d771cdf94526d7b7d7061bed481"
+	if digest != want {
+		t.Fatalf("digest = %q, want %q", digest, want)
 	}
 	raw, err := hex.DecodeString(strings.TrimPrefix(digest, "sha256:"))
 	if err != nil || len(raw) != 32 {

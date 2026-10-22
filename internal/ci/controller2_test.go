@@ -1,6 +1,7 @@
 package ci_test
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -138,7 +139,7 @@ func TestCIPublicationRule(t *testing.T) {
 	untrustedSpec := spec
 	untrusted := ci.CreateRunRequest{
 		RepoID: 7, Principal: "mallory", Subject: "0123456789abcdef0123456789abcdef01234567",
-		Tree: "tree-one", BaseCommit: "base-one", SpecFrom: "base",
+		Tree: "tree-two", BaseCommit: "base-one", SpecFrom: "base",
 		Trust: "untrusted", TriggerKey: "change:9:tip", Class: "interactive", Spec: untrustedSpec,
 	}
 	untrustedRun, err := c.CreateRun(ctx, untrusted)
@@ -150,11 +151,33 @@ func TestCIPublicationRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("untrusted runner: %v", err)
 	}
-	if _, err := c.Lease(ctx, untrustedRunner.ID, untrustedToken); err != nil {
+	untrustedLease, err := c.Lease(ctx, untrustedRunner.ID, untrustedToken)
+	if err != nil {
 		t.Fatalf("untrusted lease: %v", err)
 	}
+	if untrustedLease == nil {
+		t.Fatal("untrusted run found no work")
+	}
+	driveToTerminal(t, c, untrustedLease, "passed", "", 0)
+	mustRelay(t, c)
 	if len(*delivered) != 1 {
 		t.Fatalf("untrusted pass over a trusted head delivered %d rows, want 1", len(*delivered))
+	}
+	followup, err := c.CreateRun(ctx, ci.CreateRunRequest{
+		RepoID: 7, Principal: "ada", Subject: "0123456789abcdef0123456789abcdef01234567",
+		Tree: "tree-two", BaseCommit: "base-one", SpecFrom: "base",
+		Trust: "trusted", TriggerKey: "push:main:followup", Class: "interactive", Spec: spec,
+	})
+	if err != nil {
+		t.Fatalf("followup create: %v", err)
+	}
+	_ = followup
+	followupLease, err := c.Lease(ctx, runnerID, token)
+	if err != nil {
+		t.Fatalf("followup lease: %v", err)
+	}
+	if followupLease == nil {
+		t.Fatal("untrusted pass poisoned the trusted cache")
 	}
 }
 
@@ -915,5 +938,139 @@ func TestCICancelTerminalNoop(t *testing.T) {
 	_ = jobs
 	if err := c.Cancel(ctx, run.ID, "late"); err != nil {
 		t.Fatalf("cancel of a terminal run: %v", err)
+	}
+}
+
+func artifactSpecTOML() string {
+	return `schema = "rukie.ci/v1"
+
+[land]
+required = ["solo"]
+
+[[job]]
+name = "solo"
+runs_on = ["linux-amd64"]
+image = "` + testImage + `"
+pure = true
+artifacts = ["bundle.zip"]
+steps = [{ name = "s", run = "echo hi" }]
+`
+}
+
+func TestCIRepoBlobIsolatesRepos(t *testing.T) {
+	clk := startClock()
+	ctx := t.Context()
+	c, _ := openCI(t, clk)
+	run := mustCreateRun(t, c, mustDecode(t, artifactSpecTOML()), "trusted", "push:main:artifacts")
+	_ = run
+	runnerID, token := mustRunner(t, c, "trusted")
+	lease := mustLease(t, c, runnerID, token)
+	mustStart(t, c, lease)
+	data := []byte("bundle-bytes")
+	digest := ci.Digest(data)
+	if err := c.PutBlob(ctx, lease.Attempt.ID, lease.Token, lease.Attempt.Fence, digest, data); err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+	attempt, _, _, err := c.GetAttempt(ctx, lease.Attempt.ID)
+	if err != nil {
+		t.Fatalf("get attempt: %v", err)
+	}
+	req := ci.FinishRequest{
+		Fence: lease.Attempt.Fence, Outcome: "passed", Class: "", ExitCode: 0,
+		LogSeq: attempt.LogSeq, LogEnd: attempt.LogBase + int64(len(attempt.Log)), LogDigest: ci.Digest(attempt.Log),
+		Artifacts: []ci.Artifact{{Name: "bundle.zip", Digest: digest, Size: int64(len(data))}},
+	}
+	req.ResultDigest, err = ci.FinishDigest(req)
+	if err != nil {
+		t.Fatalf("finish digest: %v", err)
+	}
+	if _, err := c.Complete(ctx, lease.Attempt.ID, lease.Token, req); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	blob, ok := c.RepoBlob(ctx, 7, digest)
+	if !ok {
+		t.Fatal("own-repo blob lookup missed")
+	}
+	if !bytes.Equal(blob, data) {
+		t.Fatal("own-repo blob bytes differ")
+	}
+	if _, ok := c.RepoBlob(ctx, 8, digest); ok {
+		t.Fatal("cross-repo blob lookup succeeded")
+	}
+	if _, ok := c.RepoBlob(ctx, 7, "sha256:"+strings.Repeat("0", 64)); ok {
+		t.Fatal("unknown digest lookup succeeded")
+	}
+}
+
+func TestCIRevokedRunnerIsolated(t *testing.T) {
+	clk := startClock()
+	ctx := t.Context()
+	c, _ := openCI(t, clk)
+	run := mustCreateRun(t, c, mustDecode(t, singleJobSpecTOML()), "trusted", "push:main:revoke")
+	_ = run
+	runnerID, token := mustRunner(t, c, "trusted")
+	lease := mustLease(t, c, runnerID, token)
+	mustStart(t, c, lease)
+	if err := c.RevokeRunner(ctx, runnerID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, err := c.Heartbeat(ctx, lease.Attempt.ID, lease.Token, lease.Attempt.Fence); ci.CodeOf(err) != "E_UNAUTHENTICATED" {
+		t.Fatalf("revoked heartbeat = %v, want E_UNAUTHENTICATED", err)
+	}
+	chunk := ci.LogAppend{Fence: lease.Attempt.Fence, Seq: 0, Offset: 0, SHA256: ci.Digest([]byte("hi")), Data: []byte("hi")}
+	if _, err := c.AppendLogs(ctx, lease.Attempt.ID, lease.Token, chunk); ci.CodeOf(err) != "E_UNAUTHENTICATED" {
+		t.Fatalf("revoked append = %v, want E_UNAUTHENTICATED", err)
+	}
+	blobData := []byte("late-bytes")
+	if err := c.PutBlob(ctx, lease.Attempt.ID, lease.Token, lease.Attempt.Fence, ci.Digest(blobData), blobData); ci.CodeOf(err) != "E_UNAUTHENTICATED" {
+		t.Fatalf("revoked blob = %v, want E_UNAUTHENTICATED", err)
+	}
+	attempt, _, _, err := c.GetAttempt(ctx, lease.Attempt.ID)
+	if err != nil {
+		t.Fatalf("get attempt: %v", err)
+	}
+	req := ci.FinishRequest{
+		Fence: lease.Attempt.Fence, Outcome: "passed", Class: "", ExitCode: 0,
+		LogSeq: attempt.LogSeq, LogEnd: attempt.LogBase + int64(len(attempt.Log)), LogDigest: ci.Digest(attempt.Log),
+	}
+	req.ResultDigest, err = ci.FinishDigest(req)
+	if err != nil {
+		t.Fatalf("finish digest: %v", err)
+	}
+	if _, cerr := c.Complete(ctx, lease.Attempt.ID, lease.Token, req); ci.CodeOf(cerr) != "E_UNAUTHENTICATED" {
+		t.Fatalf("revoked complete = %v, want E_UNAUTHENTICATED", cerr)
+	}
+	if _, lerr := c.Lease(ctx, runnerID, token); ci.CodeOf(lerr) != "E_UNAUTHENTICATED" {
+		t.Fatalf("revoked lease = %v, want E_UNAUTHENTICATED", lerr)
+	}
+	freshID, freshToken := mustRunner(t, c, "trusted")
+	clk.Advance(31 * time.Second)
+	followup, err := c.Lease(ctx, freshID, freshToken)
+	if err != nil {
+		t.Fatalf("followup lease: %v", err)
+	}
+	if followup == nil {
+		t.Fatal("revocation stranded the job")
+	}
+}
+
+func TestCIWritesRefuseAfterLeaseLoss(t *testing.T) {
+	clk := startClock()
+	ctx := t.Context()
+	c, _ := openCI(t, clk)
+	run := mustCreateRun(t, c, mustDecode(t, singleJobSpecTOML()), "trusted", "push:main:lost")
+	_ = run
+	runnerID, token := mustRunner(t, c, "trusted")
+	lease := mustLease(t, c, runnerID, token)
+	mustStart(t, c, lease)
+	mustAppend(t, c, lease, 0, "hello", nil)
+	clk.Advance(151 * time.Second)
+	chunk := ci.LogAppend{Fence: lease.Attempt.Fence, Seq: 1, Offset: 5, SHA256: ci.Digest([]byte("world")), Data: []byte("world")}
+	if _, err := c.AppendLogs(ctx, lease.Attempt.ID, lease.Token, chunk); ci.CodeOf(err) != "E_LEASE_LOST" {
+		t.Fatalf("late append = %v, want E_LEASE_LOST", err)
+	}
+	blobData := []byte("late-bytes")
+	if err := c.PutBlob(ctx, lease.Attempt.ID, lease.Token, lease.Attempt.Fence, ci.Digest(blobData), blobData); ci.CodeOf(err) != "E_LEASE_LOST" {
+		t.Fatalf("late blob = %v, want E_LEASE_LOST", err)
 	}
 }

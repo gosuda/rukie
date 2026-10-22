@@ -244,6 +244,57 @@ func TestCIPagesRender(t *testing.T) {
 	}
 }
 
+func TestCIPagesSendNoScriptCSP(t *testing.T) {
+	e := buildRepoEnv(t)
+	rbootstrap(t, e, "ada", "long-test-password-01")
+	admin, _ := e.svc.GetUser(t.Context(), "ada")
+	rseedRepo(t, e, admin.ID, "hello", "private")
+	token := rtoken(t, e, admin, "repo:read", "repo:write", "ci:read", "ci:trigger")
+	run := rciCreate(t, e, token)
+	runID, _ := run["id"].(string)
+	handler := e.deps.CIRaw(e.server)
+	fetch := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Accept", "text/html")
+		req.Header.Set("Authorization", token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, target := range []string{"/ada/hello/ci", "/ada/hello/ci/runs/" + runID} {
+		rec := fetch(target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("CI page %s = %d: %s", target, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "script-src 'none'") {
+			t.Fatalf("CI page %s CSP = %q, want script-src 'none'", target, got)
+		}
+	}
+}
+
+func TestCIArtifactUnknownDigest404(t *testing.T) {
+	e := buildRepoEnv(t)
+	rbootstrap(t, e, "ada", "long-test-password-01")
+	admin, _ := e.svc.GetUser(t.Context(), "ada")
+	rseedRepo(t, e, admin.ID, "hello", "private")
+	token := rtoken(t, e, admin, "repo:read", "repo:write", "ci:read", "ci:trigger")
+	handler := e.deps.CIRaw(e.server)
+	fetch := func(accept string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/ada/hello/ci/blobs/sha256:"+strings.Repeat("0", 64), nil)
+		req.Header.Set("Accept", accept)
+		req.Header.Set("Authorization", token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := fetch("application/json"); rec.Code != http.StatusNotFound {
+		t.Fatalf("artifact json = %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := fetch("application/octet-stream"); rec.Code != http.StatusNotFound {
+		t.Fatalf("artifact bytes = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCIRunGetJSONThroughFront(t *testing.T) {
 	e := buildRepoEnv(t)
 	rbootstrap(t, e, "ada", "long-test-password-01")
