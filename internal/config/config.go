@@ -139,13 +139,21 @@ type MirrorsConfig struct {
 }
 
 type WebhooksConfig struct {
-	SigningKeyFile     string `toml:"signing_key_file"`
-	DeliveryTimeoutMs  uint64 `toml:"delivery_timeout_ms"`
-	MaxPayloadBytes    uint64 `toml:"max_payload_bytes"`
-	MaxTargetsPerEvent uint   `toml:"max_targets_per_event"`
-	MaxRetries         uint   `toml:"max_retries"`
-	QueueDepth         uint   `toml:"queue_depth"`
-	Enabled            bool   `toml:"enabled"`
+	SigningKeyFile       string   `toml:"signing_key_file"`
+	ExtraDenyCIDRs       []string `toml:"extra_deny_cidrs"`
+	DeliveryTimeoutMs    uint64   `toml:"delivery_timeout_ms"`
+	MaxPayloadBytes      uint64   `toml:"max_payload_bytes"`
+	MaxTargetsPerEvent   uint     `toml:"max_targets_per_event"`
+	MaxRetries           uint     `toml:"max_retries"`
+	QueueDepth           uint     `toml:"queue_depth"`
+	Workers              uint     `toml:"workers"`
+	GlobalMaxInflight    uint     `toml:"global_max_inflight"`
+	MaxEndpointsPerRepo  uint     `toml:"max_endpoints_per_repo"`
+	MaxEndpointsPerOwner uint     `toml:"max_endpoints_per_owner"`
+	RetentionDays        uint     `toml:"retention_days"`
+	Enabled              bool     `toml:"enabled"`
+	AllowInsecureHTTP    bool     `toml:"allow_insecure_http"`
+	AllowPrivateTargets  bool     `toml:"allow_private_targets"`
 }
 
 type RateLimitConfig struct {
@@ -212,6 +220,8 @@ func Defaults() Config {
 		Webhooks: WebhooksConfig{
 			MaxTargetsPerEvent: 64, DeliveryTimeoutMs: 10000, MaxRetries: 8,
 			MaxPayloadBytes: 1048576, QueueDepth: 4096, Enabled: true,
+			Workers: 8, GlobalMaxInflight: 256,
+			MaxEndpointsPerRepo: 32, MaxEndpointsPerOwner: 64, RetentionDays: 30,
 		},
 		Git:       GitConfig{MaxBodyBytes: 256 << 20},
 		RateLimit: RateLimitConfig{RequestsPerMinute: 300, AnonymousPerMinute: 60, Burst: 600, BanMinutes: 10, Enabled: true},
@@ -308,6 +318,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Git.MaxBodyBytes == 0 {
 		c.Git.MaxBodyBytes = 256 << 20
+	}
+	if c.Webhooks.Workers == 0 {
+		c.Webhooks.Workers = 8
+	}
+	if c.Webhooks.GlobalMaxInflight == 0 {
+		c.Webhooks.GlobalMaxInflight = 256
+	}
+	if c.Webhooks.MaxEndpointsPerRepo == 0 {
+		c.Webhooks.MaxEndpointsPerRepo = 32
+	}
+	if c.Webhooks.MaxEndpointsPerOwner == 0 {
+		c.Webhooks.MaxEndpointsPerOwner = 64
+	}
+	if c.Webhooks.RetentionDays == 0 {
+		c.Webhooks.RetentionDays = 30
 	}
 	if c.HTTP.ReadTimeoutMs < 0 || c.HTTP.ReadHeaderTimeoutMs < 0 || c.HTTP.WriteTimeoutMs < 0 || c.HTTP.IdleTimeoutMs < 0 || c.HTTP.MaxRequestBodyBytes < 0 || c.HTTP.ShutdownDrainMs < 0 {
 		return fmt.Errorf("config: http timeouts and body limits must be non-negative")

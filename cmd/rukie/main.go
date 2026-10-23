@@ -43,6 +43,7 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 	"github.com/gosuda/rukie/internal/supervisor"
 	"github.com/gosuda/rukie/internal/sysops"
+	"github.com/gosuda/rukie/internal/webhook"
 )
 
 func main() {
@@ -350,6 +351,13 @@ func runServe(argv []string) int {
 		})
 		mirrorDone <- workerCtx.Err()
 	}()
+	webhookDone := make(chan error, 1)
+	go func() {
+		superviseWorker(workerCtx, time.Minute, func(error) bool { return true }, func(ctx context.Context) error {
+			return app.webhooks.Run(ctx)
+		})
+		webhookDone <- workerCtx.Err()
+	}()
 	relayDone := make(chan struct{})
 	go func() {
 		defer close(relayDone)
@@ -366,6 +374,10 @@ func runServe(argv []string) int {
 		mirrorErr := <-mirrorDone
 		if mirrorErr != nil && !errors.Is(mirrorErr, context.Canceled) {
 			return mirrorErr
+		}
+		webhookErr := <-webhookDone
+		if webhookErr != nil && !errors.Is(webhookErr, context.Canceled) {
+			return webhookErr
 		}
 		return nil
 	}
@@ -583,18 +595,19 @@ func reloadLogLevelOnSIGHUP(path string, levelVar *slog.LevelVar) {
 }
 
 type app struct {
-	handler http.Handler
-	server  *op.Server
-	store   *store.Store
-	auth    *auth.Service
-	docs    *api.DocStore
-	spool   *events.Spool
-	watcher *repowatch.Watcher
-	jobs    *queue.Queue
-	ssh     *gitssh.Server
-	ci      *ci.Controller
-	forks   forks.Worker
-	mirror  mirror.Worker
+	handler  http.Handler
+	server   *op.Server
+	store    *store.Store
+	auth     *auth.Service
+	docs     *api.DocStore
+	spool    *events.Spool
+	watcher  *repowatch.Watcher
+	jobs     *queue.Queue
+	ssh      *gitssh.Server
+	ci       *ci.Controller
+	forks    forks.Worker
+	webhooks *webhook.Worker
+	mirror   mirror.Worker
 }
 
 type gitFallback struct {
@@ -777,6 +790,32 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
 	}
+	csrfKey := make([]byte, 32)
+	if _, rerr := rand.Read(csrfKey); rerr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", rerr)
+	}
+	webhookPolicy := webhook.Policy{
+		AllowInsecureHTTP:   cfg.Webhooks.AllowInsecureHTTP,
+		AllowPrivateTargets: cfg.Webhooks.AllowPrivateTargets,
+		ExtraDenyCIDRs:      cfg.Webhooks.ExtraDenyCIDRs,
+	}
+	repoDeps.Webhooks = webhookPolicy
+	repoDeps.CSRFKey = csrfKey
+	if regErr := api.RegisterWebhook(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
+	if regErr := api.RegisterInbox(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
+	webhookWorker := webhook.NewWorker(webhook.WorkerConfig{
+		Store: st, SealKey: key,
+		Workers: int(cfg.Webhooks.Workers), GlobalMaxInflight: int(cfg.Webhooks.GlobalMaxInflight),
+		PollInterval: 500 * time.Millisecond, LeaseDuration: 5 * time.Minute,
+		Now: time.Now,
+	}, &webhookPolicy)
 	fillLLMS, regErr := api.RegisterLLMS(table, llmsBase(cfg))
 	if regErr != nil {
 		cleanup()
@@ -800,6 +839,8 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterOrgsViews(views)
 	api.RegisterSocialViews(views)
 	api.RegisterReleasesViews(views)
+	api.RegisterWebhookViews(views)
+	api.RegisterInboxViews(views)
 	api.RegisterLLMSViews(views)
 	idem := op.NewMemoryIdempotency()
 	idem.StartSweeper(ctx, time.Minute)
@@ -809,11 +850,6 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 			slog.Int("status", row.Status), slog.String("decision", row.Decision), slog.String("req_id", row.RequestID))
 		return nil
 	})
-	csrfKey := make([]byte, 32)
-	if _, rerr := rand.Read(csrfKey); rerr != nil {
-		cleanup()
-		return nil, cleanup, fmt.Errorf("setupApp: %w", rerr)
-	}
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{
 		PublicOrigin:  cfg.HTTP.ExternalURL,
@@ -878,7 +914,8 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		return nil, cleanup, err
 	}
 	raw := api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server})
-	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.CIRunnerV1(repoDeps.CIRaw(raw)))), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}}, cleanup, nil
+	pages := repoDeps.InboxPages(repoDeps.WebhookPages(repoDeps.CIRunnerV1(repoDeps.CIRaw(raw))))
+	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(pages)), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}, webhooks: webhookWorker}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {

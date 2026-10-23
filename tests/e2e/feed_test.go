@@ -721,6 +721,7 @@ func TestFaultKillNine(t *testing.T) {
 	})
 	t.Run("mirror", mirrorKillReconcile)
 	t.Run("ci_attest", ciAttestFault)
+	t.Run("webhook", webhookKillWorker)
 }
 
 func TestEventsTailExpiredResnapshot(t *testing.T) {

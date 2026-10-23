@@ -15,6 +15,7 @@ import (
 	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/webhook"
 )
 
 type Deps struct {
@@ -32,6 +33,11 @@ type Deps struct {
 	RukBin        string
 	DataDir       string
 	SealKey       []byte
+	// CSRFKey mints form tokens on wrapper-rendered pages (see inbox_views.go
+	// and webhook_views.go). It must equal the op server CSRF key.
+	CSRFKey []byte
+	// Webhooks is the egress policy for endpoint validation and test pings.
+	Webhooks webhook.Policy
 }
 
 func (d Deps) now() time.Time {

@@ -19,6 +19,7 @@ import (
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
 	"github.com/gosuda/rukie/internal/web/zerojs"
+	"github.com/gosuda/rukie/internal/webhook"
 )
 
 type testEnv struct {
@@ -38,7 +39,13 @@ func buildEnv(t *testing.T) *testEnv {
 	t.Cleanup(func() {
 		_ = st.Close(context.Background())
 	})
-	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st}
+	var sealKey [32]byte
+	_, _ = rand.Read(sealKey[:])
+	var csrfKey [32]byte
+	_, _ = rand.Read(csrfKey[:])
+	deps := api.Deps{Service: svc, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(), Store: st,
+		SealKey: sealKey[:], CSRFKey: csrfKey[:],
+		Webhooks: webhook.Policy{AllowInsecureHTTP: true, AllowPrivateTargets: true}}
 	table := op.NewTable()
 	if regErr := api.RegisterAuth(table, deps); regErr != nil {
 		t.Fatalf("register auth: %v", regErr)
@@ -55,6 +62,12 @@ func buildEnv(t *testing.T) *testEnv {
 	if regErr := api.RegisterF12(table, deps); regErr != nil {
 		t.Fatalf("register f12: %v", regErr)
 	}
+	if regErr := api.RegisterWebhook(table, deps); regErr != nil {
+		t.Fatalf("register webhook: %v", regErr)
+	}
+	if regErr := api.RegisterInbox(table, deps); regErr != nil {
+		t.Fatalf("register inbox: %v", regErr)
+	}
 	if validErr := table.Validate(); validErr != nil {
 		t.Fatalf("validate: %v", validErr)
 	}
@@ -63,15 +76,15 @@ func buildEnv(t *testing.T) *testEnv {
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
 	api.RegisterF12Views(views)
-	var key [32]byte
-	_, _ = rand.Read(key[:])
+	api.RegisterWebhookViews(views)
+	api.RegisterInboxViews(views)
 	mux := http.NewServeMux()
 	server, err := op.Mount(mux, table, op.Config{
 		Authenticator: auth.NewAuthenticator(svc),
 		Idempotency:   op.NewMemoryIdempotency(),
 		Audit:         op.FuncAuditor(func(context.Context, op.AuditRow) error { return nil }),
 		Limiter:       deps.Limiter,
-		CSRFKey:       key[:],
+		CSRFKey:       csrfKey[:],
 		Views:         views,
 		Title:         "test",
 		Version:       "0",
@@ -188,8 +201,8 @@ func TestAuthOpRegistration(t *testing.T) {
 			t.Fatalf("page op %q missing or not hidden", want)
 		}
 	}
-	if len(specs) != 32 {
-		t.Fatalf("ops = %d, want 32", len(specs))
+	if len(specs) != 51 {
+		t.Fatalf("ops = %d, want 51", len(specs))
 	}
 	tools, err := op.BuildTools(specs, e.server.Document(), op.ToolFilter{Principal: op.Principal{Kind: op.PrincipalHuman, Grants: adminGrants()}})
 	if err != nil {
