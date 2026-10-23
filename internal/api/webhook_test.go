@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ import (
 	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/web/zerojs"
 	"github.com/gosuda/rukie/internal/webhook"
 )
 
@@ -449,6 +451,60 @@ func TestWebhookEndpointTestOp(t *testing.T) {
 		t.Fatalf("unreachable test must fail with an error: %v", unreachable)
 	}
 }
+func TestWebhookEndpointTestRejectsInsecureHTTP(t *testing.T) {
+	strict := buildF8EnvWithPolicy(t, webhook.Policy{})
+	f8bootstrap(t, strict, "ada")
+	sada, _ := strict.svc.GetUser(t.Context(), "ada")
+	stoken := f8token(t, strict, sada, "repo:create", "repo:read", "repo:write", "webhooks:read", "webhooks:write")
+	repoID := f8seedRepo(t, strict, sada.ID, "hooks")
+	var id string
+	if err := strict.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		row, ierr := tx.InsertWebhookEndpoint(strict.now, store.WebhookEndpointInsert{
+			Scope: "repo", RepoID: repoID, URL: "http://hooks.example.test/ping",
+			SecretEnc: []byte("seed"), EventTypes: []string{"task.created"},
+			Active: true, Concurrency: 4, TimeoutSeconds: 20, CreatedBy: sada.ID,
+		})
+		if ierr != nil {
+			return ierr
+		}
+		id = row.ID
+		return nil
+	}); err != nil {
+		t.Fatalf("seed endpoint: %v", err)
+	}
+	f8problem(t, f8do(t, strict, "POST", "/ada/hooks/settings/hooks/"+id+"/test", stoken, ""), http.StatusBadRequest, "invalid")
+}
+
+func TestWebhookEndpointSettingsShowsVerifyRecipe(t *testing.T) {
+	e := buildF8Env(t)
+	f8bootstrap(t, e, "ada")
+	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	token := f8token(t, e, ada, "repo:create", "repo:read", "repo:write", "webhooks:read", "webhooks:write")
+	_ = f8seedRepo(t, e, ada.ID, "hooks")
+	code, created := f8createEndpoint(t, e, token, "/ada/hooks/settings/hooks",
+		`{"scope":"repo","url":"https://hooks.example.test/verify","event_types":["task.created"]}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create = %d: %v", code, created)
+	}
+	id := f8endpointID(t, created)
+	req := httptest.NewRequest(http.MethodGet, "/ada/hooks/settings/hooks/"+id, nil)
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Authorization", token)
+	rec := httptest.NewRecorder()
+	e.server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings page = %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, marker := range []string{"v1,", "HMAC-SHA256", "300", "webhook-signature", "webhook-id"} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("settings page misses %q", marker)
+		}
+	}
+	if err := zerojs.Assert(rec.Body.Bytes()); err != nil {
+		t.Fatalf("zero-js: %v", err)
+	}
+}
 
 func TestWebhookMessageRedeliver(t *testing.T) {
 	e := buildF8Env(t)
@@ -472,9 +528,23 @@ func TestWebhookMessageRedeliver(t *testing.T) {
 	}
 	// Pending messages refuse redelivery.
 	f8problem(t, f8do(t, e, "POST", "/ada/hooks/settings/hooks/"+id+"/messages/"+seededID+"/redeliver", token, ""), http.StatusBadRequest, "invalid")
-	// Dead messages return to pending under the same id.
+	// Dead messages return to pending under the same id. Production kills
+	// claimed rows, so claim (as the worker would) before marking dead.
 	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
-		return tx.MarkWebhookDead(seededID, "gone", e.now.UnixMilli(), 410)
+		claimed, cerr := tx.ClaimWebhookMessages(e.now.UnixMilli(), 64, 0, "f8test-owner")
+		if cerr != nil {
+			return cerr
+		}
+		found := false
+		for _, m := range claimed {
+			if m.ID == seededID {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("seeded message was not claimed")
+		}
+		return tx.MarkWebhookDead(seededID, "gone", e.now.UnixMilli(), 410, "f8test-owner")
 	}); err != nil {
 		t.Fatalf("mark dead: %v", err)
 	}

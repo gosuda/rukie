@@ -814,7 +814,8 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		Store: st, SealKey: key,
 		Workers: int(cfg.Webhooks.Workers), GlobalMaxInflight: int(cfg.Webhooks.GlobalMaxInflight),
 		PollInterval: 500 * time.Millisecond, LeaseDuration: 5 * time.Minute,
-		Now: time.Now,
+		Retention: webhookRetention(cfg.Webhooks.RetentionDays),
+		Now:       time.Now,
 	}, &webhookPolicy)
 	fillLLMS, regErr := api.RegisterLLMS(table, llmsBase(cfg))
 	if regErr != nil {
@@ -916,6 +917,15 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	raw := api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server})
 	pages := repoDeps.InboxPages(repoDeps.WebhookPages(repoDeps.CIRunnerV1(repoDeps.CIRaw(raw))))
 	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(pages)), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}, webhooks: webhookWorker}, cleanup, nil
+}
+
+// webhookRetention converts operator-configured days to a Duration,
+// defaulting to zero (the worker's 30-day default) outside 1..36500.
+func webhookRetention(days uint) time.Duration {
+	if days == 0 || days > 36500 {
+		return 0
+	}
+	return time.Duration(days*24) * time.Hour
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {

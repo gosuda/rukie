@@ -16,7 +16,8 @@ func RegisterWebhook(t *op.Table, deps Deps) error {
 		Name: "webhook.endpoint.create", Kind: op.KindMutation, Method: http.MethodPost, Path: "/{owner}/{repo}/settings/hooks",
 		Scope: op.ScopeWebhooksWrite, Summary: "Create a webhook endpoint",
 		Description: "Create a repo- or owner-scope endpoint. The secret seals at rest and shows once. " +
-			"Owner scope reads the owner from the path; the path repo is ignored.",
+			"Owner scope reads the owner from the path; the path repo is ignored. " +
+			"Consumers verify deliveries with the Standard Webhooks recipe on the endpoint settings page.",
 		Problems: []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeValidation, op.CodeForbidden, op.CodeConflict, op.CodeLimitExceeded},
 		Handler:  webhookEndpointCreateHandler(deps),
 	}); err != nil {
@@ -82,7 +83,7 @@ func RegisterWebhook(t *op.Table, deps Deps) error {
 	if err := op.Register(t, op.Op[WebhookEndpointTestIn, WebhookEndpointTestOut]{
 		Name: "webhook.endpoint.test", Kind: op.KindMutation, Method: http.MethodPost, Path: "/{owner}/{repo}/settings/hooks/{id}/test",
 		Scope: op.ScopeWebhooksWrite, Summary: "Ping a webhook endpoint",
-		Description: "Send a synthetic endpoint.tested envelope with a fresh webhook id and sign it like a real delivery, without touching the outbox or message tables. Refused while the endpoint is inactive.",
+		Description: "Send a synthetic endpoint.tested envelope with a fresh webhook id and sign it like a real delivery, without touching the outbox or message tables. Refused while the endpoint is inactive. The ping carries the same headers the verification recipe on the endpoint settings page checks.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden, op.CodeConflict},
 		Handler:     webhookEndpointTestHandler(deps),
 	}); err != nil {

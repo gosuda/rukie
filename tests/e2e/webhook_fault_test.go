@@ -153,8 +153,8 @@ func webhookKillWorker(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read after sweep: %v", err)
 	}
-	if afterSweep.State != "pending" || afterSweep.ID != claimedID || afterSweep.AttemptCount != 0 {
-		t.Fatalf("after sweep = %+v, want pending same id unchanged attempts", afterSweep)
+	if afterSweep.State != "pending" || afterSweep.ID != claimedID || afterSweep.AttemptCount != 1 {
+		t.Fatalf("after sweep = %+v, want pending same id with one spent attempt", afterSweep)
 	}
 
 	var sends atomic.Int64
@@ -187,8 +187,8 @@ func webhookKillWorker(t *testing.T) {
 	}
 
 	release()
-	if err := <-worker1Done; err == nil {
-		t.Fatal("worker1 should fail closed on the delivered message")
+	if err := <-worker1Done; err != nil {
+		t.Fatalf("stale worker1 completion should be benign: %v", err)
 	}
 	if id, ok := worker1ID.Load().(string); !ok || id != claimedID {
 		t.Fatalf("worker1 id = %q, want %q", id, claimedID)

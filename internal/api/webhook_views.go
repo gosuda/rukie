@@ -169,6 +169,16 @@ func writeWebhookEndpointDetail(w io.Writer, c op.ViewCtx, out WebhookEndpointGe
 	b.WriteString("<h2>Delete endpoint</h2>\n" +
 		formOpen(c.Path+"/delete", c.CSRF) +
 		submitField("Delete endpoint "+m.ID))
+	b.WriteString("<section>\n<h2>Verifying deliveries</h2>\n" +
+		"<p>Standard Webhooks recipe. Verify against the raw request bytes; never parse or re-serialize the body first.</p>\n" +
+		"<pre>input = ASCII(webhook-id) + \".\" + ASCII(webhook-timestamp) + \".\" + raw_body\n" +
+		"for entry in split(webhook-signature, \" \"):\n" +
+		"  if entry starts with \"v1,\":\n" +
+		"    b64 = entry after \"v1,\"\n" +
+		"    accept when HMAC-SHA256(secret, input) constant-time equals base64-decode(b64)</pre>\n" +
+		"<p>Accept on any matching entry. Reject when the timestamp differs from now by more than 300 seconds. " +
+		"Remember every webhook-id for at least 24 hours and drop repeats.</p>\n" +
+		"</section>\n")
 	_, err := io.WriteString(w, pageShell("Endpoint "+m.ID, b.String()))
 	return err
 }

@@ -1139,6 +1139,9 @@ func webhookEndpointTestHandler(d Deps) func(context.Context, op.Principal, Webh
 		if !row.Active {
 			return WebhookEndpointTestOut{}, op.Errorf(op.CodeConflict, "webhook endpoint is not active")
 		}
+		if _, perr := d.Webhooks.CheckURL(row.URL); perr != nil {
+			return WebhookEndpointTestOut{}, op.Wrap(op.CodeInvalid, perr, "webhook url is not allowed")
+		}
 		secret, serr := d.openWebhookSecret(row)
 		if serr != nil {
 			return WebhookEndpointTestOut{}, serr
