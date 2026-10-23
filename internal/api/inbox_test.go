@@ -236,15 +236,37 @@ func TestInboxWatchAndSettings(t *testing.T) {
 	if bits, _ := decoded["custom_bits"].([]any); len(bits) != 2 {
 		t.Fatalf("watch bits = %v, want deduped tasks+ci", decoded)
 	}
-	// Watch-all on a repo surfaces new task threads for the watcher.
-	_ = f8user(t, e, "bob")
+	bob := f8user(t, e, "bob")
 	bcookie := f8login(t, e, "bob")
+	f8problem(t, f8do(t, e, "POST", "/inbox/watch", bcookie, `{"repo":"ada/hooks","level":"all"}`), http.StatusNotFound, "not-found")
+	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		return tx.PutGrant(repoID, bob.ID, "read")
+	}); err != nil {
+		t.Fatalf("grant read: %v", err)
+	}
 	if code := f8do(t, e, "POST", "/inbox/watch", bcookie, `{"repo":"ada/hooks","level":"all"}`).Code; code != http.StatusCreated {
 		t.Fatalf("bob watch = %d", code)
 	}
 	f8seedIntent(t, e, repoID, ada.ID, "Watched panel")
 	if ids := f8threadIDs(t, e, bcookie, "?state=unread"); len(ids) != 1 {
 		t.Fatalf("bob unread = %d, want 1 watched thread", len(ids))
+	}
+	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		return tx.DeleteGrant(repoID, bob.ID)
+	}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	f8seedIntent(t, e, repoID, ada.ID, "Unwatched panel")
+	revoked := f8threadIDs(t, e, bcookie, "?state=unread")
+	if len(revoked) != 1 {
+		t.Fatalf("bob unread after revoke = %d, want 1", len(revoked))
+	}
+	grec := f8do(t, e, "GET", "/inbox/thread?id="+revoked[0], bcookie, "")
+	if grec.Code != http.StatusOK {
+		t.Fatalf("bob thread = %d: %s", grec.Code, grec.Body.String())
+	}
+	if items, _ := f8decode(t, grec)["items"].([]any); len(items) != 1 {
+		t.Fatalf("bob items after revoke = %d, want 1", len(items))
 	}
 	// Watch list carries the explicit row plus the global default.
 	watches := f8do(t, e, "GET", "/inbox/watches", cookie, "")
@@ -356,5 +378,61 @@ func TestInboxListValidation(t *testing.T) {
 	// Count is cheap and gated the same way.
 	if rec := f8do(t, e, "GET", "/inbox/count", cookie, ""); rec.Code != http.StatusOK {
 		t.Fatalf("count = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInboxSnoozePromotionOnRead(t *testing.T) {
+	e := buildF8Env(t)
+	f8bootstrap(t, e, "ada")
+	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	cookie := f8login(t, e, "ada")
+	repoID := f8seedRepo(t, e, ada.ID, "hooks")
+	f8seedIntent(t, e, repoID, ada.ID, "Sleepy panel")
+	ids := f8threadIDs(t, e, cookie, "?state=unread")
+	if len(ids) != 1 {
+		t.Fatalf("unread threads = %d, want 1", len(ids))
+	}
+	id := ids[0]
+	until := strconv.FormatInt(e.now.UnixMilli()+int64(time.Minute/time.Millisecond), 10)
+	if code := f8do(t, e, "POST", "/inbox/snooze", cookie, `{"thread_ids":["`+id+`"],"until":`+until+`}`).Code; code != http.StatusCreated {
+		t.Fatalf("snooze = %d", code)
+	}
+	f8threadState(t, e, cookie, id, "snoozed")
+	count := func() (int64, int64) {
+		t.Helper()
+		rec := f8do(t, e, "GET", "/inbox/count", cookie, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("count = %d: %s", rec.Code, rec.Body.String())
+		}
+		decoded := f8decode(t, rec)
+		unread, _ := decoded["unread"].(float64)
+		pending, _ := decoded["snoozed_awake_pending"].(float64)
+		return int64(unread), int64(pending)
+	}
+	if unread, pending := count(); unread != 0 || pending != 0 {
+		t.Fatalf("count before deadline = (%d, %d), want (0, 0)", unread, pending)
+	}
+	e.advance(2 * time.Minute)
+	if unread, pending := count(); unread != 0 || pending != 1 {
+		t.Fatalf("count after deadline = (%d, %d), want (0, 1)", unread, pending)
+	}
+	if got := f8threadIDs(t, e, cookie, "?state=unread"); len(got) != 1 || got[0] != id {
+		t.Fatalf("unread after wake = %v, want [%s]", got, id)
+	}
+	f8threadState(t, e, cookie, id, "unread")
+	if unread, pending := count(); unread != 1 || pending != 0 {
+		t.Fatalf("count after wake = (%d, %d), want (1, 0)", unread, pending)
+	}
+	later := strconv.FormatInt(e.now.UnixMilli()+int64(time.Hour/time.Millisecond), 10)
+	if code := f8do(t, e, "POST", "/inbox/snooze", cookie, `{"thread_ids":["`+id+`"],"until":`+later+`}`).Code; code != http.StatusCreated {
+		t.Fatalf("re-snooze = %d", code)
+	}
+	e.advance(2 * time.Minute)
+	if got := f8threadIDs(t, e, cookie, "?state=unread"); len(got) != 0 {
+		t.Fatalf("future snooze leaked into unread: %v", got)
+	}
+	f8threadState(t, e, cookie, id, "snoozed")
+	if unread, pending := count(); unread != 0 || pending != 0 {
+		t.Fatalf("count with future snooze = (%d, %d), want (0, 0)", unread, pending)
 	}
 }

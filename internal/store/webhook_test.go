@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -872,7 +873,13 @@ func TestInboxFanOutSameTx(t *testing.T) {
 	epOwnerOrg := seedF8Endpoint(ctx, t, s, now, "owner", "org", 0, reporter.ID, []string{"task.created"})
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		_, werr := tx.SetWatch(watcher.ID, repo, "all", nil, 20000)
-		return werr
+		if werr != nil {
+			return werr
+		}
+		if gerr := tx.PutGrant(repo, assignee.ID, "read"); gerr != nil {
+			return gerr
+		}
+		return tx.PutGrant(repo, watcher.ID, "read")
 	}); err != nil {
 		t.Fatalf("watch: %v", err)
 	}

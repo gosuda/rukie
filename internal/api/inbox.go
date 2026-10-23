@@ -425,6 +425,13 @@ func inboxListHandler(d Deps) func(context.Context, op.Principal, InboxListIn) (
 			}
 			repoID = row.ID
 		}
+		nowMillis := now.UnixMilli()
+		if perr := d.Store.Write(ctx, func(tx *store.WriteTx) error {
+			_, werr := tx.PromoteAwakeSnoozes(userID, nowMillis, store.InboxPromoteBatchLimit)
+			return werr
+		}); perr != nil {
+			return InboxListOut{}, mapInboxStore(perr, "inbox list failed")
+		}
 		var rows []store.InboxThreadRow
 		var next string
 		var unread int64
@@ -471,6 +478,12 @@ func inboxGetHandler(d Deps) func(context.Context, op.Principal, InboxGetIn) (In
 		}
 		if threadID == "" {
 			return InboxGetOut{}, op.Errorf(op.CodeInvalid, "inbox thread id is required")
+		}
+		if perr := d.Store.Write(ctx, func(tx *store.WriteTx) error {
+			_, werr := tx.PromoteAwakeSnoozes(userID, d.now().UnixMilli(), store.InboxPromoteBatchLimit)
+			return werr
+		}); perr != nil {
+			return InboxGetOut{}, mapInboxStore(perr, "inbox thread was not found")
 		}
 		var thread store.InboxThreadRow
 		var items []store.InboxItemRow
@@ -658,6 +671,13 @@ func inboxWatchSetHandler(d Deps) func(context.Context, op.Principal, InboxWatch
 		row, rerr := d.resolveInboxRepo(ctx, in.Body.Repo)
 		if rerr != nil {
 			return InboxWatchSetOut{}, rerr
+		}
+		rq, qerr := d.requester(ctx, p)
+		if qerr != nil {
+			return InboxWatchSetOut{}, qerr
+		}
+		if derr := d.checkRepoAccess(rq, row, "repo.view", ""); derr != nil {
+			return InboxWatchSetOut{}, derr
 		}
 		nowMillis := d.now().UnixMilli()
 		var stored store.WatchRow
