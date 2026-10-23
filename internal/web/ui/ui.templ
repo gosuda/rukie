@@ -1,0 +1,45 @@
+package ui
+
+import (
+	"github.com/gosuda/rukie/internal/web/vm"
+)
+
+templ Badge(role string, label string) {
+	<span class={ "badge " + role }>{ label }</span>
+}
+
+templ ErrorPanel(code string, title string, detail string) {
+	<section class="errorpanel" aria-labelledby="errtitle">
+		<p><span class="code mono copy">{ code }</span></p>
+		<h1 id="errtitle">{ title }</h1>
+		if detail != "" {
+			<p>{ detail }</p>
+		}
+	</section>
+}
+
+templ OpTable(ops []vm.OpEntry) {
+	<table class="data">
+		<thead>
+			<tr><th scope="col">Operation</th><th scope="col">Method</th><th scope="col">Path</th><th scope="col">Summary</th></tr>
+		</thead>
+		<tbody>
+			for _, op := range ops {
+				<tr>
+					<td class="mono copy">{ op.Name }</td>
+					<td class="mono">{ op.Method }</td>
+					<td class="mono">{ op.Path }</td>
+					<td>{ op.Summary }</td>
+				</tr>
+			}
+		</tbody>
+	</table>
+}
+
+templ Flash(kind string, message string) {
+	if kind == "error" {
+		<p class="flash error" role="alert">{ message }</p>
+	} else {
+		<p class="flash notice" role="status">{ message }</p>
+	}
+}

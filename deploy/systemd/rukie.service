@@ -1,0 +1,34 @@
+[Unit]
+Description=rukie — agent-first Go forge (supervises ruk serve child)
+Documentation=https://example.com/rukie/docs/ops
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+
+[Service]
+Type=simple
+User=rukie
+Group=rukie
+UMask=0077
+ExecStart=/usr/bin/rukie serve --config /etc/rukie/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=90s
+# SIGHUP semantics: reload log level only.
+# data_dir/store/ruk socket changes require a restart (logged loudly).
+KillSignal=SIGTERM
+AmbientCapabilities=
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rukie /etc/rukie
+ConfigurationDirectory=rukie
+StateDirectory=rukie
+LogsDirectory=rukie
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

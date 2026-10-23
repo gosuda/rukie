@@ -1,204 +1,122 @@
 version: "2"
-output:
-  sort-order:
-    - file
-linters:
-  default: none
-  enable:
-    - bidichk
-    - bodyclose
-    - depguard
-    - dupl
-    - errcheck
-    - exhaustruct_v5
-    - forbidigo
-    - forcetypeassert
-    - gocheckcompilerdirectives
-    - gocritic
-    - govet
-    - ineffassign
-    - mirror
-    - modernize
-    - nakedret
-    - nilnil
-    - nolintlint
-    - perfsprint
-    - revive
-    - staticcheck
-    - testifylint
-    - unconvert
-    - unparam
-    - unused
-    - usestdlibvars
-    - usetesting
-    - wastedassign
-  settings:
-    depguard:
-      rules:
-        main:
-          deny:
-            - pkg: encoding/json
-              desc: use gitea's modules/json instead of encoding/json
-            - pkg: github.com/unknwon/com
-              desc: use gitea's util and replacements
-            - pkg: io/ioutil
-              desc: use os or io instead
-            - pkg: golang.org/x/exp
-              desc: it's experimental and unreliable
-            - pkg: gitea.dev/modules/git/internal
-              desc: do not use the internal package, use AddXxx function instead
-            - pkg: gopkg.in/ini.v1
-              desc: do not use the ini package, use gitea's config system instead
-            - pkg: gitea.com/go-chi/cache
-              desc: do not use the go-chi cache package, use gitea's cache system
-            - pkg: github.com/pkg/errors
-              desc: use builtin errors package instead
-            - pkg: gitea.com/go-chi/binding
-              desc: use our wrapper
-        migrations:
-          files:
-            - '**/modelmigration/**/*.go'
-          deny:
-            - pkg: gitea.dev/models
-              desc: "migrations must not depend on the models package. HINT: MIGRATION-STRUCT-FROZEN"
-            - pkg: gitea.dev/modules/structs
-              desc: "migrations must not depend on modules/structs. HINT: MIGRATION-STRUCT-FROZEN"
-    forbidigo:
-      forbid:
-        - pattern: '^(fmt\.Print(|f|ln)|print|println)$' # default
-        - pattern: '^exec\.CommandContext$' # use our wrapper for graceful termination
-    modernize:
-      disable:
-        - embedlit
-    nolintlint:
-      allow-unused: false
-      require-explanation: true
-      require-specific: true
-    gocritic:
-      enabled-checks:
-        - equalFold
-      disabled-checks:
-        - ifElseChain
-        - singleCaseSwitch # Every time this occurred in the code, there was no other way.
-        - deprecatedComment # conflicts with go-swagger comments
-    revive:
-      severity: error
-      rules:
-        - name: blank-imports
-        - name: constant-logical-expr
-        - name: context-as-argument
-        - name: context-keys-type
-        - name: dot-imports
-        - name: empty-lines
-        - name: error-return
-        - name: error-strings
-        - name: exported
-        - name: identical-branches
-        - name: if-return
-        - name: increment-decrement
-        - name: modifies-value-receiver
-        - name: package-comments
-        - name: package-naming
-          arguments:
-            - convention-name-check-regex: '^[a-z][a-z0-9_]*$' # underscores are used by migration packages
-              skip-default-bad-name-check: true
-              skip-collision-with-common-std: true
-        - name: redefines-builtin-id
-        - name: superfluous-else
-        - name: time-naming
-        - name: unexported-return
-        - name: var-declaration
-        - name: var-naming
-          arguments:
-            - [] # AllowList - do not remove as args for the rule are positional and won't work without lists first
-            - [] # DenyList
-            - - skip-initialism-name-checks: true
-    staticcheck:
-      checks:
-        - all
-        - -ST1003
-        - -ST1005
-        - -QF1001
-        - -QF1006
-        - -QF1008
-    testifylint:
-      disable:
-        - empty
-        - go-require
-        - require-error
-    usetesting:
-      os-temp-dir: true
-    perfsprint:
-      concat-loop: false
-    govet:
-      enable:
-        - nilness
-        - unusedwrite
-    exhaustruct_v5:
-      explicit-mode: true
-  exclusions:
-    generated: lax
-    presets:
-      - comments
-      - common-false-positives
-      - legacy
-      - std-error-handling
-    rules:
-      - linters:
-          - dupl
-          - errcheck
-          - forbidigo
-          - staticcheck
-          - unparam
-        path: _test\.go
-      - linters:
-          - dupl
-        path: modelmigration/v
-      - linters:
-          - dupl
-        text: (?i)webhook
-      - linters:
-          - gocritic
-        text: (?i)`ID' should not be capitalized
-      - linters:
-          - unused
-        text: (?i)swagger
-      - linters:
-          - gocritic
-        text: '(?i)commentFormatting: put a space between `//` and comment text'
-      - linters:
-          - gocritic
-        text: '(?i)exitAfterDefer:'
-    paths:
-      - ^node_modules/
-      - ^\.venv/
-      - ^public/
-      - ^web_src/
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-formatters:
-  enable:
-    - gci
-    - gofumpt
-  settings:
-    gci:
-      custom-order: true
-      sections:
-        - standard
-        - prefix(gitea.dev)
-        - blank
-        - default
-    gofumpt:
-      extra:
-        group-params: true
-  exclusions:
-    generated: lax
-    paths:
-      - ^node_modules/
-      - ^\.venv/
-      - ^public/
-      - ^web_src/
-
 run:
-  timeout: 10m
+  timeout: 5m
+  go: "1.27"
+  build-tags: [integration, e2e, perf, render]
+linters:
+  default: standard
+  enable: [errcheck, errorlint, exhaustive, gocritic, gosec, govet, ineffassign, revive, staticcheck, unused, wastedassign]
+  settings:
+    errorlint: {errorf: true, asserts: true, comparison: true}
+    exhaustive: {default-signifies-exhaustive: false}
+    govet: {enable-all: true}
+    staticcheck: {checks: ["all"]}
+  exclusions:
+    presets: [comments]
+    rules:
+      - path: ^internal/rukproc/
+        text: G204|G703
+        linters: [gosec]
+      # Repo import shells to stock git with fixed subcommands and a `--`
+      # separator; sources and remotes are operator-supplied paths and URLs,
+      # never a shell string.
+      - path: ^internal/cli/admin_f14\.go$
+        text: G204
+        linters: [gosec]
+      - path: _test\.go$
+        linters: [gosec]
+      - path: ^internal/op/mount_huma\.go$
+        text: G705
+        linters: [gosec]
+# refused_by: statement_fold · collision: none (1 contested hunk(s), neither side deleted the other's lines)
+      # The CI artifact log/blob handler serves store bytes with a sniffed
+      # content type, like the raw-blob handler above; the sink is the
+      # content-addressed artifact store, never reflected markup.
+      - path: ^internal/api/ci_runner\.go$
+        text: G705
+        linters: [gosec]
+      # SSH string length prefixes encode protocol-small statement fields
+      # already held in memory; no field approaches 4 GiB.
+      - path: ^internal/ci/signature\.go$
+        text: G115
+      # Release notes render through goldmark with no unsafe mode into
+      # trusted.HTML; releases_views.go only emits that checked markup.
+      - path: ^internal/api/releases_views\.go$
+        text: G705
+        linters: [gosec]
+      # Test-only benchmark table: the analyzer's optimal layout needs
+      # dropping a used per-sample hook field; keep the readable order.
+      - path: ^tests/perf/daemonpath_test\.go$
+        text: fieldalignment
+        linters: [govet]
+      # The e2e stack runs the stock git binary from the test
+      # environment; arguments are built in-test, never from user input.
+      - path: ^internal/e2estack/stack\.go$
+        text: G204
+        linters: [gosec]
+      # RFC 6238 mandates HMAC-SHA-1 for TOTP; totp.go is its only user here.
+      - path: ^internal/auth/totp\.go$
+        text: G505
+        linters: [gosec]
+      - path: ^internal/gitssh/exec\.go$
+        text: G115
+        linters: [gosec]
+      - path: ^internal/store/auth_token\.go$
+        text: G101
+        linters: [gosec]
+      # The job spec string runs as the runner uid; it executes inside
+      # the container in production and on the host only under tests.
+      - path: ^internal/runner/exec\.go$
+        text: G204
+        linters: [gosec]
+      # Podman resolves via LookPath or explicit runner.toml config with
+      # a fixed argument builder and no caller-controlled flags.
+      - path: ^internal/runner/probe\.go$
+        text: G204
+        linters: [gosec]
+      # Git and podman run with fixed subcommands, bounded timeouts, and
+      # resolved binary paths; the timeout cause aborts hung children.
+      - path: ^internal/runner/sandbox\.go$
+        text: G204
+        linters: [gosec]
+      # Job-spec and step outputs live under attempt dirs; container-written
+      # logs open with O_NOFOLLOW and require regular files.
+      - path: ^internal/runner/exec\.go$
+        text: G304
+        linters: [gosec]
+      # Probe reads fixed host paths under /proc, /sys, and /etc.
+      - path: ^internal/runner/probe\.go$
+        text: G304
+        linters: [gosec]
+      # Config and credential live under the 0700 state directory.
+      - path: ^internal/runner/runner\.go$
+        text: G304
+        linters: [gosec]
+      # Mirror blobs, artifacts, and logs resolve under validated roots
+      # with Clean plus escape checks and symlink guards.
+      - path: ^internal/runner/sandbox\.go$
+        text: G304
+        linters: [gosec]
+      # The operator-supplied token file path is mode-checked before read.
+      - path: ^internal/runner/commands\.go$
+        text: G304
+        linters: [gosec]
+      # Attempt token and result live under the state dir attempt layout.
+      - path: ^internal/runner/loop\.go$
+        text: G304
+        linters: [gosec]
+      # The container executor copy needs the exec bit to run job-exec.
+      - path: ^internal/runner/sandbox\.go$
+        text: G306|G703
+        linters: [gosec]
+      # Daemon wire JSON key order is pinned by golden tests
+      # (TestPushArgsMarshalGolden, TestInvocationOpenAuthOmission); reordering
+      # these fields would change the wire format.
+      - path: ^internal/ruk/push\.go$
+        text: (PushUpdate has|struct has)
+        linters: [govet]
+      - path: ^internal/ruk/wire/wire\.go$
+        text: InvocationOpen has
+        linters: [govet]
+formatters:
+  enable: [gofmt, goimports]

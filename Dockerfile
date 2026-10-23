@@ -1,86 +1,43 @@
 # syntax=docker/dockerfile:1
-# Build frontend on the native platform to avoid QEMU-related issues with nodejs ecosystem
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27-alpine3.24 AS frontend-build
-RUN apk --no-cache add build-base git nodejs pnpm
-WORKDIR /src
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
-COPY --exclude=.git/ . .
-RUN make frontend
+#
+# rukie release image: one distroless non-root stage shipping both
+# static binaries. Every base is digest-pinned (tag@sha256), never a
+# floating tag. Digests resolved 2026-10-21 against the release pins
+# (Go 1.27.2, Rust 1.99.1); see the K10 report for the method.
+#
+# Build from the parent checkout so both repos are in context:
+#   docker build -f rukie/Dockerfile /home/alpha/rewrite/git-renewed
 
-# Build backend for each target platform
-FROM docker.io/library/golang:1.27-alpine3.24 AS build-env
+ARG GO_IMAGE=golang:1.27.2-bookworm@sha256:55395706e9703db746cc507abfc4eb2aea75918f8a8024e4848e2cb81004f5ad
+ARG RUST_IMAGE=rust:1.99.1-bookworm@sha256:5f29c3b4cb8ad8c6f10df979595582dd67dd146ffebc70718e24ff2e5b4a194d
+ARG DISTROLESS_IMAGE=gcr.io/distroless/static-debian13:latest@sha256:9e0130bec991f471279b70f1630ada11e46dad439ef2949544f96001225329fb
 
-ARG GITEA_VERSION
-ARG TAGS=""
-ENV TAGS="bindata timetzdata $TAGS"
-ARG CGO_EXTRA_CFLAGS
-
-# Build deps
-RUN apk --no-cache add \
-    build-base \
-    git
-
-WORKDIR ${GOPATH}/src/gitea.dev
-COPY go.mod go.sum ./
+FROM ${GO_IMAGE} AS go-build
+WORKDIR /src/rukie
+COPY rukie/go.mod rukie/go.sum ./
 RUN go mod download
-# Use COPY instead of bind mount as read-only one breaks makefile state tracking and read-write one needs binary to be moved as it's discarded.
-# ".git" directory is mounted separately later only for version data extraction.
-COPY --exclude=.git/ . .
-COPY --from=frontend-build /src/public/assets public/assets
+COPY rukie/ ./
+RUN CGO_ENABLED=0 go build -trimpath -o /out/rukie ./cmd/rukie \
+    && mkdir -p /var-lib-rukie
 
-# Build gitea, .git mount is required for version data
-RUN --mount=type=cache,target="/root/.cache/go-build" \
-    --mount=type=bind,source=".git/",target=".git/" \
-    make backend
+FROM ${RUST_IMAGE} AS rust-build
+RUN apt-get update && apt-get install -y --no-install-recommends musl-tools && rm -rf /var/lib/apt/lists/* \
+    && rustup target add x86_64-unknown-linux-musl
+WORKDIR /src/ruk
+COPY ruk/Cargo.toml ruk/Cargo.lock ./
+COPY ruk/crates ./crates
+RUN cargo build --release --locked -p ruk --target x86_64-unknown-linux-musl \
+    && mkdir -p /out && cp target/x86_64-unknown-linux-musl/release/ruk /out/ruk
 
-COPY docker/root /tmp/local
-
-# Set permissions for builds that made under windows which strips the executable bit from file
-RUN chmod 755 /tmp/local/usr/bin/entrypoint \
-              /tmp/local/usr/local/bin/* \
-              /tmp/local/etc/s6/gitea/* \
-              /tmp/local/etc/s6/openssh/* \
-              /tmp/local/etc/s6/.s6-svscan/* \
-              /go/src/gitea.dev/gitea
-
-FROM docker.io/library/alpine:3.24 AS gitea
-
-EXPOSE 22 3000
-
-RUN apk --no-cache add \
-    bash \
-    ca-certificates \
-    curl \
-    gettext \
-    git \
-    linux-pam \
-    openssh \
-    s6 \
-    sqlite \
-    su-exec \
-    gnupg
-
-RUN addgroup \
-    -S -g 1000 \
-    git && \
-  adduser \
-    -S -H -D \
-    -h /data/git \
-    -s /bin/bash \
-    -u 1000 \
-    -G git \
-    git && \
-  echo "git:*" | chpasswd -e
-
-COPY --from=build-env /tmp/local /
-COPY --from=build-env /go/src/gitea.dev/gitea /app/gitea/gitea
-
-ENV USER=git
-ENV GITEA_CUSTOM=/data/gitea
-
-VOLUME ["/data"]
-
-# HINT: HEALTH-CHECK-ENDPOINT: don't use HEALTHCHECK, search this hint keyword for more information
-ENTRYPOINT ["/usr/bin/entrypoint"]
-CMD ["/usr/bin/s6-svscan", "/etc/s6"]
+FROM ${DISTROLESS_IMAGE}
+COPY --from=go-build /out/rukie /usr/bin/rukie
+COPY --from=rust-build /out/ruk /usr/lib/rukie/ruk
+COPY rukie/deploy/config.example.toml /etc/rukie/config.toml
+# VOLUME lands root-owned; ship a nonroot-owned seed so the service
+# user can create the data-dir layout on first start.
+COPY --from=go-build --chown=65532:65532 /var-lib-rukie /var/lib/rukie
+USER 65532:65532
+ENTRYPOINT ["/usr/bin/rukie", "serve"]
+EXPOSE 3000
+VOLUME /var/lib/rukie
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s CMD ["/usr/bin/rukie", "admin", "status", "--expect-live"]

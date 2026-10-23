@@ -1,0 +1,65 @@
+## Register
+
+| Row | Verdict | Reason |
+|---|---|---|
+| clarity | warn | Budgets, ETag strength, and pass conditions diverge from corpus. |
+| impact | warn | Dual-write loss and secret-key loss paths leave stated goals unmet. |
+| audience | warn | ID collisions force the implementer to guess which rows a step means. |
+| risk | warn | Credential loss and silent push loss lack mitigations. |
+| sequencing | fail | PLAN steps cite no corpus rows, so "lands just before" is unenforceable. |
+| reversibility | pass | Commits stay on history; outward writes need consent. |
+
+## Findings
+
+1. **severity**: blocker. **where**: R11 "Accept per-call `GIT_AUTH_*` values in the command environment for hosted pushes. Invert helper priority for that path". **evidence**: `mirror-design.md` §5 (credentials out-of-band via stdin frame, then session handle; "Never in argv or environment of Ruk commands"; secrets in args enter the idempotency digest) and `ruk-changeset.md` R29/R30 (TransportAuth on InvocationOpen; explicit path replaces ambient headers). **fix**: Delete the `GIT_AUTH_*` sentence. Carry credentials in `TransportAuth`. Never place secrets in argv, env, args, digests, receipts, or logs. **Case**: a token in `GIT_AUTH_TOKEN` enters the command digest, so a rotation changes the digest, replay returns the old report, and the token leaks into receipts and error text.
+
+2. **severity**: blocker. **where**: Settled "Rukie writes a SQLite outbox in the same transaction as each domain write" plus K6 "Post-receive events feed the event pipeline". A grep of PLAN for spool, reconciler, tip-comparison, drain, K7, or Unknown returns zero rows. **evidence**: `ssh-smarthttp-design.md` §5.3 (spool-first shim, atomic outbox enqueue, idempotent callback, tip-comparison reconciler) and `phase-sequencing.md` K7 (spool drain, reconciler). The corpus designs K7, but PLAN schedules only K1–K6. **fix**: Add a K7 step to PLAN. Build the spool-first shim. Drain the spool on a timer. Reconcile tips against `events.tail`. Write to Ruk first. Commit the store second. Deduplicate on invocation id. **Case**: push lands in Ruk while rukie is down, the callback never arrives, no reconciler runs, and CI, webhooks, and mirrors silently miss the push.
+
+3. **severity**: blocker. **where**: K1 "restarts it with backoff" (no cap, no readyz rule, no 503 mapping) plus K3 "Git-service streams reconcile through outcome lookup" (no never-re-run rule, no Unknown handling). R12 does schedule the durable `ServiceReceipts` replacement, which closes restart-lookup for recorded outcomes. **evidence**: `ruk-client-design.md` §11/D5 (absent is indistinguishable from never-started; never re-run commands) and `ops-design.md` §2 (restart at most 3 times, then exit; `/readyz` false; 503 fast-fail). **fix**: Cap restarts at 3, then exit. Flip `/readyz` false during restarts. Fail new daemon calls with 503. Never re-run a git-service stream. Reconcile Unknown through `events.tail` plus tip comparison. **Case**: the child dies after ref publication but before recording, lookup reports absent, rukie reports failure, the client retries, and the push either lands twice or its review outcome is lost.
+
+4. **severity**: major. **where**: PLAN F-numbers versus corpus F-numbers: PLAN F3 is the review loop and F4 is CI, while `phase-sequencing.md` F2 is review, F3 is mirrors, F5 is CI; PLAN R10 covers claims, attestations, and landing in one paragraph that cites no corpus row, while the evidence binding, `ci/` namespace grants, and land policy live in corpus rows R39, R38, and R44. **evidence**: `ci-control-plane-design.md` §13 R1–R3 and `phase-sequencing.md` Dependencies ("R8/R9 before F2-land/F5"). The work exists in corpus, but no PLAN step binds to it. **fix**: Map each PLAN step to exact corpus rows. Cite R38, R39, and R44 from PLAN R10. Bind F4 to the namespace grant. Use one ID namespace. **Case**: a worker reads PLAN R10, misses the unreferenced namespace row, grants `ci/*` kinds per-spec, and every spec change demands a policy edit while landing can never require CI.
+
+5. **severity**: blocker. **where**: F6 "Encrypt credentials with AEAD under the rukie secret key file" plus D3 ("Add `rukie backup` and `rukie restore`"). **evidence**: `ops-design.md` §1 (key defaults to `/etc/rukie/secret.key`, outside `data_dir`) and §5 (backup copies meta.sqlite via `VACUUM INTO` plus repos plus manifest; no step exports the key) and `mirror-design.md` §5 (rotation keeps old key versions until rows re-encrypt). **fix**: Generate the key with `admin secret-gen` at bootstrap. Back up the key version map offline. Refuse restore without the key or rotate explicitly. Record the key id in the manifest. **Case**: the operator keeps the backup, loses the key file, restores cleanly, and every mirror credential, webhook secret, and sealed TOTP secret is permanently undecryptable.
+
+6. **severity**: blocker. **where**: K6 "HTTP auth uses Basic with the token as password. Public repos allow anonymous read" plus "a public-key callback maps keys to users". **evidence**: `auth-design.md` §10.1 (username MUST equal the token owner; scope floors apply) and `permission-model.md` §3 V2 (internal repos require an authenticated principal), §8 G1 (refs/for creation needs only read), G4 (LandOnly denies direct push), G5 (no self-approval), and `ssh-smarthttp-design.md` §§5.5–6 (synchronous change creation; authorize before opening the daemon stream). **fix**: Reject username and owner mismatches with 401. Deny anonymous callers on internal and private repos. Keep refs/for ingress at read. Enforce LandOnly and no-self-approval. Authorize before opening the stream. Bind SSH sessions to scopes. **Case**: anonymous fetch reads an internal repo, or a `write`-scoped token held by a `read` user pushes direct to a LandOnly bookmark.
+
+7. **severity**: major. **where**: K6 "Each stream carries the per-repo limits, per decision C10" while PLAN R3 defines only envelope, tasks, credit, and the 16 MiB cap, and PLAN uses K2/K3 to mean store/client where `phase-sequencing.md` uses K2/K3 to mean client/store. **evidence**: `ruk-changeset.md` C10 plus corpus R17 (limits on `CommandOpen`, joined into the daemon-side digest). The limits row exists in corpus, but K6 cites a decision no PLAN R-item implements. **fix**: Add the limits field to the envelope R-item first. Include limits in the daemon-side digest. Land K6 only after that item. Disambiguate every ID. **Case**: a worker builds K6 against PLAN R3, sends no limits, and a 2 GiB push either bypasses the 100 MiB repo quota or replays under a digest that never covered limits.
+
+8. **severity**: major. **where**: "page render p95 at most 50 ms warm and 150 ms cold. API op p95 at most 30 ms outside Ruk time. Mirror sync p95 for a one-ref push at most 3 s. CI dispatch-to-start p95 at most 2 s". **evidence**: `verification-strategy.md` §7 (HTML ≤200 ms, JSON ≤100 ms, info/refs ≤150 ms, search ≤500 ms p95). **fix**: Replace the PLAN numbers with the corpus numbers. Add one recalibration rule. Fill README values only from measured runs. **Case**: the release meets every corpus budget yet fails PLAN's 30 ms API gate, and nobody can tell whether the release passed.
+
+9. **severity**: major. **where**: Verification command blocks (Go, integration, e2e, perf) list tags `integration`, `e2e`, `perf`, `render` but run no render command, and checks 2, 4, 6 state no exact command or numeric pass condition. **evidence**: `verification-strategy.md` §5 (`TestDumpRenderedPages` with `RUKIE_RENDER_DIR` plus html-validate `--max-warnings 0`) and §0 (exit 0 plus the exact `--- PASS: Name (` needle; skips and zero-match runs fail). **fix**: Add the render command block. Give each check one command and one pass condition. Require the exact PASS needle. Fail skips and zero-match runs. **Case**: zero-JS coverage silently stops running, a template ships a `<script>` tag, and every gate stays green.
+
+10. **severity**: major. **where**: K2 ("batch at most 64 requests, linger 2 ms, one savepoint per request, queue depth 256" with no cancellation rule). **evidence**: `store-engine-design.md` §3.4 (batch statements run under `context.WithoutCancel`; a request ctx lets `sqlite3_interrupt` roll back the whole batch; `ROLLBACK TO` plus `RELEASE` isolates one failure, proven by `TestBatchSavepointIsolation`) and §2.2 (ordinary WAL readers never block the writer and never wait on `busy_timeout`; `busy_timeout=5000` absorbs writer and process lock contention; held snapshots delay checkpoints and grow the WAL) and the module cache (`sqlite_linux_amd64.go:1` carries `-DSQLITE_ENABLE_FTS5`; `sqlite.go:3468` sets `SQLITE_ENABLE_FTS5 = 1`; trigram implementation present at `sqlite.go:7311`; `case_sensitive=0` is the default). The pinned v1.60.1 is not in the cache, so one `go mod download` check closes it. **fix**: Run batch statements under a non-cancelable batch context. Check cancellation only at dequeue. Size WAL capacity for checkpoint delays. Probe the trigram option string with a bare-`trigram` fallback. **Case**: one client disconnects mid-batch and the cancel discards 63 unrelated writes.
+
+11. **severity**: major. **where**: PLAN F2 is repos and browsing while corpus F2 is review; PLAN F3 is the review loop "match positions through the Ruk diff" with no fallback, while corpus F3 is mirrors. **evidence**: `review-task-data-model.md` §3 step 2 (while the daemon answers `E_HOSTED`, issue the diff through the `CommandOpen` git-compat verb from one call site) and `phase-sequencing.md` Dependencies (F1←R5b+R6; F2←R7+R8). **fix**: Name the `CommandOpen` fallback for every hosted read F2 and F3 need. Gate browsing on R6 plus R8. Gate land on the land rows. Disambiguate every ID. **Case**: a worker builds PLAN F3 first, calls the unlanded typed diff, every comment remap fails, and rewrites silently strand all anchored comments.
+
+12. **severity**: major. **where**: check 5 ("A repeated `finish` is idempotent"). **evidence**: `ci-control-plane-design.md` §6.3 (same attempt plus same `result_digest` returns `replayed: true`; different digest on a terminal attempt returns `E_RESULT_CONFLICT`; stale fence returns `E_LEASE_LOST`; fenced-out results never cache or attest). **fix**: Repeat with the same digest returns the stored reply. Repeat with a different digest conflicts. Late fenced-out writes stay refused. **Case**: a retried runner reports a different result, the plan calls it idempotent, and the wrong verdict attests.
+
+13. **severity**: minor. **where**: "Weak ETags and `If-Match` guard edits." **evidence**: `op-table-design.md` §8 (ETag is quoted and strong; finish checks 304 before rendering). **fix**: Change "Weak" to "strong, quoted". Compare `If-Match` inside the store transaction. **Case**: a weak comparator matches a semantically different representation and two concurrent edits both commit, losing one write.
+
+14. **severity**: minor. **where**: "Mirror it to `gosuda/rukie` on GitHub" in the Dogfood gate. **evidence**: Assumptions ("Every outward write still asks first. Outward writes are pushes, `gh repo edit`, and topic changes"). **fix**: Ask the user before creating the GitHub mirror. Record consent before the first outward sync. **Case**: dogfood auto-pushes an unfinished forge to the public GitHub repo before the user approves any outward write.
+
+## Ledger rows
+
+- Replace the R11 ambient-credential channel with `TransportAuth` plus stdin-frame provisioning.
+- Add a PLAN K7 step for spool drain, tip reconcile, write order, and callback dedupe.
+- Cap supervisor restarts, wire `/readyz` plus 503, never re-run git streams.
+- Map PLAN steps to exact corpus rows and unify the ID namespaces.
+- Put secret-key generation, offline backup, and restore refusal into backup and restore.
+- Enforce authn binding, visibility floors, refs/for guards, and SSH scopes.
+- Define the per-stream limits field and digest input before the git wire slice.
+- Align performance budgets with the verification corpus or define recalibration.
+- Add the render gate, exact check commands, PASS needles, and no-skip rule.
+- Add the store cancellation and checkpoint rules; close the v1.60.1 FTS5 pin.
+- Name hosted-read fallbacks and gate feature slices on their R-items.
+- Qualify finish idempotency with same-digest replay and conflict rules.
+- Correct weak ETags to strong quoted ETags.
+- Gate the dogfood GitHub mirror on explicit user consent.
+
+### Critical Files for Implementation
+
+- `rukie/internal/store/store.go` — Group commit, savepoint isolation, and cancellation.
+- `rukie/internal/ruk/client.go` — Retry, reconnect, lookup, and Unknown recovery.
+- `rukie/internal/githttp/handler.go` — Authn binding, visibility, guards, pre-open authorization.
+- `rukie/internal/mirror/worker.go` — Credential handling, refspecs, and stop rules.
+- `rukie/tools/passgate.sh` — PASS needles, render gate, and per-check commands.

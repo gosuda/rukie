@@ -1,0 +1,53 @@
+package shell
+
+import (
+	"github.com/gosuda/rukie/internal/web/assets"
+)
+
+templ Layout(p Page, content templ.Component) {
+	@templ.Raw("<!DOCTYPE HTML>")
+	<html lang="en">
+		<head>
+			<meta charset="utf-8">
+			<meta name="viewport" content="width=device-width, initial-scale=1">
+			<meta name="color-scheme" content="light dark">
+			if p.Refresh > 0 {
+				<meta http-equiv="refresh" content={ refreshContent(p.Refresh) }>
+			}
+			<title>{ p.Title } · rukie</title>
+			@templ.Raw(string(Fonts()))
+			@templ.Raw(string(assets.LinkTags()))
+			<link rel="icon" href={ assets.IconURL() }>
+		</head>
+		<body>
+			<a class="skip" href="#main">Skip to content</a>
+			<header class="topnav">
+				<div class="wrap">
+					<a class="brand" href="/">rukie</a>
+					<nav aria-label="Primary">
+						<a href="/explore/repos">Explore</a>
+						<a href="/changes">Changes</a>
+						<a href="/tasks">Tasks</a>
+						<a href="/ci">CI</a>
+						<a href="/inbox">Inbox</a>
+					</nav>
+					<form method="post" action="/logout">
+						<input type="hidden" name="csrf" value={ p.CSRF }>
+						<button class="btn secondary" type="submit">Sign out</button>
+					</form>
+				</div>
+			</header>
+			<main id="main" tabindex="-1">
+				<div class="wrap">
+					@content
+				</div>
+			</main>
+			<footer class="site">
+				<div class="wrap">
+					<span>rukie</span>
+					<span class="mono copy">{ p.Build }</span>
+				</div>
+			</footer>
+		</body>
+	</html>
+}

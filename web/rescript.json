@@ -1,0 +1,19 @@
+{
+  "name": "rukie-web",
+  "sources": {
+    "dir": "src",
+    "subdirs": true
+  },
+  "package-specs": {
+    "module": "esmodule",
+    "in-source": true
+  },
+  "suffix": ".res.js",
+  "jsx": {
+    "version": 4,
+    "module": "Preact"
+  },
+  "warnings": {
+    "error": true
+  }
+}

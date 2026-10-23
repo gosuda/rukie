@@ -1,0 +1,95 @@
+package diff
+
+import (
+	"strconv"
+
+	"github.com/gosuda/rukie/internal/web/vm"
+)
+
+templ FileViewUnified(f File, hl *vm.LineRange) {
+	@fileView(f, hl, false)
+}
+
+templ FileViewSplit(f File) {
+	@fileView(f, nil, true)
+}
+
+templ fileView(f File, hl *vm.LineRange, split bool) {
+	<section class="file" id={ f.Anchor } aria-labelledby={ "fh-" + f.Anchor }>
+		<details open>
+			<summary id={ "fh-" + f.Anchor }>{ f.Title() }</summary>
+			if f.Trunc {
+				<p>Diff too large to render. Narrow the range.</p>
+			} else {
+				<p class="row">
+					if split {
+						<a href="?diff=unified">Unified</a>
+						<span aria-current="true">Split</span>
+					} else {
+						<span aria-current="true">Unified</span>
+						<a href="?diff=split">Split</a>
+					}
+				</p>
+				for _, h := range f.Hunks {
+					if split {
+						@splitTable(h)
+					} else {
+						@unifiedTable(h, hl)
+					}
+				}
+			}
+		</details>
+	</section>
+}
+
+templ unifiedTable(h Hunk, hl *vm.LineRange) {
+	<table class="diff unified">
+		<colgroup><col><col><col><col></colgroup>
+		<tbody>
+			<tr class="hunk"><th scope="rowgroup" colspan="4">{ "@@ -" }{ strconv.Itoa(h.OldStart) }{ " +" }{ strconv.Itoa(h.NewStart) }{ " @@ " }{ h.Section }</th></tr>
+			for _, rl := range Rich(h) {
+				@unifiedRow(rl, hl)
+			}
+		</tbody>
+	</table>
+}
+
+templ unifiedRow(rl RichLine, hl *vm.LineRange) {
+	if rowID(rl.Line, hl) != "" {
+		<tr class={ rowCls(rl.Line) } id={ rowID(rl.Line, hl) }>
+			<td class="ln">{ rowOld(rl.Line) }</td>
+			<td class="ln">{ rowNew(rl.Line) }</td>
+			<td class="sign">{ rowSign(rl.Line) }</td>
+			<td class="code">{ rl.Pre }<span class="tokchg">{ rl.Mid }</span>{ rl.Post }</td>
+		</tr>
+	} else {
+		<tr class={ rowCls(rl.Line) }>
+			<td class="ln">{ rowOld(rl.Line) }</td>
+			<td class="ln">{ rowNew(rl.Line) }</td>
+			<td class="sign">{ rowSign(rl.Line) }</td>
+			<td class="code">{ rl.Pre }<span class="tokchg">{ rl.Mid }</span>{ rl.Post }</td>
+		</tr>
+	}
+}
+
+templ splitTable(h Hunk) {
+	<table class="diff split">
+		<thead><tr><th scope="col">Before</th><th scope="col">After</th></tr></thead>
+		<tbody>
+			for _, row := range Split(h) {
+				<tr>
+					<td>
+						if row.HasDel {
+							<span class="ln">{ rowOld(row.Del) }</span> { rowSign(row.Del) } { row.Pre }<span class="tokchg">{ row.DelMid }</span>{ row.Post }
+						}
+					</td>
+					<td>
+						if row.HasAdd {
+							<span class="ln">{ rowNew(row.Add) }</span> { rowSign(row.Add) } { row.Pre }<span class="tokchg">{ row.AddMid }</span>{ row.Post }
+						}
+					</td>
+				</tr>
+			}
+		</tbody>
+	</table>
+}
