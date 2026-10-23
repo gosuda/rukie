@@ -32,6 +32,7 @@ import (
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/rukproc"
 	"github.com/gosuda/rukie/internal/store"
+	"github.com/gosuda/rukie/internal/webhook"
 )
 
 type apiHarness struct {
@@ -51,7 +52,8 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		Service: s.auth, Limiter: access.NewLimiter(), Reveals: auth.NewRevealCache(),
 		Store: s.st, Ruk: s.client, Queue: mirrorQueue,
 		RepoRoot: s.roots, RukBin: rukBin(t),
-		SealKey: sealKey[:],
+		SealKey:  sealKey[:],
+		Webhooks: webhook.Policy{AllowInsecureHTTP: true, AllowPrivateTargets: true},
 	}
 	ciSeed := sha256.Sum256(append([]byte("rukie-ci-attest-v1"), sealKey[:]...))
 	deps.CI = ci.NewController(s.st, ci.Config{
@@ -85,6 +87,8 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterIntents(table, deps) },
 		func() error { return api.RegisterOrgs(table, deps) },
 		func() error { return api.RegisterSocial(table, deps) },
+		func() error { return api.RegisterWebhook(table, deps) },
+		func() error { return api.RegisterInbox(table, deps) },
 	} {
 		if err := step(); err != nil {
 			t.Fatalf("register: %v", err)
@@ -107,8 +111,11 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterIntentsViews(views)
 	api.RegisterOrgsViews(views)
 	api.RegisterSocialViews(views)
+	api.RegisterWebhookViews(views)
+	api.RegisterInboxViews(views)
 	var key [32]byte
 	_, _ = rand.Read(key[:])
+	deps.CSRFKey = key[:]
 	mux := http.NewServeMux()
 	mounted, err := op.Mount(mux, table, op.Config{
 		Authenticator: auth.NewAuthenticator(s.auth),
@@ -124,7 +131,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	if err != nil {
 		t.Fatalf("mount: %v", err)
 	}
-	front := deps.CIRaw(api.RawBytes{Deps: deps}.Wrap(mounted))
+	front := deps.InboxPages(deps.WebhookPages(deps.CIRaw(api.RawBytes{Deps: deps}.Wrap(mounted))))
 	ts := httptest.NewServer(front)
 	t.Cleanup(ts.Close)
 	return &apiHarness{server: ts, watcher: watcher, queue: mirrorQueue, ci: deps.CI, sealKey: sealKey[:]}
@@ -458,6 +465,7 @@ func TestAgentFlow(t *testing.T) {
 	})
 	t.Run("mirror", mirrorAgentFlow)
 	t.Run("ci_attest", ciAttestAgentFlow)
+	t.Run("webhooks", webhookAgentFlow)
 	t.Run("intent", intentAgentFlow)
 }
 

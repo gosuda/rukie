@@ -127,7 +127,11 @@ func (o outboxWriter) Emit(ev Event) (OutboxRow, error) {
 	if err != nil {
 		return OutboxRow{}, fmt.Errorf("Emit: %w", err)
 	}
-	return OutboxRow{Seq: seq, ID: id, Kind: ev.Kind, Body: ev.Body, OccurredAt: timeOf(occurred)}, nil
+	row := OutboxRow{Seq: seq, ID: id, Kind: ev.Kind, Body: ev.Body, OccurredAt: timeOf(occurred)}
+	if ferr := fanoutEvent(o.core, row); ferr != nil {
+		return OutboxRow{}, fmt.Errorf("Emit: %w", ferr)
+	}
+	return row, nil
 }
 
 func (o outboxWriter) Advance(consumer string, from, to int64) error {
