@@ -26,13 +26,13 @@ type webhookHit struct {
 	id        string
 	timestamp string
 	signature string
-	body      []byte
 	method    string
 	peer      string
 	clen      string
 	keys      string
 	ua        string
 	path      string
+	body      []byte
 }
 
 func webhookAgentFlow(t *testing.T) {
@@ -50,7 +50,7 @@ func webhookAgentFlow(t *testing.T) {
 	var mu sync.Mutex
 	var hits []webhookHit
 	failOpen := true
-	record := func(w http.ResponseWriter, r *http.Request) (body []byte, first bool) {
+	record := func(r *http.Request) (body []byte, first bool) {
 		body, _ = io.ReadAll(r.Body)
 		mu.Lock()
 		defer mu.Unlock()
@@ -72,7 +72,7 @@ func webhookAgentFlow(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /{$}", func(w http.ResponseWriter, r *http.Request) {
-		_, first := record(w, r)
+		_, first := record(r)
 		if first {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -80,7 +80,7 @@ func webhookAgentFlow(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
-		record(w, r)
+		record(r)
 		t.Logf("non-POST probe ignored: method=%q ua=%q path=%q", r.Method, r.Header.Get("User-Agent"), r.URL.Path)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
