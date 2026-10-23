@@ -121,6 +121,8 @@ func adminPlumbProblem(title string, err error) (string, string) {
 	code := op.CodeUnavailable
 	if oerr, ok := errors.AsType[*op.Error](err); ok {
 		code = oerr.Code
+	} else if merr, ok := errors.AsType[*op.Error](mapRukError(err)); ok {
+		code = merr.Code
 	}
 	var b strings.Builder
 	b.WriteString(heading(title))

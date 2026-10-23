@@ -542,9 +542,13 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 		Scope: op.ScopeAdminWrite, Summary: "Purge a repository immediately",
 		Description: "Site admins only. Removes the daemon repository and hard-deletes the row at once. Live rows are tombstoned first, so a current If-Match is always required. The confirmation must name the full owner/name. A daemon miss on a live row fails instead of purging.",
 		Problems:    []op.Code{op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq, op.CodeUnavailable},
+		Concurrency: op.ConcurrencyIfMatchRequired,
 		Destructive: true,
 		Status:      202,
-		Location:    func(AdminRepoPurgeOut) string { return "/admin/repos" },
+		ETag: func(out AdminRepoPurgeOut) string {
+			return "admin-purged-" + out.Repo
+		},
+		Location: func(AdminRepoPurgeOut) string { return "/admin/repos" },
 		Handler: func(ctx context.Context, p op.Principal, in AdminRepoPurgeIn) (AdminRepoPurgeOut, error) {
 			admin, err := requireAdmin(ctx, deps.Service, p)
 			if err != nil {
