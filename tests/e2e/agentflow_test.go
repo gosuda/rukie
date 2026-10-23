@@ -389,7 +389,7 @@ func TestAgentFlow(t *testing.T) {
 		if status, _ := apiCall(t, h, "POST", "/ada/hello/changes/"+key+"/comments", token, `{"path":"README.md","line":1,"body":"nit"}`); status != http.StatusCreated {
 			t.Fatalf("comment.create = %d", status)
 		}
-		t.Skip("needs-ruk-F2: comment remap needs served daemon diff")
+		t.Skip("comment remap falls to the fallback bucket even with a served daemon: the remap engine does not match daemon diff positions; F2 follow-up")
 		second, _ := s.localRepo(t, map[string]string{"README.md": "hello\nsecond\n"})
 		if out, err := gitRun(ctx, t, second, "push", pushURL, "HEAD:refs/for/main"); err != nil {
 			t.Fatalf("rewrite push: %v\n%s", err, out)
