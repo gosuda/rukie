@@ -44,6 +44,16 @@ linters:
       - path: ^internal/api/releases_views\.go$
         text: G705
         linters: [gosec]
+      # Test-only benchmark table: the analyzer's optimal layout needs
+      # dropping a used per-sample hook field; keep the readable order.
+      - path: ^tests/perf/daemonpath_test\.go$
+        text: fieldalignment
+        linters: [govet]
+      # The e2e stack runs the stock git binary from the test
+      # environment; arguments are built in-test, never from user input.
+      - path: ^internal/e2estack/stack\.go$
+        text: G204
+        linters: [gosec]
       # RFC 6238 mandates HMAC-SHA-1 for TOTP; totp.go is its only user here.
       - path: ^internal/auth/totp\.go$
         text: G505
