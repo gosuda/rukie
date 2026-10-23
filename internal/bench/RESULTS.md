@@ -157,4 +157,8 @@ commit, and schema as unset because the briefed command sets none of
 RUK_VERSION, RUK_COMMIT, or RUK_SCHEMA. Both runs reach the same verdict
 (fetch PASS around 3.7x, lookup PASS around 1.5x, clone REPORT around
 1.3x, info-refs PASS well under 150 ms daemon p95), so the V5 capacity
-gate is met and the earlier stop is lifted.
+gate is met and the earlier stop is lifted. Note on method lines: each
+test-generated block's method line states the fetch and lookup sampling
+(100 warmups, 1000 paired samples); the clone workload in both runs used
+2 warmups and 200 paired samples (cloneWarmups, cloneSamples), matching
+the shell method paragraph above.

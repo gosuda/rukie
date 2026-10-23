@@ -32,7 +32,7 @@ const (
 	infoRefsBudget    = 150 * time.Millisecond
 	warmupCount       = 100
 	sampleCount       = 1000
-	cloneWarmups      = 20
+	cloneWarmups      = 2
 	cloneSamples      = 200
 	seedCommits       = 200
 	seedRefs          = 1000
@@ -659,7 +659,7 @@ func TestDaemonPathBudget(t *testing.T) {
 		},
 		{
 			name:       "clone",
-			warmups:    2,
+			warmups:    cloneWarmups,
 			total:      cloneSamples,
 			budget:     "",
 			authority:  "V5 brief",
@@ -773,7 +773,7 @@ func appendResults(ctx context.Context, meta runMeta, rows []benchRow) error {
 	path := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(file))), "internal", "bench", "RESULTS.md")
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "\n## %s\n\n", time.Now().UTC().Format(time.RFC3339))
-	fmt.Fprintf(&buf, "- ruk binary: %s\n- ruk version: %s\n- ruk commit: %s\n- ruk schema: %s\n- git binary: %s\n- host: %s\n- cpu: %s\n- go: %s\n- method: %d warmups, then %d paired samples with alternating stock/daemon order; prepare and verify outside the timer; 16 tokens minted for ada and rotated per daemon request; nearest-rank p50/p95/p99\n\n", meta.rukBin, meta.rukVersion, meta.rukCommit, meta.rukSchema, meta.gitBin, meta.host, meta.cpu, meta.goVersion, warmupCount, sampleCount)
+	fmt.Fprintf(&buf, "- ruk binary: %s\n- ruk version: %s\n- ruk commit: %s\n- ruk schema: %s\n- git binary: %s\n- host: %s\n- cpu: %s\n- go: %s\n- method: %d warmups, then %d paired samples with alternating stock/daemon order (fetch, lookup, info-refs); clone uses %d warmups and %d paired samples as report-only data; prepare and verify outside the timer; 16 tokens minted for ada and rotated per daemon request; nearest-rank p50/p95/p99\n\n", meta.rukBin, meta.rukVersion, meta.rukCommit, meta.rukSchema, meta.gitBin, meta.host, meta.cpu, meta.goVersion, warmupCount, sampleCount, cloneWarmups, cloneSamples)
 	fmt.Fprintf(&buf, "| workload | stock p50 | stock p95 | stock p99 | daemon p50 | daemon p95 | daemon p99 | ratio p95 | budget | authority | result |\n")
 	fmt.Fprintf(&buf, "|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, row := range rows {
