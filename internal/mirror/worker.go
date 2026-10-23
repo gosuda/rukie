@@ -29,8 +29,9 @@ import (
 )
 
 const (
-	mirrorClaimLease = time.Minute
-	mirrorCallBudget = 60 * time.Second
+	mirrorClaimLease   = time.Minute
+	mirrorCallBudget   = 60 * time.Second
+	mirrorFinishBudget = 10 * time.Second
 
 	maxStoredErrorLen = 512
 
@@ -49,6 +50,15 @@ type Worker struct {
 	RepoRoot    string
 	SealKey     []byte
 	WorkerCount uint
+	// PushTimeout bounds one drive. Zero or negative means mirrorCallBudget.
+	PushTimeout time.Duration
+}
+
+func (w Worker) callBudget() time.Duration {
+	if w.PushTimeout > 0 {
+		return w.PushTimeout
+	}
+	return mirrorCallBudget
 }
 
 func (w Worker) now() time.Time {
@@ -204,7 +214,7 @@ func (w Worker) DriveOnce(ctx context.Context, owner string) (bool, error) {
 	if len(claimed) == 0 {
 		return false, nil
 	}
-	ectx, cancel := context.WithTimeout(ctx, mirrorCallBudget)
+	ectx, cancel := context.WithTimeout(ctx, w.callBudget())
 	defer cancel()
 	if derr := w.drive(ectx, owner, claimed[0]); derr != nil {
 		return true, derr
@@ -277,6 +287,7 @@ type trackedRef struct {
 	class     string
 	planID    string
 	requestID string
+	dfBlocker string
 }
 
 type execution struct {
@@ -294,6 +305,7 @@ type execution struct {
 	cfg           Mirror
 	job           store.Job
 	loaded        loadedRun
+	reqSeq        int
 	observed      bool
 }
 
@@ -485,7 +497,7 @@ func (e *execution) sync(ctx context.Context) (bool, error) {
 	if rerr := e.reconcilePriorUncertain(ctx, remote.refs); rerr != nil {
 		return e.finishCall(ctx, rerr, nil, &remote.count)
 	}
-	plan, perr := ComputePlan(local, remote.refs, e.cfg, remote.defaultBranch, e.loaded.run.ConfirmedDigest)
+	plan, perr := ComputePlan(local, remote.refs, e.cfg, e.loaded.repo.DefaultBranch, remote.defaultBranch, e.loaded.run.ConfirmedDigest)
 	if perr != nil {
 		if errors.Is(perr, ErrNeedsConfirmation) {
 			count := remote.count
@@ -499,7 +511,7 @@ func (e *execution) sync(ctx context.Context) (bool, error) {
 	}
 	e.trackPlanned(plan)
 	e.observed = true
-	if perr := e.pushDeletesFirst(ctx); perr != nil {
+	if perr := e.pushDeletesFirst(ctx, e.transmitPush); perr != nil {
 		return e.finishCall(ctx, sendUncertain(perr), &plan, nil)
 	}
 	if perr := e.resolveUncertain(ctx); perr != nil {
@@ -588,10 +600,14 @@ func (e *execution) trackPlanned(plan Plan) {
 		case ActionInSync:
 			add(rp, "in_sync", string(ClassOK), "")
 		case ActionBlockedDF:
-			add(rp, "blocked_df", string(ClassRefOther), orDefault(rp.Reason, "file/directory conflict"))
-		case ActionCreate, ActionForceUpdate:
+			if blocker := dfBlockerFor(rp, plan.Deletes); blocker != "" {
+				e.tracked = append(e.tracked, &trackedRef{plan: rp, dfBlocker: blocker})
+			} else {
+				add(rp, "blocked_df", string(ClassRefOther), orDefault(rp.Reason, "file/directory conflict"))
+			}
+		case ActionCreate, ActionForceUpdate, ActionUpdate:
 			e.tracked = append(e.tracked, &trackedRef{plan: rp})
-		case ActionUpdate, ActionDelete, ActionPrune, ActionDiverged, ActionIgnoredHidden:
+		case ActionDelete, ActionPrune, ActionDiverged, ActionIgnoredHidden:
 			add(rp, "blocked_df", string(ClassRefOther), orDefault(rp.Reason, "unsupported plan action"))
 		default:
 			add(rp, "blocked_df", string(ClassRefOther), orDefault(rp.Reason, "unsupported plan action"))
@@ -618,6 +634,33 @@ func (e *execution) trackPlanned(plan Plan) {
 			reason: reason,
 		})
 	}
+	for _, t := range e.tracked {
+		if t.plan.Action != ActionBlockedDF || t.dfBlocker == "" {
+			continue
+		}
+		if blocker, ok := byRef[t.dfBlocker]; ok && blocker.status == "" &&
+			(blocker.plan.Action == ActionDelete || blocker.plan.Action == ActionPrune) {
+			continue
+		}
+		t.status = "blocked_df"
+		t.class = string(ClassRefOther)
+		t.reason = orDefault(t.reason, "file/directory conflict")
+	}
+}
+
+func dfBlockerFor(rp RefPlan, deletes []RefPlan) string {
+	if rp.Action != ActionBlockedDF {
+		return ""
+	}
+	for _, d := range deletes {
+		if d.Action != ActionDelete && d.Action != ActionPrune {
+			continue
+		}
+		if strings.HasPrefix(rp.Ref, d.Ref+"/") {
+			return d.Ref
+		}
+	}
+	return ""
 }
 
 func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[string]string) error {
@@ -671,7 +714,10 @@ func updateFor(rp RefPlan, force bool) ruk.PushUpdate {
 	case ActionForceUpdate:
 		expect := ruk.PresentExpect(rp.Old)
 		return ruk.PushUpdate{RemoteRef: rp.Ref, Source: ruk.CommitSource(rp.New), ExpectedOld: &expect, Force: force}
-	case ActionCreate, ActionUpdate:
+	case ActionUpdate:
+		expect := ruk.PresentExpect(rp.Old)
+		return ruk.PushUpdate{RemoteRef: rp.Ref, Source: ruk.CommitSource(rp.New), ExpectedOld: &expect}
+	case ActionCreate:
 		absent := ruk.AbsentExpect()
 		return ruk.PushUpdate{RemoteRef: rp.Ref, Source: ruk.CommitSource(rp.New), ExpectedOld: &absent}
 	case ActionDiverged, ActionIgnoredHidden, ActionBlockedDF, ActionInSync:
@@ -696,6 +742,11 @@ func jitterFraction() float64 {
 	return float64(binary.BigEndian.Uint64(b[:])%unit) / unit
 }
 
+func (e *execution) nextRequestID() string {
+	e.reqSeq++
+	return mirrorRequestID(e.loaded.run.PublicID, e.loaded.run.AttemptNo+1, e.reqSeq)
+}
+
 func mirrorRequestID(runPub string, attempt int64, seq int) string {
 	sum := sha256.Sum256([]byte("mirror-push\x00" + runPub + "\x00" + strconv.FormatInt(attempt, 10) + "\x00" + strconv.Itoa(seq)))
 	sum[6] = sum[6]&0x0f | 0x50
@@ -711,9 +762,57 @@ func updateForChecked(rp RefPlan) ruk.PushUpdate {
 	return updateFor(rp, false)
 }
 
-func (e *execution) pushDeletesFirst(ctx context.Context) error {
+func (e *execution) updateForMode(t *trackedRef) ruk.PushUpdate {
+	if t.plan.Action == ActionUpdate {
+		return updateForChecked(t.plan)
+	}
+	if e.cfg.Mode == ModeExact && !forceCheckedFor(e.cfg, t.plan.Ref, e.remoteDefault) {
+		return updateForExact(t.plan)
+	}
+	return updateForChecked(t.plan)
+}
+
+func (e *execution) appendUpsert(upserts []ruk.PushUpdate, refs []*trackedRef, t *trackedRef) ([]ruk.PushUpdate, []*trackedRef) {
+	return append(upserts, e.updateForMode(t)), append(refs, t)
+}
+
+func (e *execution) resolveDFGated(t *trackedRef, upserts *[]ruk.PushUpdate, upsertRefs *[]*trackedRef) {
+	var blocker *trackedRef
+	for _, other := range e.tracked {
+		if other.plan.Ref == t.dfBlocker {
+			blocker = other
+			break
+		}
+	}
+	switch {
+	case blocker == nil:
+		t.status = "blocked_df"
+		t.class = string(ClassRefOther)
+		t.reason = "prerequisite delete is missing: " + t.dfBlocker
+	case blocker.status == "deleted":
+		t.plan.Action = ActionCreate
+		t.dfBlocker = ""
+		*upserts, *upsertRefs = e.appendUpsert(*upserts, *upsertRefs, t)
+	case blocker.status == "uncertain":
+		t.status = "uncertain"
+		t.class = string(ClassUncertain)
+		t.reason = "prerequisite delete is uncertain: " + t.dfBlocker
+		t.planID = blocker.planID
+	default:
+		t.status = "blocked_df"
+		t.class = string(ClassRefOther)
+		t.reason = "prerequisite delete failed: " + t.dfBlocker
+	}
+}
+
+func (e *execution) transmitPush(ctx context.Context, requestID string, updates []ruk.PushUpdate) (ruk.PushReply, error) {
+	return ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, requestID, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: updates}, e.auth)
+}
+
+func (e *execution) pushDeletesFirst(ctx context.Context, send func(ctx context.Context, requestID string, updates []ruk.PushUpdate) (ruk.PushReply, error)) error {
 	var deletes, upserts []ruk.PushUpdate
 	var deleteRefs, upsertRefs []*trackedRef
+	var gated []*trackedRef
 	for _, t := range e.tracked {
 		if t.status != "" {
 			continue
@@ -722,14 +821,17 @@ func (e *execution) pushDeletesFirst(ctx context.Context) error {
 		case ActionDelete, ActionPrune:
 			deletes = append(deletes, updateForChecked(t.plan))
 			deleteRefs = append(deleteRefs, t)
-		case ActionCreate, ActionForceUpdate:
-			if e.cfg.Mode == ModeExact && !forceCheckedFor(e.cfg, t.plan.Ref, e.remoteDefault) {
-				upserts = append(upserts, updateForExact(t.plan))
-			} else {
-				upserts = append(upserts, updateForChecked(t.plan))
+		case ActionCreate, ActionForceUpdate, ActionUpdate:
+			upserts, upsertRefs = e.appendUpsert(upserts, upsertRefs, t)
+		case ActionBlockedDF:
+			if t.dfBlocker != "" {
+				gated = append(gated, t)
+				continue
 			}
-			upsertRefs = append(upsertRefs, t)
-		case ActionUpdate, ActionDiverged, ActionIgnoredHidden, ActionBlockedDF, ActionInSync:
+			t.status = "blocked_df"
+			t.class = string(ClassRefOther)
+			t.reason = orDefault(t.reason, "unsupported plan action")
+		case ActionDiverged, ActionIgnoredHidden, ActionInSync:
 			t.status = "blocked_df"
 			t.class = string(ClassRefOther)
 			t.reason = orDefault(t.reason, "unsupported plan action")
@@ -739,14 +841,12 @@ func (e *execution) pushDeletesFirst(ctx context.Context) error {
 			t.reason = orDefault(t.reason, "unsupported plan action")
 		}
 	}
-	seq := 0
 	push := func(updates []ruk.PushUpdate, refs []*trackedRef) error {
 		if len(updates) == 0 {
 			return nil
 		}
-		seq++
-		id := mirrorRequestID(e.loaded.run.PublicID, e.loaded.run.AttemptNo+1, seq)
-		reply, perr := ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, id, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: updates}, e.auth)
+		id := e.nextRequestID()
+		reply, perr := send(ctx, id, updates)
 		if perr != nil {
 			return perr
 		}
@@ -794,6 +894,9 @@ func (e *execution) pushDeletesFirst(ctx context.Context) error {
 	}
 	if perr := push(deletes, deleteRefs); perr != nil {
 		return perr
+	}
+	for _, t := range gated {
+		e.resolveDFGated(t, &upserts, &upsertRefs)
 	}
 	return push(upserts, upsertRefs)
 }
@@ -846,7 +949,7 @@ func (e *execution) resolveUncertain(ctx context.Context) error {
 			}
 		}
 		if len(resend) > 0 {
-			if rerr := e.resendOnce(ctx, resend[0].requestID, resend); rerr != nil {
+			if rerr := e.resendOnce(ctx, resend); rerr != nil {
 				return rerr
 			}
 		}
@@ -854,16 +957,12 @@ func (e *execution) resolveUncertain(ctx context.Context) error {
 	return nil
 }
 
-func (e *execution) resendOnce(ctx context.Context, requestID string, refs []*trackedRef) error {
+func (e *execution) resendOnce(ctx context.Context, refs []*trackedRef) error {
 	updates := make([]ruk.PushUpdate, 0, len(refs))
 	for _, t := range refs {
-		if e.cfg.Mode == ModeExact {
-			updates = append(updates, updateForExact(t.plan))
-		} else {
-			updates = append(updates, updateForChecked(t.plan))
-		}
+		updates = append(updates, e.updateForMode(t))
 	}
-	reply, rerr := ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, requestID, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: updates}, e.auth)
+	reply, rerr := ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, e.nextRequestID(), ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: updates}, e.auth)
 	if rerr != nil {
 		return rerr
 	}
@@ -1041,6 +1140,8 @@ func durationSeconds(s uint64) (time.Duration, error) {
 }
 
 func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, remoteCount *int) (bool, error) {
+	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), mirrorFinishBudget)
+	defer cancel()
 	now := e.worker.now()
 	endMs := now.UnixMilli()
 	for _, t := range e.tracked {
@@ -1127,7 +1228,7 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 		Zero(e.token)
 		e.token = nil
 	}
-	if werr := e.worker.Store.Write(ctx, func(tx *store.WriteTx) error {
+	if werr := e.worker.Store.Write(persist, func(tx *store.WriteTx) error {
 		if uerr := tx.UpdateRun(now, run.ID, run); uerr != nil {
 			return uerr
 		}
@@ -1152,11 +1253,11 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 		return false, fmt.Errorf("finish: %w", werr)
 	}
 	if outcome.requeue {
-		if rerr := e.requeue(ctx, now, run, attemptNo+1, outcome.delay); rerr != nil {
+		if rerr := e.requeue(persist, now, run, attemptNo+1, outcome.delay); rerr != nil {
 			return false, rerr
 		}
 	}
-	return true, e.worker.complete(ctx, e.owner, e.job)
+	return true, e.worker.complete(persist, e.owner, e.job)
 }
 
 func (e *execution) scrub(s string) string {

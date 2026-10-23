@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -317,11 +318,11 @@ func TestComputePlanCoversDefaultBranchOnce(t *testing.T) {
 	m := Mirror{Name: "m", TargetURL: "https://example.com/r.git", HostKind: HostGeneric, Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}
 	local := map[string]string{"refs/heads/main": "new", "refs/heads/feat": "new"}
 	remote := map[string]string{"refs/heads/main": "old", "refs/heads/gone": "old", "refs/pull/1/head": "old"}
-	p, err := ComputePlan(local, remote, m, "main", "")
+	p, err := ComputePlan(local, remote, m, "main", "main", "")
 	if !errors.Is(err, ErrNeedsConfirmation) {
 		t.Fatalf("ComputePlan err = %v, want confirmation", err)
 	}
-	p, err = ComputePlan(local, remote, m, "main", p.Digest)
+	p, err = ComputePlan(local, remote, m, "main", "main", p.Digest)
 	if err != nil {
 		t.Fatalf("confirmed ComputePlan: %v", err)
 	}
@@ -756,4 +757,303 @@ func TestPriorDivergedOverridesPlan(t *testing.T) {
 	if e.tracked[0].status != "diverged" || e.tracked[0].class != string(ClassDiverged) {
 		t.Fatalf("tracked = %+v, want diverged override", e.tracked[0])
 	}
+}
+
+func TestCallBudgetBoundsPushTimeout(t *testing.T) {
+	if got := (Worker{}).callBudget(); got != mirrorCallBudget {
+		t.Fatalf("zero PushTimeout budget = %v, want %v", got, mirrorCallBudget)
+	}
+	if got := (Worker{PushTimeout: -time.Second}).callBudget(); got != mirrorCallBudget {
+		t.Fatalf("negative PushTimeout budget = %v, want %v", got, mirrorCallBudget)
+	}
+	if got := (Worker{PushTimeout: time.Second}).callBudget(); got != time.Second {
+		t.Fatalf("tiny PushTimeout budget = %v, want 1s", got)
+	}
+	if got := (Worker{PushTimeout: 10 * time.Minute}).callBudget(); got != 10*time.Minute {
+		t.Fatalf("huge PushTimeout budget = %v, want 10m", got)
+	}
+}
+
+func TestFinishPersistsOnExpiredDriveCtx(t *testing.T) {
+	w, st, q, now := openWorker(t)
+	repoID := insertRepo(t, st, now, "expired-finish")
+	mirror := insertMirror(t, st, now, repoID, true)
+	pub := "run-expired-1"
+	insertRun(t, st, now, mirror.ID, pub)
+	jobID := "mirror-run:" + pub
+	enqueueMirrorJob(t, q, jobID, repoID, mustMarshalPayload(t, map[string]any{"run": pub, "mirror": mirror.ID}))
+	claimed, cerr := q.ClaimKinds(testCtx(t), "test-owner", []queue.Kind{queue.KindMirrorRun}, mirrorClaimLease, 1)
+	if cerr != nil || len(claimed) != 1 {
+		t.Fatalf("claim = %v, %v", len(claimed), cerr)
+	}
+	var loaded loadedRun
+	if rerr := st.Read(testCtx(t), func(tx *store.ReadTx) error {
+		run, gerr := tx.GetRunByPublicID(pub)
+		if gerr != nil {
+			return gerr
+		}
+		mrow, gerr := tx.GetMirror(mirror.ID)
+		if gerr != nil {
+			return gerr
+		}
+		repo, gerr := tx.GetRepo(repoID)
+		if gerr != nil {
+			return gerr
+		}
+		loaded = loadedRun{run: run, mirror: mrow, repo: repo}
+		return nil
+	}); rerr != nil {
+		t.Fatalf("load rows: %v", rerr)
+	}
+	e := &execution{worker: *w, owner: "test-owner", job: claimed[0], start: now, loaded: loaded, cfg: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll}}
+	ctx, cancel := context.WithCancel(testCtx(t))
+	cancel()
+	done, ferr := e.finish(ctx, runOutcome{runState: "failed", class: "network", summary: "drive budget expired", mirror: "failing", delay: time.Second}, nil, nil)
+	if ferr != nil || !done {
+		t.Fatalf("finish on expired ctx = (%v, %v), want (true, nil)", done, ferr)
+	}
+	jobDone(t, q, jobID)
+	var run store.MirrorRunRow
+	if rerr := st.Read(testCtx(t), func(tx *store.ReadTx) error {
+		row, gerr := tx.GetRunByPublicID(pub)
+		if gerr != nil {
+			return gerr
+		}
+		run = row
+		return nil
+	}); rerr != nil {
+		t.Fatalf("read run: %v", rerr)
+	}
+	if run.State != "failed" || run.AttemptNo != 1 {
+		t.Fatalf("run = %q attempt %d, want failed attempt 1", run.State, run.AttemptNo)
+	}
+}
+
+func TestTrackPlannedUpdatePending(t *testing.T) {
+	w, _, _, _ := openWorker(t)
+	e := &execution{worker: *w, cfg: Mirror{Mode: ModeFastForward}}
+	e.trackPlanned(Plan{Updates: []RefPlan{{Ref: "refs/heads/main", Old: "o", New: "n", Action: ActionUpdate}}})
+	if len(e.tracked) != 1 {
+		t.Fatalf("tracked = %+v, want one entry", e.tracked)
+	}
+	if e.tracked[0].status != "" {
+		t.Fatalf("tracked = %+v, want pending fast-forward update", e.tracked[0])
+	}
+	for _, cfg := range []Mirror{{Mode: ModeFastForward}, {Mode: ModeExact, ProtectDefaultBranch: true}} {
+		e.cfg = cfg
+		up := e.updateForMode(e.tracked[0])
+		if up.RemoteRef != "refs/heads/main" || up.Force {
+			t.Fatalf("mode %q update forced: %+v", cfg.Mode, up)
+		}
+		if up.ExpectedOld == nil || up.ExpectedOld.IsAbsent() {
+			t.Fatalf("mode %q update lacks observed remote expect: %+v", cfg.Mode, up)
+		}
+		if got := *up.ExpectedOld.Present; got != "o" {
+			t.Fatalf("mode %q expected old = %q, want observed remote", cfg.Mode, got)
+		}
+	}
+}
+
+func TestNextRequestIDFreshPerResend(t *testing.T) {
+	e := &execution{loaded: loadedRun{run: store.MirrorRunRow{PublicID: "pub-resend", AttemptNo: 0}}}
+	batchOne, batchTwo, resend := e.nextRequestID(), e.nextRequestID(), e.nextRequestID()
+	seen := map[string]bool{batchOne: true, batchTwo: true, resend: true}
+	if len(seen) != 3 {
+		t.Fatalf("ids not distinct: %q %q %q", batchOne, batchTwo, resend)
+	}
+	if resend == batchOne || resend == batchTwo {
+		t.Fatalf("resend reuses a batch id: %q", resend)
+	}
+	if again := mirrorRequestID("pub-resend", 1, 3); again != resend {
+		t.Fatalf("resend id not execution-scoped: %q vs %q", resend, again)
+	}
+}
+
+func dfTestPlan() Plan {
+	return Plan{
+		Updates: []RefPlan{{Ref: "refs/heads/a/b", New: "new", Action: ActionBlockedDF, Reason: "file/directory conflict with refs/heads/a"}},
+		Deletes: []RefPlan{{Ref: "refs/heads/a", Old: "old", Action: ActionDelete}},
+	}
+}
+
+func dfGatedPair(t *testing.T, e *execution) (gated, blocker *trackedRef) {
+	t.Helper()
+	e.trackPlanned(dfTestPlan())
+	if len(e.tracked) != 2 {
+		t.Fatalf("tracked = %+v, want gated create plus blocker delete", e.tracked)
+	}
+	for _, tr := range e.tracked {
+		switch tr.plan.Ref {
+		case "refs/heads/a/b":
+			gated = tr
+		case "refs/heads/a":
+			blocker = tr
+		}
+	}
+	if gated == nil || blocker == nil {
+		t.Fatalf("tracked = %+v, want both refs", e.tracked)
+	}
+	return gated, blocker
+}
+
+func TestTrackPlannedDFGatedPending(t *testing.T) {
+	w, _, _, _ := openWorker(t)
+	e := &execution{worker: *w, cfg: Mirror{Mode: ModeExact}}
+	gated, _ := dfGatedPair(t, e)
+	if gated.status != "" || gated.dfBlocker != "refs/heads/a" {
+		t.Fatalf("gated = %+v, want pending with blocker", gated)
+	}
+	lonely := &execution{worker: *w, cfg: Mirror{Mode: ModeExact}}
+	lonely.trackPlanned(Plan{Updates: []RefPlan{{Ref: "refs/heads/a/b", New: "new", Action: ActionBlockedDF}}})
+	if len(lonely.tracked) != 1 || lonely.tracked[0].status != "blocked_df" {
+		t.Fatalf("tracked = %+v, want terminal blocked_df without a resolver", lonely.tracked)
+	}
+}
+
+func TestResolveDFGatedOrdersDeletesFirst(t *testing.T) {
+	w, _, _, _ := openWorker(t)
+	t.Run("delete success promotes the create", func(t *testing.T) {
+		e := &execution{worker: *w, cfg: Mirror{Mode: ModeExact}}
+		gated, blocker := dfGatedPair(t, e)
+		blocker.status = "deleted"
+		blocker.class = string(ClassOK)
+		var upserts []ruk.PushUpdate
+		var upsertRefs []*trackedRef
+		e.resolveDFGated(gated, &upserts, &upsertRefs)
+		if gated.plan.Action != ActionCreate || gated.dfBlocker != "" {
+			t.Fatalf("gated = %+v, want promoted create", gated)
+		}
+		if len(upserts) != 1 || len(upsertRefs) != 1 || upsertRefs[0] != gated {
+			t.Fatalf("upserts = %+v, want the promoted create only", upserts)
+		}
+		if upserts[0].RemoteRef != "refs/heads/a/b" || upserts[0].Source.Commit == nil || *upserts[0].Source.Commit != "new" {
+			t.Fatalf("upsert = %+v, want create of new oid", upserts[0])
+		}
+	})
+	t.Run("delete failure blocks the create", func(t *testing.T) {
+		e := &execution{worker: *w, cfg: Mirror{Mode: ModeExact}}
+		gated, blocker := dfGatedPair(t, e)
+		blocker.status = "rejected"
+		blocker.class = string(ClassRefOther)
+		var upserts []ruk.PushUpdate
+		var upsertRefs []*trackedRef
+		e.resolveDFGated(gated, &upserts, &upsertRefs)
+		if gated.status != "blocked_df" {
+			t.Fatalf("gated = %+v, want terminal blocked_df", gated)
+		}
+		if len(upserts) != 0 {
+			t.Fatalf("upserts = %+v, want none pushed", upserts)
+		}
+	})
+	t.Run("delete uncertain keeps the create uncertain", func(t *testing.T) {
+		e := &execution{worker: *w, cfg: Mirror{Mode: ModeExact}}
+		gated, blocker := dfGatedPair(t, e)
+		blocker.status = "uncertain"
+		blocker.class = string(ClassUncertain)
+		blocker.planID = "plan-1"
+		var upserts []ruk.PushUpdate
+		var upsertRefs []*trackedRef
+		e.resolveDFGated(gated, &upserts, &upsertRefs)
+		if gated.status != "uncertain" {
+			t.Fatalf("gated = %+v, want uncertain for re-observation", gated)
+		}
+		if len(upserts) != 0 {
+			t.Fatalf("upserts = %+v, want none pushed", upserts)
+		}
+	})
+}
+
+func confirmBatchReply(plan string) func([]ruk.PushUpdate) ruk.PushReply {
+	return func(updates []ruk.PushUpdate) ruk.PushReply {
+		reply := ruk.PushReply{Plan: plan}
+		for _, u := range updates {
+			status := ruk.ConfirmedStatus(u.Source.Commit)
+			if u.Source.IsDelete() {
+				status = ruk.ConfirmedStatus(nil)
+			}
+			reply.Refs = append(reply.Refs, ruk.PushRefOutcome{RemoteRef: u.RemoteRef, Status: status})
+		}
+		return reply
+	}
+}
+
+func batchRefs(batch []ruk.PushUpdate) map[string]ruk.PushUpdate {
+	out := map[string]ruk.PushUpdate{}
+	for _, u := range batch {
+		out[u.RemoteRef] = u
+	}
+	return out
+}
+
+func TestPushDeletesFirstOrdersDeletesBeforeCreates(t *testing.T) {
+	w, _, _, _ := openWorker(t)
+	t.Run("delete transmits before the gated create", func(t *testing.T) {
+		e := &execution{worker: *w, cfg: Mirror{Mode: ModeExact}}
+		e.trackPlanned(dfTestPlan())
+		var ids []string
+		var batches [][]ruk.PushUpdate
+		send := func(_ context.Context, id string, updates []ruk.PushUpdate) (ruk.PushReply, error) {
+			ids = append(ids, id)
+			batches = append(batches, slices.Clone(updates))
+			return confirmBatchReply("plan-1")(updates), nil
+		}
+		if err := e.pushDeletesFirst(testCtx(t), send); err != nil {
+			t.Fatalf("pushDeletesFirst: %v", err)
+		}
+		if len(batches) != 2 {
+			t.Fatalf("batches = %d, want delete batch then upsert batch", len(batches))
+		}
+		if ids[0] == ids[1] {
+			t.Fatalf("batches share request id %q", ids[0])
+		}
+		first, second := batchRefs(batches[0]), batchRefs(batches[1])
+		if _, found := first["refs/heads/a/b"]; found {
+			t.Fatalf("create transmitted in the delete batch: %+v", batches[0])
+		}
+		del, found := first["refs/heads/a"]
+		if !found || !del.Source.IsDelete() {
+			t.Fatalf("delete batch = %+v, want delete of refs/heads/a", batches[0])
+		}
+		create, found := second["refs/heads/a/b"]
+		if !found || create.Source.Commit == nil || *create.Source.Commit != "new" {
+			t.Fatalf("upsert batch = %+v, want create of refs/heads/a/b after the delete", batches[1])
+		}
+		statuses := map[string]string{}
+		for _, tr := range e.tracked {
+			statuses[tr.plan.Ref] = tr.status
+		}
+		if statuses["refs/heads/a"] != "deleted" || statuses["refs/heads/a/b"] != "ok" {
+			t.Fatalf("statuses = %v, want deleted blocker and ok create", statuses)
+		}
+	})
+	t.Run("failed delete keeps the create out of every batch", func(t *testing.T) {
+		e := &execution{worker: *w, cfg: Mirror{Mode: ModeExact}}
+		e.trackPlanned(dfTestPlan())
+		var batches [][]ruk.PushUpdate
+		send := func(_ context.Context, _ string, updates []ruk.PushUpdate) (ruk.PushReply, error) {
+			batches = append(batches, slices.Clone(updates))
+			reply := ruk.PushReply{Plan: "plan-1"}
+			for _, u := range updates {
+				status := ruk.ConfirmedStatus(u.Source.Commit)
+				if u.RemoteRef == "refs/heads/a" {
+					status = ruk.RejectedStatus("protected")
+				}
+				reply.Refs = append(reply.Refs, ruk.PushRefOutcome{RemoteRef: u.RemoteRef, Status: status})
+			}
+			return reply, nil
+		}
+		if err := e.pushDeletesFirst(testCtx(t), send); err != nil {
+			t.Fatalf("pushDeletesFirst: %v", err)
+		}
+		for _, b := range batches {
+			if _, found := batchRefs(b)["refs/heads/a/b"]; found {
+				t.Fatalf("blocked create transmitted: %+v", batches)
+			}
+		}
+		for _, tr := range e.tracked {
+			if tr.plan.Ref == "refs/heads/a/b" && tr.status != "blocked_df" {
+				t.Fatalf("gated = %+v, want terminal blocked_df", tr)
+			}
+		}
+	})
 }

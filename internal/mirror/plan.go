@@ -43,20 +43,22 @@ var ErrNeedsConfirmation = errors.New("mirror plan needs confirmation")
 
 var excludedPrefixes = []string{"refs/pull/", "refs/merge-requests/", "refs/for/", "refs/ruk/"}
 
-func ComputePlan(local, remote map[string]string, m Mirror, remoteDefaultBranch, confirmedDigest string) (Plan, error) {
+func ComputePlan(local, remote map[string]string, m Mirror, sourceDefaultBranch, remoteDefaultBranch, confirmedDigest string) (Plan, error) {
 	p := Plan{TargetNonEmpty: len(remote) != 0}
 	selected := func(ref string) bool {
 		if hidden(ref) {
 			return true
 		}
 		if !strings.HasPrefix(ref, "refs/heads/") && !strings.HasPrefix(ref, "refs/tags/") {
-			return false
+			if !m.IncludeNotes || !isSyncableNotesRef(ref) {
+				return false
+			}
 		}
 		switch m.RefSelection {
 		case RefSelectionAll:
 			return true
 		case RefSelectionDefaultBranchTags:
-			return strings.HasPrefix(ref, "refs/tags/") || ref == "refs/heads/"+remoteDefaultBranch
+			return strings.HasPrefix(ref, "refs/tags/") || ref == "refs/heads/"+sourceDefaultBranch
 		case RefSelectionGlobs:
 			for _, pattern := range m.Globs {
 				ok, err := path.Match(pattern, ref)
@@ -85,7 +87,7 @@ func ComputePlan(local, remote map[string]string, m Mirror, remoteDefaultBranch,
 			continue
 		}
 		if m.Mode == ModeFastForward {
-			p.Diverged = append(p.Diverged, RefPlan{Ref: ref, Old: old, New: oid, Action: ActionDiverged, Reason: "ancestry must be checked by the daemon"})
+			p.Updates = append(p.Updates, RefPlan{Ref: ref, Old: old, New: oid, Action: ActionUpdate, Reason: "fast-forward is checked by the daemon"})
 		} else {
 			p.Updates = append(p.Updates, RefPlan{Ref: ref, Old: old, New: oid, Action: ActionForceUpdate})
 		}
@@ -144,6 +146,17 @@ func ComputePlan(local, remote map[string]string, m Mirror, remoteDefaultBranch,
 	}
 	return p, nil
 }
+
+func isSyncableNotesRef(ref string) bool {
+	if !strings.HasPrefix(ref, "refs/notes/") {
+		return false
+	}
+	if ref == "refs/notes/ruk-attest" || strings.HasPrefix(ref, "refs/notes/ruk-attest/") {
+		return false
+	}
+	return true
+}
+
 func hidden(ref string) bool {
 	for _, prefix := range excludedPrefixes {
 		if strings.HasPrefix(ref, prefix) {
