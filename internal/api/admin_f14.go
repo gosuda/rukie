@@ -933,6 +933,9 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 			if serr != nil {
 				return AdminTokenCreateOut{}, mapAuthError(serr)
 			}
+			if !target.IsActive {
+				return AdminTokenCreateOut{}, op.Errorf(op.CodeNotFound, "unknown user")
+			}
 			if !target.IsAdmin && (scopes.Has(op.ScopeAdminWrite) || scopes.Has(op.ScopeAdminRead)) {
 				return AdminTokenCreateOut{}, op.Errorf(op.CodeForbidden, "admin scope requires an admin account")
 			}

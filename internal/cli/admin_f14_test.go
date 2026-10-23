@@ -98,19 +98,57 @@ func countLiveRepos(t *testing.T, dbPath string) int {
 // writes the secret to a token file.
 func seedGCAdminToken(t *testing.T, dbPath string) string {
 	t.Helper()
+	return mintGCUserToken(t, dbPath, 1, "gc", op.ScopeAdminWrite)
+}
+
+func mintGCPlebToken(t *testing.T, dbPath string, adminID int64) string {
+	t.Helper()
 	st, err := store.Open(t.Context(), store.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer func() { _ = st.Close(t.Context()) }()
 	svc := auth.New(st)
+	if _, cerr := svc.CreateUser(t.Context(), adminID, auth.CreateUserInput{Name: "pleb", Password: testPassword(t)}, "127.0.0.1"); cerr != nil {
+		t.Fatalf("create pleb: %v", cerr)
+	}
+	meta, lerr := st.LookupUserByName(t.Context(), "pleb")
+	if lerr != nil {
+		t.Fatalf("lookup pleb: %v", lerr)
+	}
+	grants := op.Scopes(0).Add(op.ScopeRepoRead)
 	minted, err := svc.CreateToken(t.Context(), auth.CreateTokenInput{
-		UserID: 1, Name: "gc", Scopes: op.Scopes(0).Add(op.ScopeAdminWrite),
+		UserID: meta.ID, Name: "pleb-token", Scopes: grants,
 	})
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "gc-token")
+	path := filepath.Join(t.TempDir(), "gc-token-pleb-token")
+	if err := os.WriteFile(path, []byte(minted.Secret+"\n"), 0o600); err != nil {
+		t.Fatalf("token file: %v", err)
+	}
+	return path
+}
+
+func mintGCUserToken(t *testing.T, dbPath string, userID int64, name string, scopes ...op.Scope) string {
+	t.Helper()
+	st, err := store.Open(t.Context(), store.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close(t.Context()) }()
+	svc := auth.New(st)
+	grants := op.Scopes(0)
+	for _, s := range scopes {
+		grants = grants.Add(s)
+	}
+	minted, err := svc.CreateToken(t.Context(), auth.CreateTokenInput{
+		UserID: userID, Name: name, Scopes: grants,
+	})
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "gc-token-"+name)
 	if err := os.WriteFile(path, []byte(minted.Secret+"\n"), 0o600); err != nil {
 		t.Fatalf("token file: %v", err)
 	}
@@ -135,6 +173,11 @@ func TestAdminGCDryRunKeepsRows(t *testing.T) {
 	unconfirmed := newIO()
 	if code := runCLI(t, []string{"admin", "gc", "--config", cfgPath, "--token-file", tokenFile}, unconfirmed); code != 64 {
 		t.Fatalf("unconfirmed gc exit %d, want 64", code)
+	}
+	pleb := newIO()
+	plebToken := mintGCPlebToken(t, dbPath, ownerID)
+	if code := runCLI(t, []string{"admin", "gc", "--config", cfgPath, "--dry-run", "--token-file", plebToken}, pleb); code != 3 {
+		t.Fatalf("non-admin gc exit %d, want 3", code)
 	}
 	dry := newIO()
 	if code := runCLI(t, []string{"admin", "gc", "--config", cfgPath, "--dry-run", "--token-file", tokenFile}, dry); code != 0 {
