@@ -274,6 +274,35 @@ func (d *commandDriver) sendStdin(ctx context.Context, stdin io.Reader) error {
 	}
 }
 
+func (d *commandDriver) writeStdout(payload []byte) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	if _, err := d.stdout.Write(payload); err != nil {
+		return fmt.Errorf("RunCommand: stdout: %w", err)
+	}
+	credit, err := jsonv2.Marshal(wire.WindowCredit{Direction: "stdout", CreditBytes: uint64(len(payload))})
+	if err != nil {
+		return fmt.Errorf("RunCommand: %w: stdout credit encodes: %w", ErrProtocol, err)
+	}
+	if err := d.pc.writeKind(KindWindowUpdate, d.id, credit); err != nil {
+		return fmt.Errorf("RunCommand: %w: %w", err, ErrOutcomeUnknown)
+	}
+	return nil
+}
+
+func (d *commandDriver) appendStderr(payload []byte) {
+	if uint64(len(d.stderr)) >= commandStderrCap {
+		return
+	}
+	room := commandStderrCap - len(d.stderr)
+	if len(payload) > room {
+		d.stderr = append(d.stderr, payload[:room]...)
+		return
+	}
+	d.stderr = append(d.stderr, payload...)
+}
+
 func (d *commandDriver) refill(ctx context.Context) error {
 	for {
 		frame, err := d.readAbortable(ctx)
@@ -284,6 +313,12 @@ func (d *commandDriver) refill(ctx context.Context) error {
 			return fmt.Errorf("RunCommand: %w: frame on stream %d", ErrProtocol, frame.Stream)
 		}
 		switch frame.Kind {
+		case KindStdout:
+			if err := d.writeStdout(frame.Payload); err != nil {
+				return err
+			}
+		case KindStderr:
+			d.appendStderr(frame.Payload)
 		case KindWindowUpdate:
 			var credit wire.WindowCredit
 			if err := jsonv2.Unmarshal(frame.Payload, &credit, jsonv1.DefaultOptionsV1()); err != nil {
@@ -294,6 +329,14 @@ func (d *commandDriver) refill(ctx context.Context) error {
 			}
 			d.window += credit.Credit()
 			return nil
+		case KindHookCall:
+			if herr := d.answerHook(ctx, frame.Payload); herr != nil {
+				if errors.Is(herr, errHookTimeout) {
+					d.hookErr = herr
+					continue
+				}
+				return herr
+			}
 		case KindError:
 			d.recordRefusal(frame.Payload)
 		case KindExit:
@@ -306,7 +349,7 @@ func (d *commandDriver) refill(ctx context.Context) error {
 				return errorFromReply("Command "+d.service, d.refusal, d.invoking, Unknown)
 			}
 			return commandTerminal{report: report, completed: completed}
-		case KindOpen, KindAccepted, KindStdin, KindStdinEOF, KindStdout, KindStderr, KindCancel, KindHookCall, KindHookReply:
+		case KindOpen, KindAccepted, KindStdin, KindStdinEOF, KindCancel, KindHookReply:
 			return fmt.Errorf("RunCommand: %w: kind %d during stdin", ErrProtocol, uint8(frame.Kind))
 		}
 	}
@@ -374,27 +417,11 @@ func (d *commandDriver) drain(ctx context.Context) (wire.CommandExitReport, []by
 		}
 		switch frame.Kind {
 		case KindStdout:
-			if len(frame.Payload) > 0 {
-				if _, err := d.stdout.Write(frame.Payload); err != nil {
-					return wire.CommandExitReport{}, d.stderr, false, fmt.Errorf("RunCommand: stdout: %w", err)
-				}
-				credit, err := jsonv2.Marshal(wire.WindowCredit{Direction: "stdout", CreditBytes: uint64(len(frame.Payload))})
-				if err != nil {
-					return d.fail("credit encodes")
-				}
-				if err := d.pc.writeKind(KindWindowUpdate, d.id, credit); err != nil {
-					return wire.CommandExitReport{}, d.stderr, false, fmt.Errorf("RunCommand: %w: %w", err, ErrOutcomeUnknown)
-				}
+			if err := d.writeStdout(frame.Payload); err != nil {
+				return wire.CommandExitReport{}, d.stderr, false, err
 			}
 		case KindStderr:
-			if uint64(len(d.stderr)) < commandStderrCap {
-				room := commandStderrCap - len(d.stderr)
-				if len(frame.Payload) > room {
-					d.stderr = append(d.stderr, frame.Payload[:room]...)
-				} else {
-					d.stderr = append(d.stderr, frame.Payload...)
-				}
-			}
+			d.appendStderr(frame.Payload)
 		case KindWindowUpdate:
 			var credit wire.WindowCredit
 			if err := jsonv2.Unmarshal(frame.Payload, &credit, jsonv1.DefaultOptionsV1()); err != nil {

@@ -149,12 +149,11 @@ type WebhooksConfig struct {
 }
 
 type RateLimitConfig struct {
-	RequestsPerMinute    uint `toml:"requests_per_minute"`
-	AnonymousPerMinute   uint `toml:"anonymous_per_minute"`
-	PushPerMinutePerRepo uint `toml:"push_per_minute_per_repo"`
-	Burst                uint `toml:"burst"`
-	BanMinutes           uint `toml:"ban_minutes"`
-	Enabled              bool `toml:"enabled"`
+	RequestsPerMinute  uint `toml:"requests_per_minute"`
+	AnonymousPerMinute uint `toml:"anonymous_per_minute"`
+	Burst              uint `toml:"burst"`
+	BanMinutes         uint `toml:"ban_minutes"`
+	Enabled            bool `toml:"enabled"`
 }
 
 type TelemetryConfig struct {
@@ -184,6 +183,7 @@ type Config struct {
 	Mirrors       MirrorsConfig   `toml:"mirrors"`
 }
 
+// Defaults returns the production configuration with rate limits matching the limiter defaults.
 func Defaults() Config {
 	return Config{
 		Log: LogConfig{Level: "info", Format: "json"},
@@ -214,7 +214,7 @@ func Defaults() Config {
 			MaxPayloadBytes: 1048576, QueueDepth: 4096, Enabled: true,
 		},
 		Git:       GitConfig{MaxBodyBytes: 256 << 20},
-		RateLimit: RateLimitConfig{RequestsPerMinute: 600, AnonymousPerMinute: 60, PushPerMinutePerRepo: 30, Burst: 50},
+		RateLimit: RateLimitConfig{RequestsPerMinute: 300, AnonymousPerMinute: 60, Burst: 600, BanMinutes: 10, Enabled: true},
 		Telemetry: TelemetryConfig{OTLPProtocol: "http/protobuf", ServiceName: "rukie", Environment: "prod", TraceSampleRatio: 0.1},
 	}
 }

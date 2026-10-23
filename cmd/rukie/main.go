@@ -627,6 +627,16 @@ func llmsBase(cfg config.Config) string {
 	return ""
 }
 
+func newRateLimiter(cfg config.RateLimitConfig) *access.Limiter {
+	return access.NewLimiterWithConfig(access.LimiterConfig{
+		RequestsPerMinute:  cfg.RequestsPerMinute,
+		AnonymousPerMinute: cfg.AnonymousPerMinute,
+		Burst:              cfg.Burst,
+		BanMinutes:         cfg.BanMinutes,
+		Enabled:            cfg.Enabled,
+	})
+}
+
 func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *supervisor.Supervisor) (*app, func(), error) {
 	cleanup := func() {}
 	holdBarrier := func() (func(), bool) {
@@ -674,7 +684,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	cleanup = func() {
 		_ = st.Close(context.Background())
 	}
-	limiter := access.NewLimiter()
+	limiter := newRateLimiter(cfg.RateLimit)
 	authDeps := api.Deps{Service: authSvc, Limiter: limiter, Reveals: auth.NewRevealCache(), Store: st}
 	if regErr := api.RegisterAuth(table, authDeps); regErr != nil {
 		cleanup()

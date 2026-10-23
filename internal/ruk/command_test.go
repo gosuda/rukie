@@ -4,10 +4,16 @@ package ruk
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	jsonv2 "encoding/json/v2"
 
 	"github.com/gosuda/rukie/internal/ruk/wire"
 )
@@ -40,6 +46,61 @@ func TestCommandAdvertiseRoundTrip(t *testing.T) {
 	}
 	if !strings.HasSuffix(stdout.String(), "0000") || !strings.Contains(stdout.String(), "multi_ack") {
 		t.Fatalf("advertisement %q is not a v0 upload-pack document", stdout.String())
+	}
+}
+
+func TestCommandRefillAcceptsInterleavedOutput(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	})
+	var stdout bytes.Buffer
+	driver := &commandDriver{pc: &conn{nc: clientConn, writeEvery: time.Second}, id: 1, stdout: &stdout}
+	serverDone := make(chan error, 1)
+	go func() {
+		if err := writeFrame(serverConn, KindStdout, 1, []byte("NAK\n")); err != nil {
+			serverDone <- err
+			return
+		}
+		creditFrame, err := readFrame(serverConn)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if creditFrame.Kind != KindWindowUpdate {
+			serverDone <- fmt.Errorf("stdout credit kind = %d", creditFrame.Kind)
+			return
+		}
+		err = writeFrame(serverConn, KindStderr, 1, []byte("warning"))
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		credit, err := jsonv2.Marshal(wire.WindowCredit{Direction: "stdin", CreditBytes: 5})
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- writeFrame(serverConn, KindWindowUpdate, 1, credit)
+	}()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := driver.refill(ctx); err != nil {
+		t.Fatalf("refill: %v", err)
+	}
+	if got := stdout.String(); got != "NAK\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+	if got := string(driver.stderr); got != "warning" {
+		t.Fatalf("stderr = %q", got)
+	}
+	if driver.window != 5 {
+		t.Fatalf("window = %d, want 5", driver.window)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("scripted daemon: %v", err)
 	}
 }
 
