@@ -266,21 +266,55 @@ func (f *fakeStore) RedeliverWebhookMessage(_ context.Context, id string, nowMil
 	return nil
 }
 
-func (f *fakeStore) NoteEndpointResult(_ context.Context, endpointID string, consecutiveFailures int64, lastStatus string, disable bool, disableReason string, nowMillis int64) error {
+func (f *fakeStore) NoteEndpointSuccess(_ context.Context, endpointID string, _ int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ep, ok := f.endpoints[endpointID]
 	if !ok {
 		return store.ErrNotFound
 	}
-	ep.ConsecutiveFailures = consecutiveFailures
-	ep.LastStatus = lastStatus
-	if disable {
-		ep.Active = false
-		ep.DisableReason = disableReason
-		ep.DisabledAt = nowMillis
-	}
+	ep.ConsecutiveFailures = 0
+	ep.LastStatus = "ok"
 	return nil
+}
+
+func (f *fakeStore) NoteEndpointFailure(_ context.Context, endpointID string, nowMillis int64) (store.WebhookEndpointRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ep, ok := f.endpoints[endpointID]
+	if !ok {
+		return store.WebhookEndpointRow{}, store.ErrNotFound
+	}
+	ep.ConsecutiveFailures++
+	ep.UpdatedAt = nowMillis
+	switch {
+	case ep.ConsecutiveFailures >= store.WebhookSuspendAfterFailures:
+		ep.LastStatus = "disabled"
+		ep.Active = false
+		ep.DisableReason = "undeliverable"
+		ep.DisabledAt = nowMillis
+	case ep.ConsecutiveFailures >= store.WebhookWarnAfterFailures:
+		if ep.LastStatus != "disabled" {
+			ep.LastStatus = "failing"
+		}
+	}
+	return *ep, nil
+}
+
+func (f *fakeStore) NoteEndpointGone(_ context.Context, endpointID string, nowMillis int64, reason string) (store.WebhookEndpointRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ep, ok := f.endpoints[endpointID]
+	if !ok {
+		return store.WebhookEndpointRow{}, store.ErrNotFound
+	}
+	ep.ConsecutiveFailures++
+	ep.LastStatus = "disabled"
+	ep.Active = false
+	ep.DisableReason = reason
+	ep.DisabledAt = nowMillis
+	ep.UpdatedAt = nowMillis
+	return *ep, nil
 }
 
 func (f *fakeStore) PruneWebhookHistory(_ context.Context, beforeMillis int64) (int64, error) {
@@ -1425,6 +1459,51 @@ func TestWorkerNoStoreErrors(t *testing.T) {
 	}
 	if _, err := w.JanitorOnce(t.Context(), time.Hour); err == nil {
 		t.Fatal("JanitorOnce without store succeeded")
+	}
+}
+
+func TestWorkerConcurrentFailuresConverge(t *testing.T) {
+	now := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	fake := newFakeStore(now)
+	fake.sealEndpoint(t, "ep1", func(ep *store.WebhookEndpointRow) { ep.Concurrency = 8 })
+	for i := range 8 {
+		fake.addMessage("conc-"+strconv.Itoa(i), "ep1")
+	}
+	w := testWorker(fake, statusSend(500))
+	if err := w.DriveOnce(t.Context()); err != nil {
+		t.Fatalf("drive: %v", err)
+	}
+	ep, _ := fake.GetWebhookEndpoint(t.Context(), "ep1")
+	if ep.ConsecutiveFailures != 8 {
+		t.Fatalf("failures = %d, want 8", ep.ConsecutiveFailures)
+	}
+}
+
+func TestWorkerFailureThenSuccessKeepsReset(t *testing.T) {
+	fake := newFakeStore(time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC))
+	fake.sealEndpoint(t, "ep1", func(ep *store.WebhookEndpointRow) { ep.ConsecutiveFailures = 4 })
+	fake.addMessage("fail-then-ok", "ep1")
+	status := int64(500)
+	w := testWorker(fake, func(ctx context.Context, m store.WebhookMessageRow, e store.WebhookEndpointRow, secrets DeliverySecrets, ts int64, b []byte) (int64, []byte, []byte, string) {
+		return statusSend(status)(ctx, m, e, secrets, ts, b)
+	})
+	if err := w.DriveOnce(t.Context()); err != nil {
+		t.Fatalf("failing drive: %v", err)
+	}
+	if ep, _ := fake.GetWebhookEndpoint(t.Context(), "ep1"); ep.ConsecutiveFailures != 5 {
+		t.Fatalf("after failure = %d, want 5", ep.ConsecutiveFailures)
+	}
+	fake.advance(time.Hour)
+	fake.mu.Lock()
+	fake.messages["fail-then-ok"].NextAttemptAt = fake.now.UnixMilli()
+	fake.mu.Unlock()
+	status = 200
+	if err := w.DriveOnce(t.Context()); err != nil {
+		t.Fatalf("success drive: %v", err)
+	}
+	ep, _ := fake.GetWebhookEndpoint(t.Context(), "ep1")
+	if ep.ConsecutiveFailures != 0 || ep.LastStatus != "ok" {
+		t.Fatalf("after success = %+v, want reset to 0/ok", ep)
 	}
 }
 

@@ -74,9 +74,14 @@ type MessageRequeuer interface {
 	RedeliverWebhookMessage(ctx context.Context, id string, nowMillis int64) error
 }
 
-// EndpointReporter persists failure counters and suspension.
+// EndpointReporter persists delivery outcomes. NoteEndpointSuccess resets the
+// counter absolutely (idempotent); NoteEndpointFailure and NoteEndpointGone
+// increment relative to the in-transaction value so concurrent deliveries
+// cannot clobber each other or a success reset.
 type EndpointReporter interface {
-	NoteEndpointResult(ctx context.Context, endpointID string, consecutiveFailures int64, lastStatus string, disable bool, disableReason string, nowMillis int64) error
+	NoteEndpointSuccess(ctx context.Context, endpointID string, nowMillis int64) error
+	NoteEndpointFailure(ctx context.Context, endpointID string, nowMillis int64) (store.WebhookEndpointRow, error)
+	NoteEndpointGone(ctx context.Context, endpointID string, nowMillis int64, reason string) (store.WebhookEndpointRow, error)
 }
 
 // HistoryPruner deletes delivered and dead history before a bound.
@@ -450,7 +455,7 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 			}
 			return fmt.Errorf("deliverOne: %w", derr)
 		}
-		if nerr := w.cfg.backend.NoteEndpointResult(ctx, endpoint.ID, 0, "ok", false, "", now.UnixMilli()); nerr != nil {
+		if nerr := w.cfg.backend.NoteEndpointSuccess(ctx, endpoint.ID, now.UnixMilli()); nerr != nil {
 			return fmt.Errorf("deliverOne: %w", nerr)
 		}
 		return nil
@@ -461,7 +466,7 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 			}
 			return fmt.Errorf("deliverOne: %w", derr)
 		}
-		if nerr := w.cfg.backend.NoteEndpointResult(ctx, endpoint.ID, endpoint.ConsecutiveFailures+1, "disabled", true, "410-gone", now.UnixMilli()); nerr != nil {
+		if _, nerr := w.cfg.backend.NoteEndpointGone(ctx, endpoint.ID, now.UnixMilli(), "410-gone"); nerr != nil {
 			return fmt.Errorf("deliverOne: %w", nerr)
 		}
 		return nil
@@ -574,16 +579,7 @@ func (w *Worker) failAttempt(ctx context.Context, msg store.WebhookMessageRow, e
 		}
 		return fmt.Errorf("failAttempt: %w", rerr)
 	}
-	failures := endpoint.ConsecutiveFailures + 1
-	lastStatus, disable := applyFailure(failures)
-	if lastStatus == "" {
-		lastStatus = endpoint.LastStatus
-	}
-	reason := ""
-	if disable {
-		reason = "undeliverable"
-	}
-	if nerr := w.cfg.backend.NoteEndpointResult(ctx, endpoint.ID, failures, lastStatus, disable, reason, nowMillis); nerr != nil {
+	if _, nerr := w.cfg.backend.NoteEndpointFailure(ctx, endpoint.ID, nowMillis); nerr != nil {
 		return fmt.Errorf("failAttempt: %w", nerr)
 	}
 	return nil
@@ -652,12 +648,11 @@ func applyJitterPct(d time.Duration, pct float64) time.Duration {
 }
 
 // applyFailure maps the post-increment failure count to the endpoint
-// status and whether the endpoint suspends itself.
 func applyFailure(consecutive int64) (string, bool) {
 	switch {
-	case consecutive >= 200:
+	case consecutive >= store.WebhookSuspendAfterFailures:
 		return "disabled", true
-	case consecutive >= 50:
+	case consecutive >= store.WebhookWarnAfterFailures:
 		return "failing", false
 	default:
 		return "", false
@@ -837,19 +832,39 @@ func (s *StoreTx) RedeliverWebhookMessage(ctx context.Context, id string, nowMil
 	})
 }
 
-// NoteEndpointResult persists failure counters and suspension.
-func (s *StoreTx) NoteEndpointResult(ctx context.Context, endpointID string, consecutiveFailures int64, lastStatus string, disable bool, disableReason string, nowMillis int64) error {
+// NoteEndpointSuccess resets the failure counter after a 2xx delivery.
+func (s *StoreTx) NoteEndpointSuccess(ctx context.Context, endpointID string, nowMillis int64) error {
 	return s.DB.Write(ctx, func(tx *store.WriteTx) error {
-		up := store.WebhookEndpointUpdate{ConsecutiveFailures: &consecutiveFailures, LastStatus: &lastStatus}
-		if disable {
-			active := false
-			up.Active = &active
-			up.DisableReason = &disableReason
-			up.DisabledAt = &nowMillis
-		}
-		_, err := tx.UpdateWebhookEndpoint(endpointID, time.UnixMilli(nowMillis), up)
+		var zero int64
+		ok := "ok"
+		_, err := tx.UpdateWebhookEndpoint(endpointID, time.UnixMilli(nowMillis),
+			store.WebhookEndpointUpdate{ConsecutiveFailures: &zero, LastStatus: &ok})
 		return err
 	})
+}
+
+// NoteEndpointFailure records one failed delivery with an in-transaction
+// relative increment.
+func (s *StoreTx) NoteEndpointFailure(ctx context.Context, endpointID string, nowMillis int64) (store.WebhookEndpointRow, error) {
+	var row store.WebhookEndpointRow
+	err := s.DB.Write(ctx, func(tx *store.WriteTx) error {
+		var err error
+		row, err = tx.NoteWebhookFailure(endpointID, nowMillis)
+		return err
+	})
+	return row, err
+}
+
+// NoteEndpointGone records one failed delivery to a gone endpoint with an
+// in-transaction relative increment plus suspension.
+func (s *StoreTx) NoteEndpointGone(ctx context.Context, endpointID string, nowMillis int64, reason string) (store.WebhookEndpointRow, error) {
+	var row store.WebhookEndpointRow
+	err := s.DB.Write(ctx, func(tx *store.WriteTx) error {
+		var err error
+		row, err = tx.NoteWebhookGone(endpointID, nowMillis, reason)
+		return err
+	})
+	return row, err
 }
 
 // PruneWebhookHistory deletes delivered and dead history before a bound.

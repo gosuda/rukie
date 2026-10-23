@@ -2,10 +2,31 @@ package api
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net/http"
 
 	"github.com/gosuda/rukie/internal/op"
 )
+
+func webhookEndpointListTag(out WebhookEndpointListOut) string {
+	h := fnv.New64a()
+	for _, e := range out.Endpoints {
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00", e.ID, e.UpdatedAt)
+	}
+	_, _ = fmt.Fprintf(h, "\x00%s", out.Next)
+	return fmt.Sprintf("\"webhook-endpoints-%x\"", h.Sum64())
+}
+
+func webhookMessageListTag(out WebhookMessageListOut) string {
+	h := fnv.New64a()
+	for _, m := range out.Messages {
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s\x00",
+			m.ID, m.EndpointID, m.State, m.AttemptCount, m.NextAttemptAt,
+			m.LastStatusCode, m.DeliveredAt, m.LastError, m.RedeliveryOf)
+	}
+	_, _ = fmt.Fprintf(h, "\x00%s", out.Next)
+	return fmt.Sprintf("\"webhook-messages-%x\"", h.Sum64())
+}
 
 // RegisterWebhook registers the F8 signed-webhook operations. Repo-family
 // paths carry the repo; owner-scope endpoints additionally exist under the
@@ -28,9 +49,7 @@ func RegisterWebhook(t *op.Table, deps Deps) error {
 		Scope: op.ScopeWebhooksRead, Summary: "List webhook endpoints",
 		Description: "Endpoints of one repository (repo scope) or one owner (owner scope), oldest first. Secrets never leave the create and rotate responses.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
-		ETag: func(out WebhookEndpointListOut) string {
-			return fmt.Sprintf("\"webhook-endpoints-%d-%s\"", len(out.Endpoints), out.Next)
-		},
+		ETag:        webhookEndpointListTag,
 		Pagination: &op.Pagination[WebhookEndpointListOut]{Default: 30, Max: 100, Next: func(out WebhookEndpointListOut) (string, bool) {
 			if out.Next == "" {
 				return "", false
@@ -94,9 +113,7 @@ func RegisterWebhook(t *op.Table, deps Deps) error {
 		Scope: op.ScopeWebhooksRead, Summary: "List endpoint messages",
 		Description: "Outbox and delivery-log rows of one endpoint, newest first, with an optional state filter. Payload bytes stay on the single-message read.",
 		Problems:    []op.Code{op.CodeNotFound, op.CodeInvalid, op.CodeForbidden},
-		ETag: func(out WebhookMessageListOut) string {
-			return fmt.Sprintf("\"webhook-messages-%d-%s\"", len(out.Messages), out.Next)
-		},
+		ETag:        webhookMessageListTag,
 		Pagination: &op.Pagination[WebhookMessageListOut]{Default: 30, Max: 100, Next: func(out WebhookMessageListOut) (string, bool) {
 			if out.Next == "" {
 				return "", false

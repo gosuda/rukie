@@ -34,6 +34,14 @@ var WebhookEventTypes = []string{
 	"repo.deleted",
 }
 
+// Webhook failure-count thresholds shared by the store's relative failure
+// recorder and the delivery worker's status derivation: 50 consecutive
+// failures mark the endpoint "failing", 200 suspend it.
+const (
+	WebhookWarnAfterFailures    = 50
+	WebhookSuspendAfterFailures = 200
+)
+
 var validWebhookEvent = func() map[string]bool {
 	m := make(map[string]bool, len(WebhookEventTypes))
 	for _, t := range WebhookEventTypes {
@@ -579,6 +587,65 @@ disabled_at = ?, disable_reason = ?, updated_at = ? WHERE id = ?`,
 	return tx.GetWebhookEndpoint(id)
 }
 
+// NoteWebhookFailure records one failed delivery with a relative increment:
+// the counter advances from its in-transaction value and the
+// warning/suspension status derives from that value in the same write
+// transaction, so concurrent deliveries converge on the correct count and a
+// concurrent success reset is never clobbered by a stale snapshot write.
+// Suspension derives from WebhookSuspendAfterFailures ("undeliverable") and
+// the warn threshold marks "failing". A missing endpoint reports ErrNotFound.
+func (tx *WriteTx) NoteWebhookFailure(id string, nowMillis int64) (WebhookEndpointRow, error) {
+	return tx.noteWebhookFailure(id, nowMillis, false, "")
+}
+
+// NoteWebhookGone records one failed delivery to a permanently gone endpoint
+// (410-gone): the counter still increments relatively, and the endpoint
+// suspends regardless of the count with the caller's reason. A missing
+// endpoint reports ErrNotFound.
+func (tx *WriteTx) NoteWebhookGone(id string, nowMillis int64, reason string) (WebhookEndpointRow, error) {
+	return tx.noteWebhookFailure(id, nowMillis, true, reason)
+}
+
+func (tx *WriteTx) noteWebhookFailure(id string, nowMillis int64, forceDisable bool, disableReason string) (WebhookEndpointRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return WebhookEndpointRow{}, err
+	}
+	n, uerr := execAffected(tx.ctx, inner, `UPDATE webhook_endpoints SET
+consecutive_failures = consecutive_failures + 1, updated_at = ? WHERE id = ?`,
+		nowMillis, id)
+	if uerr != nil {
+		return WebhookEndpointRow{}, fmt.Errorf("noteWebhookFailure: %w", mapErr(uerr))
+	}
+	if n == 0 {
+		return WebhookEndpointRow{}, fmt.Errorf("noteWebhookFailure: %w: %s", ErrNotFound, id)
+	}
+	row, gerr := tx.GetWebhookEndpoint(id)
+	if gerr != nil {
+		return WebhookEndpointRow{}, gerr
+	}
+	status := row.LastStatus
+	active := row.Active
+	reason := row.DisableReason
+	disabledAt := row.DisabledAt
+	switch {
+	case forceDisable:
+		status, active, reason, disabledAt = "disabled", false, disableReason, nowMillis
+	case row.ConsecutiveFailures >= WebhookSuspendAfterFailures:
+		status, active, reason, disabledAt = "disabled", false, "undeliverable", nowMillis
+	case row.ConsecutiveFailures >= WebhookWarnAfterFailures:
+		if status != "disabled" {
+			status = "failing"
+		}
+	}
+	if _, uerr := inner.ExecContext(tx.ctx, `UPDATE webhook_endpoints SET
+last_status = ?, active = ?, disable_reason = ?, disabled_at = ?, updated_at = ?
+WHERE id = ?`, status, boolInt(active), reason, nullInt(sql.NullInt64{Int64: disabledAt, Valid: disabledAt != 0}), nowMillis, id); uerr != nil {
+		return WebhookEndpointRow{}, fmt.Errorf("noteWebhookFailure: %w", mapErr(uerr))
+	}
+	return tx.GetWebhookEndpoint(id)
+}
+
 // DeleteWebhookEndpoint removes one endpoint; its messages and attempts cascade.
 func (tx *WriteTx) DeleteWebhookEndpoint(id string) error {
 	inner, err := tx.live()
@@ -693,7 +760,14 @@ const webhookLeaseMillis = 5 * 60 * 1000
 // owned by leaseOwner. An empty leaseOwner is rejected. Per-endpoint concurrency
 // is enforced: at most perEndpointCap rows per endpoint are
 // inflight-or-newly-claimed (perEndpointCap <= 0 falls back to each endpoint's own
-// concurrency). Inactive endpoints and endpoints at cap are skipped.
+// concurrency). Inactive endpoints are excluded from candidate selection in SQL
+// (not after a LIMIT) so a disabled endpoint with many due pendings cannot
+// occupy every batch, and endpoints already at cap are skipped during selection
+// so one capped endpoint cannot monopolize candidates either. Every pick takes
+// the globally earliest claimable row, preserving next-attempt ordering. The
+// loop ends after batch claims, when no claimable row remains, or after a
+// bounded number of contested picks (a concurrent claimer stole the row;
+// claiming is best-effort per drive).
 func (tx *WriteTx) ClaimWebhookMessages(nowMillis int64, batch int, perEndpointCap int, leaseOwner string) ([]WebhookMessageRow, error) {
 	if leaseOwner == "" {
 		return nil, fmt.Errorf("ClaimWebhookMessages: %w: lease owner is required", ErrInvalid)
@@ -705,44 +779,52 @@ func (tx *WriteTx) ClaimWebhookMessages(nowMillis int64, batch int, perEndpointC
 	if err != nil {
 		return nil, err
 	}
-	rows, err := inner.QueryContext(tx.ctx, `SELECT `+webhookMessageColumns+` FROM webhook_messages
-WHERE state = 'pending' AND next_attempt_at <= ? ORDER BY next_attempt_at ASC, id ASC LIMIT ?`, nowMillis, batch)
-	if err != nil {
-		return nil, fmt.Errorf("ClaimWebhookMessages: %w", err)
-	}
-	var candidates []WebhookMessageRow
-	for rows.Next() {
-		r, serr := scanWebhookMessage(rows.Scan)
-		if serr != nil {
-			_ = rows.Close()
-			return nil, serr
-		}
-		candidates = append(candidates, r)
-	}
-	if cerr := rows.Err(); cerr != nil {
-		_ = rows.Close()
-		return nil, fmt.Errorf("ClaimWebhookMessages: %w", cerr)
-	}
-	_ = rows.Close()
 	inflight := map[string]int64{}
 	claimed := map[string]int64{}
-	concurrency := map[string]int64{}
+	exhausted := map[string]bool{}
 	var out []WebhookMessageRow
-	for _, c := range candidates {
-		capN, ok := concurrency[c.EndpointID]
-		if !ok {
-			ep, gerr := tx.GetWebhookEndpoint(c.EndpointID)
-			if gerr != nil {
-				continue
+	stalls := 0
+	for len(out) < batch {
+		query := `SELECT m.id, m.endpoint_id, m.outbox_seq, m.event_type, m.event_time,
+m.payload, m.state, m.attempt_count, m.next_attempt_at, m.lease_expires_at, m.lease_owner, m.last_error,
+m.last_status_code, m.delivered_at, m.redelivery_of, m.updated_at FROM webhook_messages m
+JOIN webhook_endpoints e ON e.id = m.endpoint_id
+WHERE m.state = 'pending' AND m.next_attempt_at <= ? AND e.active = 1`
+		args := []any{nowMillis}
+		if len(exhausted) > 0 {
+			query += ` AND m.endpoint_id NOT IN (`
+			first := true
+			for id := range exhausted {
+				if !first {
+					query += `,`
+				}
+				query += `?`
+				args = append(args, id)
+				first = false
 			}
-			if !ep.Active {
-				continue
+			query += `)`
+		}
+		query += ` ORDER BY m.next_attempt_at ASC, m.id ASC LIMIT 1`
+		c, serr := scanWebhookMessage(inner.QueryRowContext(tx.ctx, query, args...).Scan)
+		if serr != nil {
+			if errors.Is(serr, sql.ErrNoRows) || errors.Is(serr, ErrNotFound) {
+				break
 			}
-			capN = ep.Concurrency
-			if capN <= 0 {
-				capN = 4
+			return nil, fmt.Errorf("ClaimWebhookMessages: %w", serr)
+		}
+		ep, gerr := tx.GetWebhookEndpoint(c.EndpointID)
+		if gerr != nil || !ep.Active {
+			exhausted[c.EndpointID] = true
+			continue
+		}
+		want := int64(perEndpointCap)
+		if want <= 0 {
+			want = ep.Concurrency
+			if want <= 0 {
+				want = 4
 			}
-			concurrency[c.EndpointID] = capN
+		}
+		if _, ok := inflight[c.EndpointID]; !ok {
 			var n int64
 			if qerr := inner.QueryRowContext(tx.ctx, `SELECT count(*) FROM webhook_messages
 WHERE endpoint_id = ? AND state = 'inflight'`, c.EndpointID).Scan(&n); qerr != nil {
@@ -750,11 +832,8 @@ WHERE endpoint_id = ? AND state = 'inflight'`, c.EndpointID).Scan(&n); qerr != n
 			}
 			inflight[c.EndpointID] = n
 		}
-		want := int64(perEndpointCap)
-		if want <= 0 {
-			want = capN
-		}
 		if inflight[c.EndpointID]+claimed[c.EndpointID] >= want {
+			exhausted[c.EndpointID] = true
 			continue
 		}
 		n, uerr := execAffected(tx.ctx, inner, `UPDATE webhook_messages SET
@@ -764,6 +843,10 @@ state = 'inflight', lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE 
 			return nil, fmt.Errorf("ClaimWebhookMessages: %w", uerr)
 		}
 		if n == 0 {
+			stalls++
+			if stalls > 64 {
+				break
+			}
 			continue
 		}
 		claimed[c.EndpointID]++

@@ -773,3 +773,149 @@ func TestWebhookOwnerScopeEndpoint(t *testing.T) {
 	// And stays invisible to outsiders under any path.
 	f8problem(t, f8do(t, e, "GET", "/acme/other/settings/hooks/"+id, btoken, ""), http.StatusForbidden, "forbidden")
 }
+
+func TestWebhookRepoRestrictedTokenDeniedOnOtherRepo(t *testing.T) {
+	e := buildF8Env(t)
+	f8bootstrap(t, e, "ada")
+	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	repoA := f8seedRepo(t, e, ada.ID, "repoa")
+	_ = f8seedRepo(t, e, ada.ID, "repob")
+	parsed, perr := auth.ParseScopeSet([]string{"repo:read", "webhooks:read", "webhooks:write"})
+	if perr != nil {
+		t.Fatalf("scopes: %v", perr)
+	}
+	secret, serr := e.svc.CreateToken(t.Context(), auth.CreateTokenInput{
+		Name: "scoped-a", Scopes: parsed, UserID: ada.ID, Repos: []int64{repoA},
+	})
+	if serr != nil {
+		t.Fatalf("scoped token: %v", serr)
+	}
+	scoped := "Bearer " + secret.Secret
+	if code, decoded := f8createEndpoint(t, e, scoped, "/ada/repoa/settings/hooks",
+		`{"scope":"repo","url":"https://hooks.example.test/a","event_types":["task.created"]}`); code != http.StatusCreated {
+		t.Fatalf("bound-repo create = %d: %v", code, decoded)
+	}
+	f8problem(t, f8do(t, e, "POST", "/ada/repob/settings/hooks", scoped,
+		`{"scope":"repo","url":"https://hooks.example.test/b","event_types":["task.created"]}`),
+		http.StatusNotFound, "not-found")
+	f8problem(t, f8do(t, e, "GET", "/ada/repob/settings/hooks", scoped, ""), http.StatusNotFound, "not-found")
+	f8problem(t, f8do(t, e, "GET", "/ada/repob/settings/hooks?scope=owner", scoped, ""), http.StatusNotFound, "not-found")
+}
+
+func TestWebhookEndpointListETagTracksSettings(t *testing.T) {
+	e := buildF8Env(t)
+	f8bootstrap(t, e, "ada")
+	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	token := f8token(t, e, ada, "repo:create", "repo:read", "repo:write", "webhooks:read", "webhooks:write")
+	_ = f8seedRepo(t, e, ada.ID, "hooks")
+	code, created := f8createEndpoint(t, e, token, "/ada/hooks/settings/hooks",
+		`{"scope":"repo","url":"https://hooks.example.test/etag","event_types":["task.created"]}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create = %d: %v", code, created)
+	}
+	id := f8endpointID(t, created)
+	get := func(etag string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/ada/hooks/settings/hooks", nil)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", token)
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+		rec := httptest.NewRecorder()
+		e.server.ServeHTTP(rec, req)
+		return rec
+	}
+	first := get("")
+	if first.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", first.Code, first.Body.String())
+	}
+	etagA := first.Header().Get("ETag")
+	if etagA == "" {
+		t.Fatal("list omits the ETag header")
+	}
+	if rec := get(etagA); rec.Code != http.StatusNotModified {
+		t.Fatalf("stable list = %d, want 304: %s", rec.Code, rec.Body.String())
+	}
+	e.advance(time.Second)
+	rec := f8do(t, e, "POST", "/ada/hooks/settings/hooks/"+id, token, `{"note":"changed"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("update = %d: %s", rec.Code, rec.Body.String())
+	}
+	changed := get(etagA)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("changed list = %d, want 200 (no false 304): %s", changed.Code, changed.Body.String())
+	}
+	etagB := changed.Header().Get("ETag")
+	if etagB == etagA {
+		t.Fatal("settings change kept the list ETag")
+	}
+	if rec := get(etagB); rec.Code != http.StatusNotModified {
+		t.Fatalf("fresh list = %d, want 304: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWebhookMessageListETagTracksProgress(t *testing.T) {
+	e := buildF8Env(t)
+	f8bootstrap(t, e, "ada")
+	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	token := f8token(t, e, ada, "repo:create", "repo:read", "repo:write", "webhooks:read", "webhooks:write")
+	_ = f8seedRepo(t, e, ada.ID, "hooks")
+	_, created := f8createEndpoint(t, e, token, "/ada/hooks/settings/hooks",
+		`{"scope":"repo","url":"https://hooks.example.test/metag","event_types":["task.created"]}`)
+	id := f8endpointID(t, created)
+	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		return tx.InsertWebhookMessages([]store.WebhookMessageInsert{{
+			ID: "msg_metag_1", EndpointID: id, EventType: "task.created",
+			EventTime: e.now.UnixMilli(), NextAttemptAt: e.now.UnixMilli(),
+			Payload: []byte(`{"type":"task.created"}`),
+		}})
+	}); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	target := "/ada/hooks/settings/hooks/" + id + "/messages"
+	get := func(etag string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", token)
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+		rec := httptest.NewRecorder()
+		e.server.ServeHTTP(rec, req)
+		return rec
+	}
+	first := get("")
+	if first.Code != http.StatusOK {
+		t.Fatalf("messages = %d: %s", first.Code, first.Body.String())
+	}
+	etagA := first.Header().Get("ETag")
+	if etagA == "" {
+		t.Fatal("message list omits the ETag header")
+	}
+	if rec := get(etagA); rec.Code != http.StatusNotModified {
+		t.Fatalf("stable messages = %d, want 304: %s", rec.Code, rec.Body.String())
+	}
+	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		claimed, cerr := tx.ClaimWebhookMessages(e.now.UnixMilli(), 10, 0, "etag-probe")
+		if cerr != nil {
+			return cerr
+		}
+		if len(claimed) != 1 {
+			return fmt.Errorf("claim moved %d messages, want 1", len(claimed))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	changed := get(etagA)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("progressed messages = %d, want 200 (no false 304): %s", changed.Code, changed.Body.String())
+	}
+	etagB := changed.Header().Get("ETag")
+	if etagB == etagA {
+		t.Fatal("delivery progress kept the message-list ETag")
+	}
+	if rec := get(etagB); rec.Code != http.StatusNotModified {
+		t.Fatalf("fresh messages = %d, want 304: %s", rec.Code, rec.Body.String())
+	}
+}
