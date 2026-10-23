@@ -2,6 +2,8 @@ package runner
 
 import (
 	"cmp"
+	"crypto/ecdh"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -109,9 +111,21 @@ func LoadConfig(path string) (Config, error) {
 
 // Credential is the stored runner identity.
 type Credential struct {
-	RunnerID string `json:"runner_id"`
-	Token    string `json:"token"`
-	RotFence int64  `json:"rotation_fence"`
+	RunnerID    string `json:"runner_id"`
+	Token       string `json:"token"`
+	SealPrivate []byte `json:"seal_private,omitempty"`
+	RotFence    int64  `json:"rotation_fence"`
+}
+
+// GenerateSealKey creates the runner's X25519 seal keypair. The public half
+// travels in the registration request; the private half never leaves the
+// runner and is persisted in the credential file.
+func GenerateSealKey() (priv, pub []byte, err error) {
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("GenerateSealKey: %w", err)
+	}
+	return key.Bytes(), key.PublicKey().Bytes(), nil
 }
 
 func credentialPath(stateDir string) string {

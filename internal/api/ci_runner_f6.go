@@ -77,6 +77,13 @@ func (d Deps) f6Lease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if lease != nil {
+			fetch, ferr := d.mintFetchToken(r.Context(), lease)
+			if ferr != nil {
+				_ = ctrl.Release(r.Context(), lease.Attempt.ID, lease.Token, lease.Attempt.Fence, "not_started")
+				writeRunnerProblem(w, ferr)
+				return
+			}
+			lease.FetchToken = fetch
 			reply, serr := ctrl.Start(r.Context(), lease.Attempt.ID, lease.Token, lease.Attempt.Fence)
 			if serr != nil {
 				writeRunnerProblem(w, serr)
@@ -150,6 +157,7 @@ func writeF6Grant(w http.ResponseWriter, lease *ci.Lease) {
 		"fetch": map[string]string{
 			"url":  "/" + lease.Run.Owner + "/" + lease.Run.Repo + ".git",
 			"want": lease.Run.Subject, "expect_tree": lease.Run.Tree,
+			"token": lease.FetchToken,
 		},
 		"secrets": secrets,
 		"timers":  map[string]int64{"heartbeat_s": 10, "lease_ttl_s": 30, "self_fence_s": 300},
@@ -157,13 +165,12 @@ func writeF6Grant(w http.ResponseWriter, lease *ci.Lease) {
 }
 
 func (d Deps) f6Heartbeat(w http.ResponseWriter, r *http.Request) {
-	var in runnerFenceIn
-	if !readRunnerBody(w, r, &in) {
+	token, ctrl, ok := d.preAuthAttempt(w, r)
+	if !ok {
 		return
 	}
-	token, ctrl, ok := d.attemptToken(r)
-	if !ok {
-		writeRunnerProblem(w, ciProblem("E_RECOVERING"))
+	var in runnerFenceIn
+	if !readRunnerBody(w, r, &in) {
 		return
 	}
 	reply, err := ctrl.Heartbeat(r.Context(), r.PathValue("id"), token, in.Fence)
@@ -183,6 +190,10 @@ func (d Deps) f6Heartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) f6LogAppend(w http.ResponseWriter, r *http.Request) {
+	token, ctrl, ok := d.preAuthAttempt(w, r)
+	if !ok {
+		return
+	}
 	var in struct {
 		SHA256 string        `json:"sha256"`
 		Data   string        `json:"data_b64"`
@@ -192,11 +203,6 @@ func (d Deps) f6LogAppend(w http.ResponseWriter, r *http.Request) {
 		Offset int64         `json:"offset"`
 	}
 	if !readRunnerBody(w, r, &in) {
-		return
-	}
-	token, ctrl, ok := d.attemptToken(r)
-	if !ok {
-		writeRunnerProblem(w, ciProblem("E_RECOVERING"))
 		return
 	}
 	raw, derr := base64.StdEncoding.DecodeString(in.Data)
@@ -216,27 +222,31 @@ func (d Deps) f6LogAppend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) f6ArtifactPut(w http.ResponseWriter, r *http.Request) {
+	token, ctrl, ok := d.preAuthAttempt(w, r)
+	if !ok {
+		return
+	}
 	if r.ContentLength < 0 {
 		writeRunnerProblem(w, ciProblem("E_INVALID"))
 		return
 	}
-	if r.ContentLength > 1<<30 {
+	if r.ContentLength > maxRunnerArtifactBytes {
 		writeRunnerProblem(w, ciProblem("E_LIMIT"))
 		return
 	}
+	if !reserveArtifactBytes(r.ContentLength) {
+		writeRunnerProblem(w, ciProblem("E_BUSY"))
+		return
+	}
+	defer releaseArtifactBytes(r.ContentLength)
 	fence := runnerFenceHeader(r)
-	raw, rerr := io.ReadAll(io.LimitReader(r.Body, (1<<30)+1))
+	raw, rerr := io.ReadAll(io.LimitReader(r.Body, maxRunnerArtifactBytes+1))
 	if rerr != nil {
 		writeRunnerProblem(w, rerr)
 		return
 	}
 	if int64(len(raw)) != r.ContentLength {
 		writeRunnerProblem(w, ciProblem("E_INVALID"))
-		return
-	}
-	token, ctrl, ok := d.attemptToken(r)
-	if !ok {
-		writeRunnerProblem(w, ciProblem("E_RECOVERING"))
 		return
 	}
 	full := "sha256:" + strings.TrimPrefix(r.PathValue("digest"), "sha256:")
@@ -329,7 +339,8 @@ func (d Deps) f6MintRegToken(w http.ResponseWriter, r *http.Request) {
 
 func (d Deps) f6Register(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Token string `json:"token"`
+		Token  string `json:"token"`
+		PubKey string `json:"pubkey_b64"`
 	}
 	if !readRunnerBody(w, r, &in) {
 		return
@@ -339,7 +350,12 @@ func (d Deps) f6Register(w http.ResponseWriter, r *http.Request) {
 		writeRunnerProblem(w, cerr)
 		return
 	}
-	runner, token, err := ctrl.RegisterWithToken(r.Context(), in.Token)
+	pub, perr := base64.StdEncoding.DecodeString(in.PubKey)
+	if perr != nil || len(pub) != 32 {
+		writeRunnerProblem(w, ciProblem("E_INVALID"))
+		return
+	}
+	runner, token, err := ctrl.RegisterWithToken(r.Context(), in.Token, pub)
 	if err != nil {
 		writeRunnerProblem(w, ciToOp(err, "runner was not registered"))
 		return

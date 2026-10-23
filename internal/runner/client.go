@@ -77,6 +77,7 @@ type FetchPayload struct {
 	URL        string `json:"url"`
 	Want       string `json:"want"`
 	ExpectTree string `json:"expect_tree"`
+	Token      string `json:"token,omitempty"`
 }
 
 // LeaseLostError marks a fenced-out attempt.
@@ -293,9 +294,13 @@ type Registration struct {
 	} `json:"runner"`
 }
 
-// Register consumes one single-use registration token.
-func (c *Client) Register(rkt string) (string, string, error) {
-	out, status, err := c.post("/-/ci/v1/register", "", map[string]any{"token": rkt})
+// Register consumes one single-use registration token, carrying the
+// runner's seal public key so secret-bearing jobs can be sealed to it.
+// The seal private key never leaves the runner.
+func (c *Client) Register(rkt string, sealPub []byte) (string, string, error) {
+	out, status, err := c.post("/-/ci/v1/register", "", map[string]any{
+		"token": rkt, "pubkey_b64": encodeBase64(sealPub),
+	})
 	if err != nil {
 		return "", "", err
 	}

@@ -3,6 +3,8 @@ package ci_test
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"strings"
 	"testing"
 	"time"
@@ -404,6 +406,61 @@ steps = [{ name = "s", run = "echo hi" }]
 	}
 	if string(lease.Secrets[0].Ciphertext) == "s3cr3t" {
 		t.Fatal("secret travels in plaintext")
+	}
+}
+
+func TestCITokenEnrollmentCarriesPubkey(t *testing.T) {
+	clk := startClock()
+	ctx := t.Context()
+	c, _ := openCI(t, clk)
+	text := `schema = "rukie.ci/v1"
+
+[[job]]
+name = "deploy"
+runs_on = ["linux-amd64"]
+image = "` + testImage + `"
+secrets = ["DEPLOY_TOKEN"]
+steps = [{ name = "s", run = "echo hi" }]
+`
+	if err := c.CreateSecret(ctx, 7, "DEPLOY_TOKEN", []byte("s3cr3t")); err != nil {
+		t.Fatalf("create secret: %v", err)
+	}
+	_ = mustCreateRun(t, c, mustDecode(t, text), "trusted", "change:enroll:tip")
+	reg, err := c.MintRegToken(ctx, "trusted", []string{"linux-amd64"}, 2)
+	if err != nil {
+		t.Fatalf("mint reg token: %v", err)
+	}
+	if _, _, rerr := c.RegisterWithToken(ctx, reg, nil); ci.CodeOf(rerr) != "E_INVALID" {
+		t.Fatalf("keyless registration = %v, want E_INVALID", rerr)
+	}
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate seal key: %v", err)
+	}
+	pub := key.PublicKey().Bytes()
+	enrolled, secret, err := c.RegisterWithToken(ctx, reg, pub)
+	if err != nil {
+		t.Fatalf("keyed registration: %v", err)
+	}
+	if string(enrolled.PubKey) != string(pub) {
+		t.Fatal("enrolled runner lost its pubkey")
+	}
+	bare, bareToken, err := c.CreateRunner(ctx, []string{"linux-amd64"}, "trusted", 2, "podman-rootless/1", nil)
+	if err != nil {
+		t.Fatalf("bare runner: %v", err)
+	}
+	if lease, lerr := c.Lease(ctx, bare.ID, bareToken); lerr != nil || lease != nil {
+		t.Fatalf("keyless lease = %v, %v, want no work without error", lease, lerr)
+	}
+	lease, err := c.Lease(ctx, enrolled.ID, secret)
+	if err != nil {
+		t.Fatalf("enrolled lease: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("keyed runner found no secret job")
+	}
+	if len(lease.Secrets) != 1 || lease.Secrets[0].Name != "DEPLOY_TOKEN" {
+		t.Fatalf("sealed secrets = %+v", lease.Secrets)
 	}
 }
 

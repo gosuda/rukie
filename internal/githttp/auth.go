@@ -8,16 +8,18 @@ import (
 
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/auth"
+	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/op"
 	"github.com/gosuda/rukie/internal/store"
 )
 
 type identity struct {
-	repos  map[int64]bool
-	user   auth.User
-	token  auth.Token
-	caller access.Caller
-	authed bool
+	repos     map[int64]bool
+	user      auth.User
+	token     auth.Token
+	caller    access.Caller
+	authed    bool
+	fetchOnly bool
 }
 
 func (s *Server) authenticate(r *http.Request) (identity, bool, bool) {
@@ -71,10 +73,11 @@ func (s *Server) authenticate(r *http.Request) (identity, bool, bool) {
 			IsToken:    true,
 			IsAdmin:    user.IsAdmin,
 		},
-		user:   user,
-		token:  tok,
-		repos:  set,
-		authed: true,
+		user:      user,
+		token:     tok,
+		repos:     set,
+		authed:    true,
+		fetchOnly: ci.IsFetchCredentialName(tok.Name),
 	}, true, false
 }
 

@@ -60,9 +60,9 @@ func (f *flakyHeartbeat) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestLoopRidesOutHeartbeatErrors(t *testing.T) {
 	clk := &crashClock{now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
-	c := openCrashCI(t, clk)
+	c, svc := openCrashCI(t, clk)
 	run := crashRun(t, c, "change:loop:tip")
-	srv, client, _, _ := crashServer(t, c)
+	srv, client, _, _ := crashServer(t, c, svc)
 	_ = srv
 	_ = run
 	grant := mustHTTPLease(t, client)
@@ -118,5 +118,39 @@ func TestLoopRidesOutHeartbeatErrors(t *testing.T) {
 	}
 	if !passed {
 		t.Fatalf("jobs = %+v, want passed", jobs)
+	}
+}
+
+func TestFinishDowngradesOversizedArtifact(t *testing.T) {
+	seen := map[string]string{}
+	server := stubServer(t, stubGrant{attempt: "att_1", fence: 7, token: "tok"}, &seen)
+	defer server.Close()
+	client := NewClient(server.URL, "rnr_1", "runner-token")
+	work := t.TempDir()
+	big, err := os.Create(filepath.Join(work, "big.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Truncate(ArtifactMaxBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Close(); err != nil {
+		t.Fatal(err)
+	}
+	grant := &Grant{
+		Attempt: AttemptRef{ID: "att_1", Fence: 7, Token: "tok"},
+		Job:     JobPayload{Artifacts: []string{"big.bin"}},
+	}
+	stream := &logStreamer{client: client, attempt: grant.Attempt, logDir: t.TempDir(), seq: -1}
+	l := &Loop{Client: client}
+	l.finish(context.Background(), AttemptDone{
+		Grant: grant, Stream: stream, Outcome: "passed", Class: "", Exit: 0,
+		Work: AttemptWork{Dir: t.TempDir(), Work: work, Log: t.TempDir()},
+	})
+	if !strings.Contains(seen["finish-body"], `"outcome":"failed"`) {
+		t.Fatalf("finish body = %s, want failed outcome", seen["finish-body"])
+	}
+	if !strings.Contains(seen["finish-body"], `"class":"script_failure"`) {
+		t.Fatalf("finish body = %s, want script_failure class", seen["finish-body"])
 	}
 }

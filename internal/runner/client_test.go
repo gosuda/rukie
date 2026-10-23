@@ -29,7 +29,7 @@ func stubServer(t *testing.T, grant stubGrant, seen *map[string]string) *httptes
 		(*seen)["lease-auth"] = r.Header.Get("Authorization")
 		raw, _ := io.ReadAll(r.Body)
 		(*seen)["lease-body"] = string(raw)
-		write(w, `{"attempt":{"id":"`+grant.attempt+`","number":1,"fence":`+strconv.FormatInt(grant.fence, 10)+`,"token":"`+grant.token+`"},"job":{"name":"lint","spec_digest":"sha256:aa","action_digest":"sha256:bb","pure":true,"effects":"none","network":"none","timeout_s":600,"image":{"ref":"img","manifest":"img"},"steps":[],"env":{},"artifacts":[]},"run":{"id":"run_1","trust":"trusted","subject":"s","tree":"t","spec_source":"base"},"fetch":{"url":"/o/r.git","want":"s","expect_tree":"t"},"secrets":[],"timers":{"heartbeat_s":10}}`)
+		write(w, `{"attempt":{"id":"`+grant.attempt+`","number":1,"fence":`+strconv.FormatInt(grant.fence, 10)+`,"token":"`+grant.token+`"},"job":{"name":"lint","spec_digest":"sha256:aa","action_digest":"sha256:bb","pure":true,"effects":"none","network":"none","timeout_s":600,"image":{"ref":"img","manifest":"img"},"steps":[],"env":{},"artifacts":[]},"run":{"id":"run_1","trust":"trusted","subject":"s","tree":"t","spec_source":"base"},"fetch":{"url":"/o/r.git","want":"s","expect_tree":"t","token":"fetch-secret"},"secrets":[],"timers":{"heartbeat_s":10}}`)
 	})
 	mux.HandleFunc("POST /-/ci/v1/attempts/{id}/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -84,6 +84,9 @@ func TestClientLeaseShape(t *testing.T) {
 	}
 	if seen["lease-auth"] != "Bearer runner-token" {
 		t.Fatalf("lease auth = %q", seen["lease-auth"])
+	}
+	if grant.Fetch.Token != "fetch-secret" {
+		t.Fatalf("grant fetch token = %q, want the fenced credential", grant.Fetch.Token)
 	}
 	var body map[string]any
 	if err := jsonv2.Unmarshal([]byte(seen["lease-body"]), &body); err != nil {
@@ -158,7 +161,14 @@ func TestClientRegisterConsumesToken(t *testing.T) {
 	server := stubServer(t, stubGrant{attempt: "att_1", fence: 7, token: "tok"}, &seen)
 	defer server.Close()
 	client := NewClient(server.URL, "", "")
-	id, token, err := client.Register("rkt_test")
+	_, pub, err := GenerateSealKey()
+	if err != nil {
+		t.Fatalf("seal key: %v", err)
+	}
+	if len(pub) != 32 {
+		t.Fatalf("seal pubkey = %d bytes, want 32", len(pub))
+	}
+	id, token, err := client.Register("rkt_test", pub)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -167,6 +177,52 @@ func TestClientRegisterConsumesToken(t *testing.T) {
 	}
 	if !strings.Contains(seen["register-body"], "rkt_test") {
 		t.Fatalf("register misses the token: %s", seen["register-body"])
+	}
+	if !strings.Contains(seen["register-body"], "pubkey_b64") {
+		t.Fatalf("register misses the seal pubkey: %s", seen["register-body"])
+	}
+}
+
+func TestSealKeyRoundTrip(t *testing.T) {
+	priv, pub, err := GenerateSealKey()
+	if err != nil {
+		t.Fatalf("seal key: %v", err)
+	}
+	if len(priv) != 32 || len(pub) != 32 {
+		t.Fatalf("seal key = %d/%d bytes, want 32/32", len(priv), len(pub))
+	}
+	priv2, pub2, err := GenerateSealKey()
+	if err != nil {
+		t.Fatalf("seal key: %v", err)
+	}
+	if string(priv) == string(priv2) || string(pub) == string(pub2) {
+		t.Fatal("seal key generation is not random")
+	}
+	dir := t.TempDir()
+	cred := Credential{RunnerID: "rnr_1", Token: "tok", SealPrivate: priv}
+	if err := StoreCredential(dir, cred); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	loaded, lerr := LoadCredential(dir)
+	if lerr != nil {
+		t.Fatalf("load: %v", lerr)
+	}
+	if string(loaded.SealPrivate) != string(priv) {
+		t.Fatal("seal private key did not survive the credential round trip")
+	}
+}
+
+func TestFetchBearerHeader(t *testing.T) {
+	grant := &Grant{
+		Attempt: AttemptRef{Token: "attempt-token"},
+		Fetch:   FetchPayload{Token: "fetch-secret"},
+	}
+	if got := fetchBearerHeader(grant); got != "AUTHORIZATION: Bearer fetch-secret" {
+		t.Fatalf("bearer = %q, want the fetch credential", got)
+	}
+	grant.Fetch.Token = ""
+	if got := fetchBearerHeader(grant); got != "AUTHORIZATION: Bearer attempt-token" {
+		t.Fatalf("bearer = %q, want the attempt-token fallback", got)
 	}
 }
 

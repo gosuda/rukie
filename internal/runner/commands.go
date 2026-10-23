@@ -130,12 +130,17 @@ func runRegister(io IO, argv []string) int {
 		emitErr(io.Stderr, rerr)
 		return rerr.Exit
 	}
-	runnerID, credential, err := NewClient(*server, "", "").Register(secret)
+	sealPriv, sealPub, kerr := GenerateSealKey()
+	if kerr != nil {
+		_, _ = fmt.Fprintln(io.Stderr, "E_INVALID: "+kerr.Error()+". check the system RNG.")
+		return ExitGeneral
+	}
+	runnerID, credential, err := NewClient(*server, "", "").Register(secret, sealPub)
 	if err != nil {
 		_, _ = fmt.Fprintln(io.Stderr, "E_INVALID: "+err.Error()+". check the server URL and token.")
 		return ExitGeneral
 	}
-	if err := StoreCredential(cfg.StateDir, Credential{RunnerID: runnerID, Token: credential}); err != nil {
+	if err := StoreCredential(cfg.StateDir, Credential{RunnerID: runnerID, Token: credential, SealPrivate: sealPriv}); err != nil {
 		emitErr(io.Stderr, fail("STATE_DIR", err.Error(), "make the state directory writable"))
 		return ExitConfigUnavailable
 	}
@@ -170,7 +175,7 @@ func runRotate(io IO, argv []string) int {
 		_, _ = fmt.Fprintln(io.Stderr, "E_INVALID: "+err.Error()+". check the server URL and clock.")
 		return ExitGeneral
 	}
-	if err := StoreCredential(*stateDir, Credential{RunnerID: cred.RunnerID, Token: secret, RotFence: fence}); err != nil {
+	if err := StoreCredential(*stateDir, Credential{RunnerID: cred.RunnerID, Token: secret, RotFence: fence, SealPrivate: cred.SealPrivate}); err != nil {
 		_, _ = fmt.Fprintln(io.Stderr, "E_INVALID: "+err.Error()+". make the state directory writable.")
 		return ExitGeneral
 	}

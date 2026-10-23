@@ -1,7 +1,10 @@
 package api_test
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -19,11 +22,13 @@ import (
 
 var f6IDRe = regexp.MustCompile(`(rnr_|att_|job_|run_)[0-9a-f]{32}`)
 var f6TokenRe = regexp.MustCompile(`"token":"[0-9a-f]{32}"`)
+var f6FetchTokenRe = regexp.MustCompile(`"token":"rk_[A-Za-z0-9_-]{43}"`)
 var f6MillisRe = regexp.MustCompile(`\b1[0-9]{12}\b`)
 
 func f6Normalize(body string) string {
 	body = f6IDRe.ReplaceAllString(body, "${1}<id>")
 	body = f6TokenRe.ReplaceAllString(body, `"token":"<token>"`)
+	body = f6FetchTokenRe.ReplaceAllString(body, `"token":"<fetch>"`)
 	return f6MillisRe.ReplaceAllString(body, "1")
 }
 
@@ -284,7 +289,16 @@ func TestRunnerF6MintRegisterRotate(t *testing.T) {
 	if err := jsonv2.Unmarshal(mint.Body.Bytes(), &minted); err != nil || !strings.HasPrefix(minted.Token, "rkt_") {
 		t.Fatalf("minted token = %q, %v", minted.Token, err)
 	}
-	register := f6do(t, h, f6JSON("POST", "/-/ci/v1/register", "", `{"token":"`+minted.Token+`"}`))
+	bare := f6do(t, h, f6JSON("POST", "/-/ci/v1/register", "", `{"token":"`+minted.Token+`"}`))
+	if bare.Code != http.StatusUnprocessableEntity || !strings.Contains(bare.Body.String(), "E_INVALID") {
+		t.Fatalf("keyless register = %d: %s, want 422 E_INVALID", bare.Code, bare.Body.String())
+	}
+	sealKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("seal key: %v", err)
+	}
+	sealPub := base64.StdEncoding.EncodeToString(sealKey.PublicKey().Bytes())
+	register := f6do(t, h, f6JSON("POST", "/-/ci/v1/register", "", `{"token":"`+minted.Token+`","pubkey_b64":"`+sealPub+`"}`))
 	if register.Code != http.StatusOK {
 		t.Fatalf("register = %d: %s", register.Code, register.Body.String())
 	}
@@ -297,7 +311,7 @@ func TestRunnerF6MintRegisterRotate(t *testing.T) {
 	if err := jsonv2.Unmarshal(register.Body.Bytes(), &registered); err != nil || registered.Token == "" {
 		t.Fatalf("register body = %s, %v", register.Body.String(), err)
 	}
-	reuse := f6do(t, h, f6JSON("POST", "/-/ci/v1/register", "", `{"token":"`+minted.Token+`"}`))
+	reuse := f6do(t, h, f6JSON("POST", "/-/ci/v1/register", "", `{"token":"`+minted.Token+`","pubkey_b64":"`+sealPub+`"}`))
 	if reuse.Code != http.StatusUnauthorized || !strings.Contains(reuse.Body.String(), "E_UNAUTHENTICATED") {
 		t.Fatalf(" reused token = %d: %s, want 401 E_UNAUTHENTICATED", reuse.Code, reuse.Body.String())
 	}
