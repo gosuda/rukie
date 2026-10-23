@@ -24,7 +24,7 @@ const (
 	maxRetryAfterDelay    = 24 * time.Hour
 	truncationMarker      = "…[truncated at 65536 bytes]"
 	webhookUserAgent      = "rukie-webhooks/1.0"
-	webhookContentType    = "application/json; charset=utf-8"
+	webhookContentType    = "application/json"
 )
 
 // Policy gates webhook egress. The zero value denies private targets and

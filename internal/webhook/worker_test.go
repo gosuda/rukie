@@ -765,7 +765,7 @@ func TestWorkerDefaultSendVerifiesSignature(t *testing.T) {
 	if gotID != goldenMsgID {
 		t.Fatalf("webhook-id = %q", gotID)
 	}
-	if gotCT != "application/json; charset=utf-8" {
+	if gotCT != "application/json" {
 		t.Fatalf("content-type = %q", gotCT)
 	}
 	ts, err := strconv.ParseInt(gotTS, 10, 64)

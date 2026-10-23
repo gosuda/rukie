@@ -139,21 +139,27 @@ type MirrorsConfig struct {
 }
 
 type WebhooksConfig struct {
-	SigningKeyFile       string   `toml:"signing_key_file"`
-	ExtraDenyCIDRs       []string `toml:"extra_deny_cidrs"`
-	DeliveryTimeoutMs    uint64   `toml:"delivery_timeout_ms"`
-	MaxPayloadBytes      uint64   `toml:"max_payload_bytes"`
-	MaxTargetsPerEvent   uint     `toml:"max_targets_per_event"`
-	MaxRetries           uint     `toml:"max_retries"`
-	QueueDepth           uint     `toml:"queue_depth"`
-	Workers              uint     `toml:"workers"`
-	GlobalMaxInflight    uint     `toml:"global_max_inflight"`
-	MaxEndpointsPerRepo  uint     `toml:"max_endpoints_per_repo"`
-	MaxEndpointsPerOwner uint     `toml:"max_endpoints_per_owner"`
-	RetentionDays        uint     `toml:"retention_days"`
-	Enabled              bool     `toml:"enabled"`
-	AllowInsecureHTTP    bool     `toml:"allow_insecure_http"`
-	AllowPrivateTargets  bool     `toml:"allow_private_targets"`
+	// Legacy: retained for TOML compatibility, not read. Secrets seal with
+	// the instance SealKey; delivery uses MaxAttempts=10 in internal/webhook.
+	SigningKeyFile    string   `toml:"signing_key_file"`
+	ExtraDenyCIDRs    []string `toml:"extra_deny_cidrs"`
+	DeliveryTimeoutMs uint64   `toml:"delivery_timeout_ms"`
+	MaxPayloadBytes   uint64   `toml:"max_payload_bytes"`
+	// Legacy: retained for TOML compatibility, not read.
+	MaxTargetsPerEvent uint `toml:"max_targets_per_event"`
+	// Legacy: retained for TOML compatibility, not read. Delivery terminates
+	// after MaxAttempts=10 in internal/webhook, not after this value.
+	MaxRetries uint `toml:"max_retries"`
+	// Legacy: retained for TOML compatibility, not read.
+	QueueDepth           uint `toml:"queue_depth"`
+	Workers              uint `toml:"workers"`
+	GlobalMaxInflight    uint `toml:"global_max_inflight"`
+	MaxEndpointsPerRepo  uint `toml:"max_endpoints_per_repo"`
+	MaxEndpointsPerOwner uint `toml:"max_endpoints_per_owner"`
+	RetentionDays        uint `toml:"retention_days"`
+	Enabled              bool `toml:"enabled"`
+	AllowInsecureHTTP    bool `toml:"allow_insecure_http"`
+	AllowPrivateTargets  bool `toml:"allow_private_targets"`
 }
 
 type RateLimitConfig struct {
