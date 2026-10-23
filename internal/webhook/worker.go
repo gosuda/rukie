@@ -31,16 +31,23 @@ const (
 	maxErrorLen        = 2048
 )
 
-// LeaseSweeper re-queues messages stranded by crashed workers.
+// LeaseSweeper transitions messages stranded by crashed workers: expired
+// leases return to pending with the attempt count spent, or go dead once the
+// budget is exhausted.
 type LeaseSweeper interface {
-	SweepWebhookLeases(ctx context.Context, nowMillis int64) (int64, error)
+	SweepWebhookLeases(ctx context.Context, nowMillis int64, maxAttempts int) (int64, error)
+}
+
+// SecretJanitor clears expired previous endpoint secrets.
+type SecretJanitor interface {
+	ClearExpiredEndpointSecrets(ctx context.Context, nowMillis int64) (int64, error)
 }
 
 // MessageClaimer atomically claims due messages with a lease.
 // A non-positive perEndpointCap falls back to each endpoint's own
-// concurrency.
+// concurrency. An empty leaseOwner is rejected.
 type MessageClaimer interface {
-	ClaimWebhookMessages(ctx context.Context, nowMillis int64, batch int, perEndpointCap int) ([]store.WebhookMessageRow, error)
+	ClaimWebhookMessages(ctx context.Context, nowMillis int64, batch int, perEndpointCap int, leaseOwner string) ([]store.WebhookMessageRow, error)
 }
 
 // EndpointLoader loads one endpoint row by id.
@@ -53,15 +60,17 @@ type AttemptRecorder interface {
 	RecordWebhookAttempt(ctx context.Context, attempt store.WebhookAttemptInsert) error
 }
 
-// DeliveryMarker records terminal delivery outcomes.
+// DeliveryMarker records terminal delivery outcomes. Only the lease owner may
+// complete its inflight message; zero matched rows report store.ErrStale.
 type DeliveryMarker interface {
-	MarkWebhookDelivered(ctx context.Context, id string, nowMillis int64, statusCode int64) error
-	MarkWebhookDead(ctx context.Context, id string, errText string, nowMillis int64, statusCode int64) error
+	MarkWebhookDelivered(ctx context.Context, id string, nowMillis int64, statusCode int64, leaseOwner string) error
+	MarkWebhookDead(ctx context.Context, id string, errText string, nowMillis int64, statusCode int64, leaseOwner string) error
 }
 
 // MessageRequeuer schedules another attempt or resets after dead-letter.
+// Requeue is fenced on the lease owner; zero matched rows report store.ErrStale.
 type MessageRequeuer interface {
-	RequeueWebhookMessage(ctx context.Context, id string, errText string, statusCode int64, nextAttemptAt int64, nowMillis int64) error
+	RequeueWebhookMessage(ctx context.Context, id string, errText string, statusCode int64, nextAttemptAt int64, nowMillis int64, leaseOwner string) error
 	RedeliverWebhookMessage(ctx context.Context, id string, nowMillis int64) error
 }
 
@@ -79,6 +88,7 @@ type HistoryPruner interface {
 // one store transaction; the wiring slice binds *store.Store to it.
 type Store interface {
 	LeaseSweeper
+	SecretJanitor
 	MessageClaimer
 	EndpointLoader
 	AttemptRecorder
@@ -103,17 +113,22 @@ type SendFunc func(ctx context.Context, msg store.WebhookMessageRow, endpoint st
 // WorkerConfig carries everything a Worker needs. Store is required and is
 // bound through StoreTx; Send defaults to HTTPS delivery. LeaseDuration
 // documents the 5 minute lease the store claim owns; DriveOnce passes
-// only now millis. Tests in this package may set backend directly.
+// only now millis. InstanceID owns every lease this worker claims and every
+// fenced completion it issues; it defaults to 16 hex chars. Retention bounds
+// JanitorOnce and defaults to 30 days. Tests in this package may set backend
+// directly.
 type WorkerConfig struct {
 	backend           Store
 	Store             *store.Store
 	Now               func() time.Time
 	Send              SendFunc
+	InstanceID        string
 	SealKey           []byte
 	Workers           int
 	GlobalMaxInflight int
 	PollInterval      time.Duration
 	LeaseDuration     time.Duration
+	Retention         time.Duration
 }
 
 // Worker delivers webhook outbox messages with leases and backoff.
@@ -123,6 +138,16 @@ type Worker struct {
 	cfg    WorkerConfig
 }
 
+// defaultInstanceID mints a 16-hex-char lease owner from crypto/rand,
+// falling back to the current nanotime when randomness is unavailable.
+func defaultInstanceID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return fmt.Sprintf("%x", b)
+	}
+	return fmt.Sprintf("%016x", time.Now().UnixNano())
+}
+
 // NewWorker builds a Worker over cfg. A nil policy means default deny.
 func NewWorker(cfg WorkerConfig, policy *Policy) *Worker {
 	if policy == nil {
@@ -130,6 +155,12 @@ func NewWorker(cfg WorkerConfig, policy *Policy) *Worker {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.InstanceID == "" {
+		cfg.InstanceID = defaultInstanceID()
+	}
+	if cfg.Retention <= 0 {
+		cfg.Retention = defaultRetention
 	}
 	if cfg.backend == nil && cfg.Store != nil {
 		cfg.backend = &StoreTx{DB: cfg.Store}
@@ -200,10 +231,10 @@ func (w *Worker) DriveOnce(ctx context.Context) error {
 		return fmt.Errorf("DriveOnce: no store")
 	}
 	nowMillis := w.cfg.Now().UnixMilli()
-	if _, err := w.cfg.backend.SweepWebhookLeases(ctx, nowMillis); err != nil {
+	if _, err := w.SweepOnce(ctx); err != nil {
 		return fmt.Errorf("DriveOnce: %w", err)
 	}
-	msgs, err := w.cfg.backend.ClaimWebhookMessages(ctx, nowMillis, claimBatchSize, 0)
+	msgs, err := w.cfg.backend.ClaimWebhookMessages(ctx, nowMillis, claimBatchSize, 0, w.cfg.InstanceID)
 	if err != nil {
 		return fmt.Errorf("DriveOnce: %w", err)
 	}
@@ -230,16 +261,23 @@ func (w *Worker) DriveOnce(ctx context.Context) error {
 	return nil
 }
 
-// SweepOnce re-queues messages stranded by crashed workers.
+// SweepOnce transitions messages stranded by crashed workers and clears
+// expired previous endpoint secrets. It returns the combined transitioned
+// and cleared count.
 func (w *Worker) SweepOnce(ctx context.Context) (int64, error) {
 	if w.cfg.backend == nil {
 		return 0, fmt.Errorf("SweepOnce: no store")
 	}
-	n, err := w.cfg.backend.SweepWebhookLeases(ctx, w.cfg.Now().UnixMilli())
+	nowMillis := w.cfg.Now().UnixMilli()
+	n, err := w.cfg.backend.SweepWebhookLeases(ctx, nowMillis, MaxAttempts)
 	if err != nil {
 		return 0, fmt.Errorf("SweepOnce: %w", err)
 	}
-	return n, nil
+	cleared, cerr := w.cfg.backend.ClearExpiredEndpointSecrets(ctx, nowMillis)
+	if cerr != nil {
+		return 0, fmt.Errorf("SweepOnce: %w", cerr)
+	}
+	return n + cleared, nil
 }
 
 // JanitorOnce deletes delivered and dead history older than retention,
@@ -269,6 +307,18 @@ func (w *Worker) Run(ctx context.Context) error {
 		interval = defaultPoll
 	}
 	var wg sync.WaitGroup
+	wg.Go(func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, _ = w.JanitorOnce(ctx, w.cfg.Retention)
+			}
+		}
+	})
 	for range count {
 		wg.Go(func() {
 			if ctx.Err() != nil {
@@ -300,7 +350,10 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 		if rerr := w.recordUnsentAttempt(ctx, msg, msg.AttemptCount+1, "undeliverable-endpoint-removed", now); rerr != nil {
 			return rerr
 		}
-		if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, "undeliverable-endpoint-removed", now.UnixMilli(), 0); derr != nil {
+		if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, "undeliverable-endpoint-removed", now.UnixMilli(), 0, w.cfg.InstanceID); derr != nil {
+			if errors.Is(derr, store.ErrStale) {
+				return nil
+			}
 			return fmt.Errorf("deliverOne: %w", derr)
 		}
 		return nil
@@ -308,6 +361,33 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 		return fmt.Errorf("deliverOne: %w", err)
 	}
 	attemptNo := msg.AttemptCount + 1
+	if !endpoint.Active {
+		if rerr := w.recordUnsentAttempt(ctx, msg, attemptNo, "endpoint inactive", now); rerr != nil {
+			return rerr
+		}
+		return w.failAttempt(ctx, msg, endpoint, attemptFailure{attemptNo: attemptNo, errText: "endpoint inactive", delay: tableDelay(attemptNo)}, now)
+	}
+	// Re-fetch immediately before Send so a rotation (or disable/delete)
+	// landing between claim and send is observed; the fresh row also gates
+	// active/deleted and supplies the secrets below.
+	fresh, ferr := w.cfg.backend.GetWebhookEndpoint(ctx, msg.EndpointID)
+	switch {
+	case ferr == nil:
+		endpoint = fresh
+	case errors.Is(ferr, store.ErrNotFound):
+		if rerr := w.recordUnsentAttempt(ctx, msg, attemptNo, "undeliverable-endpoint-removed", now); rerr != nil {
+			return rerr
+		}
+		if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, "undeliverable-endpoint-removed", now.UnixMilli(), 0, w.cfg.InstanceID); derr != nil {
+			if errors.Is(derr, store.ErrStale) {
+				return nil
+			}
+			return fmt.Errorf("deliverOne: %w", derr)
+		}
+		return nil
+	default:
+		return fmt.Errorf("deliverOne: %w", ferr)
+	}
 	if !endpoint.Active {
 		if rerr := w.recordUnsentAttempt(ctx, msg, attemptNo, "endpoint inactive", now); rerr != nil {
 			return rerr
@@ -354,14 +434,20 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 	switch {
 	case transportErr != "":
 		if strings.HasPrefix(transportErr, "invalid webhook url") {
-			if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, truncate2K(transportErr), now.UnixMilli(), 0); derr != nil {
+			if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, truncate2K(transportErr), now.UnixMilli(), 0, w.cfg.InstanceID); derr != nil {
+				if errors.Is(derr, store.ErrStale) {
+					return nil
+				}
 				return fmt.Errorf("deliverOne: %w", derr)
 			}
 			return nil
 		}
 		return w.failAttempt(ctx, msg, endpoint, attemptFailure{attemptNo: attemptNo, errText: transportErr, delay: tableDelay(attemptNo)}, now)
 	case status >= 200 && status <= 299:
-		if derr := w.cfg.backend.MarkWebhookDelivered(ctx, msg.ID, now.UnixMilli(), status); derr != nil {
+		if derr := w.cfg.backend.MarkWebhookDelivered(ctx, msg.ID, now.UnixMilli(), status, w.cfg.InstanceID); derr != nil {
+			if errors.Is(derr, store.ErrStale) {
+				return nil
+			}
 			return fmt.Errorf("deliverOne: %w", derr)
 		}
 		if nerr := w.cfg.backend.NoteEndpointResult(ctx, endpoint.ID, 0, "ok", false, "", now.UnixMilli()); nerr != nil {
@@ -369,7 +455,10 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 		}
 		return nil
 	case status == http.StatusGone:
-		if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, "endpoint gone (410)", now.UnixMilli(), status); derr != nil {
+		if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, "endpoint gone (410)", now.UnixMilli(), status, w.cfg.InstanceID); derr != nil {
+			if errors.Is(derr, store.ErrStale) {
+				return nil
+			}
 			return fmt.Errorf("deliverOne: %w", derr)
 		}
 		if nerr := w.cfg.backend.NoteEndpointResult(ctx, endpoint.ID, endpoint.ConsecutiveFailures+1, "disabled", true, "410-gone", now.UnixMilli()); nerr != nil {
@@ -378,12 +467,45 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 		return nil
 	default:
 		delay := tableDelay(attemptNo)
-		if retry, ok := retryAfterDelay(respHeaders, status, now); ok {
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			if rotated, ok := w.rotatedSecretDelay(ctx, endpoint, secrets); ok {
+				delay = rotated
+			}
+		} else if retry, ok := retryAfterDelay(respHeaders, status, now); ok {
 			delay = applyJitterPct(retry, 0.10)
 		}
 		cause := attemptFailure{attemptNo: attemptNo, errText: "unexpected status " + strconv.FormatInt(status, 10), status: status, delay: delay}
 		return w.failAttempt(ctx, msg, endpoint, cause, now)
 	}
+}
+
+// rotationRetryDelay is the fast retry after a 401/403 that raced a secret
+// rotation. It re-fetches the endpoint and re-opens its secrets; when the
+// bytes differ from the ones Send used, the credentials rotated mid-flight
+// and a short retry converges without burning the table backoff. Unchanged
+// bytes mean the credentials are genuinely wrong, so the normal backoff
+// applies.
+const rotationRetryDelay = 30 * time.Second
+
+func (w *Worker) rotatedSecretDelay(ctx context.Context, endpoint store.WebhookEndpointRow, used DeliverySecrets) (time.Duration, bool) {
+	fresh, err := w.cfg.backend.GetWebhookEndpoint(ctx, endpoint.ID)
+	if err != nil {
+		return 0, false
+	}
+	current, err := OpenSecret(string(w.cfg.SealKey), base64.StdEncoding.EncodeToString(fresh.SecretEnc), secretAAD(fresh.ID))
+	if err != nil {
+		return 0, false
+	}
+	var previous []byte
+	if len(fresh.PrevSecretEnc) > 0 && fresh.PrevSecretExpiresAt > w.cfg.Now().UnixMilli() {
+		if prev, err := OpenSecret(string(w.cfg.SealKey), base64.StdEncoding.EncodeToString(fresh.PrevSecretEnc), secretAAD(fresh.ID)); err == nil {
+			previous = prev
+		}
+	}
+	if bytes.Equal(current, used.Current) && bytes.Equal(previous, used.Previous) {
+		return 0, false
+	}
+	return rotationRetryDelay, true
 }
 
 // attemptFailure groups one failed attempt with its retry decision.
@@ -435,6 +557,23 @@ func (w *Worker) recordUnsentAttempt(ctx context.Context, msg store.WebhookMessa
 }
 
 func (w *Worker) failAttempt(ctx context.Context, msg store.WebhookMessageRow, endpoint store.WebhookEndpointRow, cause attemptFailure, now time.Time) error {
+	// The fenced completion runs first: another worker may have stolen the
+	// lease, in which case ErrStale is benign and no endpoint counters move.
+	// The attempt row recorded by the caller stays as audit either way.
+	nowMillis := now.UnixMilli()
+	if cause.attemptNo >= MaxAttempts {
+		if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, truncate2K(cause.errText), nowMillis, cause.status, w.cfg.InstanceID); derr != nil {
+			if errors.Is(derr, store.ErrStale) {
+				return nil
+			}
+			return fmt.Errorf("failAttempt: %w", derr)
+		}
+	} else if rerr := w.cfg.backend.RequeueWebhookMessage(ctx, msg.ID, truncate2K(cause.errText), cause.status, now.Add(cause.delay).UnixMilli(), nowMillis, w.cfg.InstanceID); rerr != nil {
+		if errors.Is(rerr, store.ErrStale) {
+			return nil
+		}
+		return fmt.Errorf("failAttempt: %w", rerr)
+	}
 	failures := endpoint.ConsecutiveFailures + 1
 	lastStatus, disable := applyFailure(failures)
 	if lastStatus == "" {
@@ -444,21 +583,8 @@ func (w *Worker) failAttempt(ctx context.Context, msg store.WebhookMessageRow, e
 	if disable {
 		reason = "undeliverable"
 	}
-	nowMillis := now.UnixMilli()
-	if cause.attemptNo >= MaxAttempts {
-		if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, truncate2K(cause.errText), nowMillis, cause.status); derr != nil {
-			return fmt.Errorf("failAttempt: %w", derr)
-		}
-		if nerr := w.cfg.backend.NoteEndpointResult(ctx, endpoint.ID, failures, lastStatus, disable, reason, nowMillis); nerr != nil {
-			return fmt.Errorf("failAttempt: %w", nerr)
-		}
-		return nil
-	}
 	if nerr := w.cfg.backend.NoteEndpointResult(ctx, endpoint.ID, failures, lastStatus, disable, reason, nowMillis); nerr != nil {
 		return fmt.Errorf("failAttempt: %w", nerr)
-	}
-	if rerr := w.cfg.backend.RequeueWebhookMessage(ctx, msg.ID, truncate2K(cause.errText), cause.status, now.Add(cause.delay).UnixMilli(), nowMillis); rerr != nil {
-		return fmt.Errorf("failAttempt: %w", rerr)
 	}
 	return nil
 }
@@ -630,23 +756,34 @@ type StoreTx struct {
 
 var _ Store = (*StoreTx)(nil)
 
-// SweepWebhookLeases re-queues messages stranded by crashed workers.
-func (s *StoreTx) SweepWebhookLeases(ctx context.Context, nowMillis int64) (int64, error) {
+// SweepWebhookLeases transitions messages stranded by crashed workers.
+func (s *StoreTx) SweepWebhookLeases(ctx context.Context, nowMillis int64, maxAttempts int) (int64, error) {
 	var n int64
 	err := s.DB.Write(ctx, func(tx *store.WriteTx) error {
 		var err error
-		n, err = tx.SweepWebhookLeases(nowMillis)
+		n, err = tx.SweepWebhookLeases(nowMillis, maxAttempts)
+		return err
+	})
+	return n, err
+}
+
+// ClearExpiredEndpointSecrets clears expired previous endpoint secrets.
+func (s *StoreTx) ClearExpiredEndpointSecrets(ctx context.Context, nowMillis int64) (int64, error) {
+	var n int64
+	err := s.DB.Write(ctx, func(tx *store.WriteTx) error {
+		var err error
+		n, err = tx.ClearExpiredEndpointSecrets(nowMillis)
 		return err
 	})
 	return n, err
 }
 
 // ClaimWebhookMessages atomically claims due messages with a lease.
-func (s *StoreTx) ClaimWebhookMessages(ctx context.Context, nowMillis int64, batch int, perEndpointCap int) ([]store.WebhookMessageRow, error) {
+func (s *StoreTx) ClaimWebhookMessages(ctx context.Context, nowMillis int64, batch int, perEndpointCap int, leaseOwner string) ([]store.WebhookMessageRow, error) {
 	var out []store.WebhookMessageRow
 	err := s.DB.Write(ctx, func(tx *store.WriteTx) error {
 		var err error
-		out, err = tx.ClaimWebhookMessages(nowMillis, batch, perEndpointCap)
+		out, err = tx.ClaimWebhookMessages(nowMillis, batch, perEndpointCap, leaseOwner)
 		return err
 	})
 	return out, err
@@ -671,23 +808,23 @@ func (s *StoreTx) RecordWebhookAttempt(ctx context.Context, attempt store.Webhoo
 }
 
 // MarkWebhookDelivered records a 2xx outcome.
-func (s *StoreTx) MarkWebhookDelivered(ctx context.Context, id string, nowMillis, statusCode int64) error {
+func (s *StoreTx) MarkWebhookDelivered(ctx context.Context, id string, nowMillis, statusCode int64, leaseOwner string) error {
 	return s.DB.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.MarkWebhookDelivered(id, nowMillis, statusCode)
+		return tx.MarkWebhookDelivered(id, nowMillis, statusCode, leaseOwner)
 	})
 }
 
 // MarkWebhookDead records a terminal failure.
-func (s *StoreTx) MarkWebhookDead(ctx context.Context, id, errText string, nowMillis, statusCode int64) error {
+func (s *StoreTx) MarkWebhookDead(ctx context.Context, id, errText string, nowMillis, statusCode int64, leaseOwner string) error {
 	return s.DB.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.MarkWebhookDead(id, errText, nowMillis, statusCode)
+		return tx.MarkWebhookDead(id, errText, nowMillis, statusCode, leaseOwner)
 	})
 }
 
 // RequeueWebhookMessage schedules another attempt with backoff.
-func (s *StoreTx) RequeueWebhookMessage(ctx context.Context, id, errText string, statusCode, nextAttemptAt, nowMillis int64) error {
+func (s *StoreTx) RequeueWebhookMessage(ctx context.Context, id, errText string, statusCode, nextAttemptAt, nowMillis int64, leaseOwner string) error {
 	return s.DB.Write(ctx, func(tx *store.WriteTx) error {
-		_, err := tx.RequeueWebhookMessage(id, errText, statusCode, nextAttemptAt, nowMillis)
+		_, err := tx.RequeueWebhookMessage(id, errText, statusCode, nextAttemptAt, nowMillis, leaseOwner)
 		return err
 	})
 }

@@ -74,21 +74,49 @@ func (f *fakeStore) getMessage(id string) store.WebhookMessageRow {
 	return *f.messages[id]
 }
 
-func (f *fakeStore) SweepWebhookLeases(_ context.Context, nowMillis int64) (int64, error) {
+func (f *fakeStore) SweepWebhookLeases(_ context.Context, nowMillis int64, maxAttempts int) (int64, error) {
+	if maxAttempts <= 0 {
+		return 0, store.ErrInvalid
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var n int64
 	for _, m := range f.messages {
 		if m.State == "inflight" && m.LeaseExpiresAt <= nowMillis {
-			m.State = "pending"
+			if m.AttemptCount+1 >= int64(maxAttempts) {
+				m.State = "dead"
+				m.LastError = "delivery lease expired repeatedly"
+			} else {
+				m.State = "pending"
+				m.AttemptCount++
+			}
+			m.LeaseOwner = ""
 			m.LeaseExpiresAt = 0
+			m.UpdatedAt = nowMillis
 			n++
 		}
 	}
 	return n, nil
 }
 
-func (f *fakeStore) ClaimWebhookMessages(_ context.Context, nowMillis int64, batch int, perEndpointCap int) ([]store.WebhookMessageRow, error) {
+func (f *fakeStore) ClearExpiredEndpointSecrets(_ context.Context, nowMillis int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for _, ep := range f.endpoints {
+		if ep.PrevSecretExpiresAt != 0 && ep.PrevSecretExpiresAt <= nowMillis {
+			ep.PrevSecretEnc = nil
+			ep.PrevSecretExpiresAt = 0
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeStore) ClaimWebhookMessages(_ context.Context, nowMillis int64, batch int, perEndpointCap int, leaseOwner string) ([]store.WebhookMessageRow, error) {
+	if leaseOwner == "" {
+		return nil, store.ErrInvalid
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if batch <= 0 {
@@ -132,6 +160,7 @@ func (f *fakeStore) ClaimWebhookMessages(_ context.Context, nowMillis int64, bat
 			continue
 		}
 		m.State = "inflight"
+		m.LeaseOwner = leaseOwner
 		m.LeaseExpiresAt = nowMillis + 5*60*1000
 		m.UpdatedAt = nowMillis
 		inflight[m.EndpointID]++
@@ -163,41 +192,45 @@ func (f *fakeStore) RecordWebhookAttempt(_ context.Context, attempt store.Webhoo
 	return nil
 }
 
-func (f *fakeStore) MarkWebhookDelivered(_ context.Context, id string, nowMillis, statusCode int64) error {
+func (f *fakeStore) MarkWebhookDelivered(_ context.Context, id string, nowMillis, statusCode int64, leaseOwner string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, ok := f.messages[id]
-	if !ok {
-		return store.ErrNotFound
+	if !ok || m.State != "inflight" || m.LeaseOwner != leaseOwner {
+		return store.ErrStale
 	}
 	m.State = "delivered"
 	m.DeliveredAt = nowMillis
 	m.LastStatusCode = statusCode
 	m.LastError = ""
+	m.LeaseOwner = ""
+	m.LeaseExpiresAt = 0
 	m.UpdatedAt = nowMillis
 	return nil
 }
 
-func (f *fakeStore) MarkWebhookDead(_ context.Context, id, errText string, nowMillis, statusCode int64) error {
+func (f *fakeStore) MarkWebhookDead(_ context.Context, id, errText string, nowMillis, statusCode int64, leaseOwner string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, ok := f.messages[id]
-	if !ok {
-		return store.ErrNotFound
+	if !ok || m.State != "inflight" || m.LeaseOwner != leaseOwner {
+		return store.ErrStale
 	}
 	m.State = "dead"
 	m.LastError = errText
 	m.LastStatusCode = statusCode
+	m.LeaseOwner = ""
+	m.LeaseExpiresAt = 0
 	m.UpdatedAt = nowMillis
 	return nil
 }
 
-func (f *fakeStore) RequeueWebhookMessage(_ context.Context, id, errText string, statusCode, nextAttemptAt, nowMillis int64) error {
+func (f *fakeStore) RequeueWebhookMessage(_ context.Context, id, errText string, statusCode, nextAttemptAt, nowMillis int64, leaseOwner string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, ok := f.messages[id]
-	if !ok {
-		return store.ErrNotFound
+	if !ok || m.State != "inflight" || m.LeaseOwner != leaseOwner {
+		return store.ErrStale
 	}
 	if nextAttemptAt <= 0 {
 		return store.ErrInvalid
@@ -207,6 +240,7 @@ func (f *fakeStore) RequeueWebhookMessage(_ context.Context, id, errText string,
 	m.LastError = errText
 	m.LastStatusCode = statusCode
 	m.NextAttemptAt = nextAttemptAt
+	m.LeaseOwner = ""
 	m.LeaseExpiresAt = 0
 	m.UpdatedAt = nowMillis
 	return nil
@@ -226,6 +260,8 @@ func (f *fakeStore) RedeliverWebhookMessage(_ context.Context, id string, nowMil
 	m.AttemptCount = 0
 	m.NextAttemptAt = nowMillis
 	m.LastError = ""
+	m.LeaseOwner = ""
+	m.LeaseExpiresAt = 0
 	m.UpdatedAt = nowMillis
 	return nil
 }
@@ -541,11 +577,11 @@ func TestWorkerSuccessResetsCounters(t *testing.T) {
 
 func TestWorkerMissingEndpointDead(t *testing.T) {
 	fake := newFakeStore(time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC))
-	msg := store.WebhookMessageRow{ID: goldenMsgID, EndpointID: "missing", EventType: "task.created", Payload: []byte(`{}`), State: "inflight", UpdatedAt: fake.clock().UnixMilli()}
+	w := testWorker(fake, statusSend(200))
+	msg := store.WebhookMessageRow{ID: goldenMsgID, EndpointID: "missing", EventType: "task.created", Payload: []byte(`{}`), State: "inflight", LeaseOwner: w.cfg.InstanceID, UpdatedAt: fake.clock().UnixMilli()}
 	fake.mu.Lock()
 	fake.messages[goldenMsgID] = &msg
 	fake.mu.Unlock()
-	w := testWorker(fake, statusSend(200))
 	if err := w.deliverOne(t.Context(), msg); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
@@ -568,15 +604,15 @@ func TestWorkerInactiveEndpointRequeues(t *testing.T) {
 	fake := newFakeStore(time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC))
 	fake.sealEndpoint(t, "ep1", func(ep *store.WebhookEndpointRow) { ep.Active = false })
 	now := fake.clock().UnixMilli()
-	msg := store.WebhookMessageRow{ID: goldenMsgID, EndpointID: "ep1", EventType: "task.created", Payload: []byte(`{}`), State: "inflight", NextAttemptAt: now, UpdatedAt: now}
-	fake.mu.Lock()
-	fake.messages[goldenMsgID] = &msg
-	fake.mu.Unlock()
 	called := false
 	w := testWorker(fake, func(context.Context, store.WebhookMessageRow, store.WebhookEndpointRow, DeliverySecrets, int64, []byte) (int64, []byte, []byte, string) {
 		called = true
 		return 200, nil, nil, ""
 	})
+	msg := store.WebhookMessageRow{ID: goldenMsgID, EndpointID: "ep1", EventType: "task.created", Payload: []byte(`{}`), State: "inflight", LeaseOwner: w.cfg.InstanceID, NextAttemptAt: now, UpdatedAt: now}
+	fake.mu.Lock()
+	fake.messages[goldenMsgID] = &msg
+	fake.mu.Unlock()
 	if err := w.deliverOne(t.Context(), msg); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
@@ -1153,8 +1189,8 @@ func TestWorkerLeaseHandoff(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read after sweep: %v", err)
 	}
-	if afterSweep.State != "pending" || afterSweep.ID != claimedID || afterSweep.AttemptCount != 0 {
-		t.Fatalf("after sweep = %+v, want pending same id unchanged attempts", afterSweep)
+	if afterSweep.State != "pending" || afterSweep.ID != claimedID || afterSweep.AttemptCount != 1 {
+		t.Fatalf("after sweep = %+v, want pending same id with one spent attempt", afterSweep)
 	}
 	var sends atomic.Int64
 	driver := NewWorker(WorkerConfig{
@@ -1185,11 +1221,197 @@ func TestWorkerLeaseHandoff(t *testing.T) {
 		t.Fatalf("post-sweep sends = %d, want exactly 1", n)
 	}
 	release()
-	if err := <-worker1Done; err == nil {
-		t.Fatal("worker1 should fail closed on the delivered message")
+	if err := <-worker1Done; err != nil {
+		t.Fatalf("stale worker1 completion should be benign: %v", err)
 	}
 	if id, ok := worker1ID.Load().(string); !ok || id != claimedID {
 		t.Fatalf("worker1 id = %q, want %q", id, claimedID)
+	}
+}
+
+func TestWorkerInstanceIDAndRetentionDefaults(t *testing.T) {
+	w := NewWorker(WorkerConfig{}, nil)
+	if len(w.cfg.InstanceID) != 16 {
+		t.Fatalf("instance id = %q, want 16 hex chars", w.cfg.InstanceID)
+	}
+	for _, r := range w.cfg.InstanceID {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			t.Fatalf("instance id = %q, want lowercase hex", w.cfg.InstanceID)
+		}
+	}
+	if w.cfg.Retention != 30*24*time.Hour {
+		t.Fatalf("retention = %v, want 30d", w.cfg.Retention)
+	}
+	explicit := NewWorker(WorkerConfig{InstanceID: "owner-1", Retention: time.Hour}, nil)
+	if explicit.cfg.InstanceID != "owner-1" || explicit.cfg.Retention != time.Hour {
+		t.Fatalf("explicit config not kept: %+v", explicit.cfg)
+	}
+}
+
+func TestWorkerRotate401FastRetry(t *testing.T) {
+	now := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	fake := newFakeStore(now)
+	key := []byte("0123456789abcdef0123456789abcdef")
+	rawA := fake.sealEndpoint(t, "ep1", nil)
+	fake.addMessage(goldenMsgID, "ep1")
+	rawB := []byte("rotated-secret-for-ep1-0000000000")
+	var firstSecrets, secondSecrets DeliverySecrets
+	calls := 0
+	w := testWorker(fake, func(_ context.Context, _ store.WebhookMessageRow, _ store.WebhookEndpointRow, secrets DeliverySecrets, _ int64, _ []byte) (int64, []byte, []byte, string) {
+		calls++
+		if calls == 1 {
+			firstSecrets = secrets
+			// The rotation lands mid-send: the post-401 re-fetch must observe it.
+			sealed, err := SealSecret(key, rawB, secretAAD("ep1"))
+			if err != nil {
+				t.Errorf("seal rotated: %v", err)
+				return 401, nil, nil, ""
+			}
+			fake.mu.Lock()
+			fake.endpoints["ep1"].SecretEnc = sealed
+			fake.mu.Unlock()
+			return 401, []byte(`{}`), nil, ""
+		}
+		secondSecrets = secrets
+		return 200, []byte(`{}`), nil, ""
+	})
+	driveNow := fake.clock()
+	if err := w.DriveOnce(t.Context()); err != nil {
+		t.Fatalf("drive 1: %v", err)
+	}
+	got := fake.getMessage(goldenMsgID)
+	if got.State != "pending" || got.AttemptCount != 1 {
+		t.Fatalf("after 401 = %+v, want pending with one attempt", got)
+	}
+	if want := driveNow.Add(30 * time.Second).UnixMilli(); got.NextAttemptAt != want {
+		t.Fatalf("requeue delay = %d, want %d (30s)", got.NextAttemptAt, want)
+	}
+	if !bytes.Equal(firstSecrets.Current, rawA) {
+		t.Fatal("first send did not use the pre-rotation secret")
+	}
+	// Redrive with the new secret delivers.
+	fake.advance(30 * time.Second)
+	if err := w.DriveOnce(t.Context()); err != nil {
+		t.Fatalf("drive 2: %v", err)
+	}
+	if got := fake.getMessage(goldenMsgID); got.State != "delivered" {
+		t.Fatalf("after redrive = %+v, want delivered", got)
+	}
+	if !bytes.Equal(secondSecrets.Current, rawB) {
+		t.Fatal("redrive did not use the rotated secret")
+	}
+	if calls != 2 {
+		t.Fatalf("sends = %d, want 2", calls)
+	}
+}
+
+func TestWorkerRotate401UnchangedNormalBackoff(t *testing.T) {
+	now := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	fake := newFakeStore(now)
+	fake.sealEndpoint(t, "ep1", nil)
+	fake.addMessage(goldenMsgID, "ep1")
+	w := testWorker(fake, statusSend(401))
+	if err := w.DriveOnce(t.Context()); err != nil {
+		t.Fatalf("drive: %v", err)
+	}
+	got := fake.getMessage(goldenMsgID)
+	if got.State != "pending" || got.AttemptCount != 1 {
+		t.Fatalf("after 401 = %+v, want pending with one attempt", got)
+	}
+	delay := time.Duration(got.NextAttemptAt-now.UnixMilli()) * time.Millisecond
+	base := BackoffForAttempt(1)
+	if delay < base*8/10 || delay > base*12/10 {
+		t.Fatalf("unchanged-secret 401 delay = %v, want table %v bounds", delay, base)
+	}
+}
+
+func TestWorkerStaleCompletionBenign(t *testing.T) {
+	now := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	fake := newFakeStore(now)
+	fake.sealEndpoint(t, "ep1", nil)
+	fake.addMessage(goldenMsgID, "ep1")
+	w := testWorker(fake, statusSend(200))
+	claimed, err := fake.ClaimWebhookMessages(t.Context(), now.UnixMilli(), 64, 0, "other")
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim = %+v, %v", claimed, err)
+	}
+	if err := w.deliverOne(t.Context(), claimed[0]); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	got := fake.getMessage(goldenMsgID)
+	if got.State != "inflight" || got.LeaseOwner != "other" || got.AttemptCount != 0 {
+		t.Fatalf("stolen row changed: %+v", got)
+	}
+	ep, _ := fake.GetWebhookEndpoint(t.Context(), "ep1")
+	if ep.ConsecutiveFailures != 0 || ep.LastStatus != "never" {
+		t.Fatalf("endpoint counters moved: %+v", ep)
+	}
+	if len(fake.attempts) != 1 || fake.attempts[0].AttemptNo != 1 {
+		t.Fatalf("attempts = %+v, want one audit row", fake.attempts)
+	}
+}
+
+func TestWorkerSweepClearsExpiredSecrets(t *testing.T) {
+	now := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	fake := newFakeStore(now)
+	fake.sealEndpoint(t, "ep1", func(ep *store.WebhookEndpointRow) {
+		ep.PrevSecretEnc = []byte("old-sealed")
+		ep.PrevSecretExpiresAt = now.Add(-time.Hour).UnixMilli()
+	})
+	fake.sealEndpoint(t, "ep2", func(ep *store.WebhookEndpointRow) {
+		ep.PrevSecretEnc = []byte("old-sealed")
+		ep.PrevSecretExpiresAt = now.Add(time.Hour).UnixMilli()
+	})
+	w := testWorker(fake, statusSend(200))
+	n, err := w.SweepOnce(t.Context())
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("sweep = %d, want 1 cleared secret", n)
+	}
+	expired, _ := fake.GetWebhookEndpoint(t.Context(), "ep1")
+	if expired.PrevSecretEnc != nil || expired.PrevSecretExpiresAt != 0 {
+		t.Fatalf("expired prev survives: %+v", expired.PrevSecretEnc)
+	}
+	fresh, _ := fake.GetWebhookEndpoint(t.Context(), "ep2")
+	if len(fresh.PrevSecretEnc) == 0 || fresh.PrevSecretExpiresAt == 0 {
+		t.Fatalf("unexpired prev cleared: %+v", fresh)
+	}
+}
+
+func TestWorkerJanitorRetentionBoundary(t *testing.T) {
+	now := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	fake := newFakeStore(now)
+	fake.sealEndpoint(t, "ep1", nil)
+	oldID := "msg_01J9Z8X7Q6W5E4R3T2Y179B11B"
+	edgeID := "msg_01J9Z8X7Q6W5E4R3T2Y179C22C"
+	freshID := "msg_01J9Z8X7Q6W5E4R3T2Y179D33D"
+	fake.addMessage(oldID, "ep1")
+	fake.addMessage(edgeID, "ep1")
+	fake.addMessage(freshID, "ep1")
+	fake.mu.Lock()
+	fake.messages[oldID].State = "delivered"
+	fake.messages[oldID].UpdatedAt = now.Add(-2 * time.Hour).UnixMilli()
+	fake.messages[edgeID].State = "delivered"
+	fake.messages[edgeID].UpdatedAt = now.Add(-time.Hour).UnixMilli()
+	fake.messages[freshID].State = "delivered"
+	fake.messages[freshID].UpdatedAt = now.UnixMilli()
+	fake.mu.Unlock()
+	w := testWorker(fake, statusSend(200))
+	pruned, err := w.JanitorOnce(t.Context(), time.Hour)
+	if err != nil {
+		t.Fatalf("janitor: %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want only the strictly-older row", pruned)
+	}
+	fake.mu.Lock()
+	_, edgeKept := fake.messages[edgeID]
+	_, freshKept := fake.messages[freshID]
+	fake.mu.Unlock()
+	if !edgeKept || !freshKept {
+		t.Fatal("janitor pruned a row at or inside the retention boundary")
 	}
 }
 

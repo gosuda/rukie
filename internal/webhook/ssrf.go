@@ -51,6 +51,10 @@ var denyPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("169.254.0.0/16"),
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
 	netip.MustParsePrefix("fc00::/7"),
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("::/128"),
@@ -60,6 +64,35 @@ var denyPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("198.51.100.0/24"),
 	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("2001:db8::/32"),
+}
+
+// testBypassPrefixes are the only ranges AllowPrivateTargets bypasses:
+// loopback and RFC 1918. Every other denied range (link-local, CGNAT, ULA,
+// multicast, reserved, documentation, NAT64, ...) still denies under the flag,
+// so hermetic tests can use loopback/RFC 1918 without opening the metadata
+// or multicast surface.
+var testBypassPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+}
+
+// isTestBypassable reports whether ip is in the narrow bypass set above.
+// Callers normalize zones and IPv4-mapped forms first; this normalizes again
+// defensively so both forms behave identically.
+func isTestBypassable(ip netip.Addr) bool {
+	addr := ip.WithZone("")
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+	}
+	for _, prefix := range testBypassPrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckURL validates rawURL and returns its hostname for resolution and SNI.
@@ -120,9 +153,6 @@ func (p *Policy) ResolveAndCheck(ctx context.Context, host string) ([]netip.Addr
 	if len(addrs) == 0 {
 		return nil, &policyError{reason: "no addresses for " + trimmed}
 	}
-	if p != nil && p.AllowPrivateTargets {
-		return addrs, nil
-	}
 	extra, err := p.extraPrefixes()
 	if err != nil {
 		return nil, err
@@ -131,6 +161,9 @@ func (p *Policy) ResolveAndCheck(ctx context.Context, host string) ([]netip.Addr
 		ip := addr.WithZone("")
 		if ip.Is4In6() {
 			ip = ip.Unmap()
+		}
+		if p != nil && p.AllowPrivateTargets && isTestBypassable(ip) {
+			continue
 		}
 		for _, prefix := range denyPrefixes {
 			if prefix.Contains(ip) {
@@ -225,9 +258,6 @@ func (p *Policy) extraPrefixes() ([]netip.Prefix, error) {
 }
 
 func checkDenied(p *Policy, ip netip.Addr) error {
-	if p != nil && p.AllowPrivateTargets {
-		return nil
-	}
 	extra, err := p.extraPrefixes()
 	if err != nil {
 		return err
@@ -235,6 +265,9 @@ func checkDenied(p *Policy, ip netip.Addr) error {
 	addr := ip.WithZone("")
 	if addr.Is4In6() {
 		addr = addr.Unmap()
+	}
+	if p != nil && p.AllowPrivateTargets && isTestBypassable(addr) {
+		return nil
 	}
 	for _, prefix := range denyPrefixes {
 		if prefix.Contains(addr) {
