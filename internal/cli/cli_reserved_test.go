@@ -91,7 +91,7 @@ func TestMCPStdioArgs(t *testing.T) {
 func TestCLIStubsNameTheirStep(t *testing.T) {
 	for path, step := range map[string]string{
 		"runner": "F6", "job-exec": "F6", "backup": "K10",
-		"admin status": "K10", "admin repo import": "F14",
+		"admin status": "K10",
 	} {
 		msg, ok := cli.StubFor(strings.Split(path, " "))
 		if !ok {
@@ -101,7 +101,12 @@ func TestCLIStubsNameTheirStep(t *testing.T) {
 			t.Fatalf("stub %q = %q, want step %s", path, msg, step)
 		}
 	}
-	for _, live := range [][]string{{"serve"}, {"bootstrap"}, {"dev"}, {"mcp"}, {"auth", "login"}, {"api", "index"}} {
+	for _, live := range [][]string{{"admin", "gc"}, {"admin", "repo", "import"}} {
+		if _, ok := cli.StubFor(live); ok {
+			t.Fatalf("%v shipped in F14 and must not be a stub", live)
+		}
+	}
+	for _, live := range [][]string{{"serve"}, {"bootstrap"}, {"dev"}, {"mcp"}, {"auth", "login"}, {"api", "index"}, {"admin", "gc"}, {"admin", "repo", "import"}} {
 		if _, ok := cli.StubFor(live); ok {
 			t.Fatalf("%v must not be a stub", live)
 		}

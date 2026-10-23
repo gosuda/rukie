@@ -50,6 +50,7 @@ func buildCLIServer(t *testing.T) (*op.Server, *auth.Service, string) {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterAdminF14Views(views)
 	api.RegisterOrgsViews(views)
 	var key [32]byte
 	copy(key[:], "k8-cli-test-key-0123456789abcdef")
@@ -85,6 +86,9 @@ func registerCLIAPI(t *testing.T, table *op.Table, docs *api.DocStore, deps api.
 	}
 	if err := api.RegisterAdmin(table, deps); err != nil {
 		t.Fatalf("register admin: %v", err)
+	}
+	if err := api.RegisterAdminF14(table, deps); err != nil {
+		t.Fatalf("register admin f14: %v", err)
 	}
 	if err := api.RegisterOrgs(table, deps); err != nil {
 		t.Fatalf("register orgs: %v", err)

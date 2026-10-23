@@ -30,17 +30,15 @@ var ReservedPaths = [][]string{
 }
 
 var StubSteps = map[string]string{
-	"runner":            "F6",
-	"job-exec":          "F6",
-	"backup":            "K10",
-	"restore":           "K10",
-	"admin secret-gen":  "K10",
-	"admin ssh-keygen":  "K10",
-	"admin migrate":     "K10",
-	"admin status":      "K10",
-	"admin reconcile":   "K10",
-	"admin gc":          "K10",
-	"admin repo import": "F14",
+	"runner":           "F6",
+	"job-exec":         "F6",
+	"backup":           "K10",
+	"restore":          "K10",
+	"admin secret-gen": "K10",
+	"admin ssh-keygen": "K10",
+	"admin migrate":    "K10",
+	"admin status":     "K10",
+	"admin reconcile":  "K10",
 }
 
 func CheckReserved(root *op.Command) error {
@@ -137,6 +135,11 @@ func Run(ctx context.Context, std IO, argv []string) int {
 	if len(argv) == 0 {
 		emit(std.Stderr, "usage: rukie <command> [flags]")
 		return 64
+	}
+	if len(argv) > 1 && argv[0] == "admin" {
+		if code, ok := TryAdminHandwritten(ctx, std, argv[1:]); ok {
+			return code
+		}
 	}
 	if msg, ok := StubFor(argv); ok {
 		emit(std.Stdout, msg)

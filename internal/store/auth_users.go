@@ -20,6 +20,8 @@ type AuthUser struct {
 	PasswordChangedAt int64
 	CreatedAt         int64
 	UpdatedAt         int64
+	DeletedAt         sql.NullInt64
+	PurgeAfter        sql.NullInt64
 	MustChange        bool
 	TOTPEnabled       bool
 	OIDCOnly          bool
@@ -29,7 +31,8 @@ type AuthUser struct {
 
 const sqlAuthUserColumns = `id, name, lower_name, email, full_name, password_algo,
 	must_change_password, totp_enabled, oidc_only, is_admin, is_active,
-	failed_login_count, locked_until, password_changed_at, created_at, updated_at`
+	failed_login_count, locked_until, password_changed_at, created_at, updated_at,
+	deleted_at, purge_after`
 
 func scanAuthUser(row interface{ Scan(dest ...any) error }, u *AuthUser, hash *string) error {
 	var mustChange, totp, oidc, admin, active int64
@@ -37,7 +40,8 @@ func scanAuthUser(row interface{ Scan(dest ...any) error }, u *AuthUser, hash *s
 	var columns []any
 	columns = append(columns, &u.ID, &u.Name, &u.Lower, &u.Email, &u.FullName,
 		&u.PasswordAlgo, &mustChange, &totp, &oidc, &admin, &active,
-		&u.FailedLoginCount, &locked, &u.PasswordChangedAt, &u.CreatedAt, &u.UpdatedAt)
+		&u.FailedLoginCount, &locked, &u.PasswordChangedAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.DeletedAt, &u.PurgeAfter)
 	if hash != nil {
 		columns = append(columns, hash)
 	}

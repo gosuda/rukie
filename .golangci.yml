@@ -17,6 +17,12 @@ linters:
       - path: ^internal/rukproc/
         text: G204|G703
         linters: [gosec]
+      # Repo import shells to stock git with fixed subcommands and a `--`
+      # separator; sources and remotes are operator-supplied paths and URLs,
+      # never a shell string.
+      - path: ^internal/cli/admin_f14\.go$
+        text: G204
+        linters: [gosec]
       - path: _test\.go$
         linters: [gosec]
       - path: ^internal/op/mount_huma\.go$

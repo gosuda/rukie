@@ -52,6 +52,9 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	if err := api.RegisterAdmin(table, deps); err != nil {
 		return nil, err
 	}
+	if err := api.RegisterAdminF14(table, deps); err != nil {
+		return nil, err
+	}
 	if err := api.RegisterF12(table, deps); err != nil {
 		return nil, err
 	}
@@ -79,6 +82,7 @@ func assemble(deps api.Deps, authn op.Authenticator) (*op.Server, error) {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterAdminF14Views(views)
 	api.RegisterF12Views(views)
 	api.RegisterReposViews(views)
 	api.RegisterSearchViews(views)
@@ -111,12 +115,37 @@ func buildRemote() (*op.Server, error) {
 }
 
 type RemoteInvoker struct {
-	Base    *url.URL
-	Client  *http.Client
-	Jar     http.CookieJar
-	Token   string
+	Jar    http.CookieJar
+	Base   *url.URL
+	Client *http.Client
+	Token  string
+	// Session is the initial session cookie header value.
 	Session string
+	// JarFile, when set, receives the jar's session cookies after every
+	// successful response that sets one, so a rotated session survives the
+	// process. It must be a 0600 session file, usually the one login wrote.
+	JarFile string
 	Retries int
+}
+
+// persistJar writes the jar's session cookies back to JarFile. It only runs
+// on success and only carries the session cookie, never CSRF or other jar
+// state. A cleared or absent session leaves the file alone so a logout keeps
+// its existing dead-session behavior.
+func (r *RemoteInvoker) persistJar(u *url.URL, status int) {
+	if r.JarFile == "" || status < 200 || status >= 300 {
+		return
+	}
+	var kept []string
+	for _, c := range r.Jar.Cookies(u) {
+		if c.Name == auth.SessionCookieName() && c.Value != "" {
+			kept = append(kept, c.Name+"="+c.Value)
+		}
+	}
+	if len(kept) == 0 {
+		return
+	}
+	_ = writeSessionFile(r.JarFile, strings.Join(kept, "; "))
 }
 
 func (r *RemoteInvoker) Invoke(ctx context.Context, req *http.Request) (*op.Response, error) {
@@ -187,6 +216,7 @@ func (r *RemoteInvoker) once(ctx context.Context, req *http.Request, rawBody []b
 	out := &op.Response{Status: resp.StatusCode, Header: resp.Header.Clone(), Body: body}
 	if r.Jar != nil {
 		r.Jar.SetCookies(cloned.URL, resp.Cookies())
+		r.persistJar(cloned.URL, resp.StatusCode)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 		if resp.Header.Get("Retry-After") != "" {
@@ -371,6 +401,7 @@ func dispatchRemote(ctx context.Context, std IO, server *op.Server, inv *op.Invo
 		Client: &http.Client{Timeout: timeout},
 	}
 	if session != "" {
+		caller.JarFile = cmp.Or(w.sessionFile, DefaultSessionFile(std.Getenv))
 		for _, part := range strings.Split(session, ";") {
 			name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
 			if ok {

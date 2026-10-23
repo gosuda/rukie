@@ -131,11 +131,13 @@ func (tx *WriteTx) GetRepoForUpdate(id int64, includeDeleted bool) (RepoRow, err
 }
 
 type RepoListFilter struct {
-	Visibility  string
-	Sort        string
-	Cursor      string
-	OwnerUserID int64
-	Limit       int
+	Visibility     string
+	Sort           string
+	Cursor         string
+	State          string
+	OwnerUserID    int64
+	Limit          int
+	IncludeDeleted bool
 }
 
 type repoCursor struct {
@@ -196,8 +198,24 @@ func (tx *ReadTx) ListRepos(filter RepoListFilter) ([]RepoRow, string, error) {
 	if cerr != nil {
 		return nil, "", cerr
 	}
-	query := `SELECT ` + sqlRepoColumns + ` FROM repos WHERE deleted_at IS NULL`
+	query := `SELECT ` + sqlRepoColumns + ` FROM repos WHERE 1 = 1`
 	var args []any
+	if !filter.IncludeDeleted {
+		query += ` AND deleted_at IS NULL`
+	}
+	switch filter.State {
+	case "", "active":
+		if filter.IncludeDeleted {
+			query += ` AND deleted_at IS NULL`
+		}
+	case "deleted":
+		query += ` AND deleted_at IS NOT NULL`
+	case "forking":
+		query += ` AND deleted_at IS NULL AND state = 'forking'`
+	case "all":
+	default:
+		return nil, "", fmt.Errorf("state: %w: must be active, deleted, forking, or all", ErrInvalid)
+	}
 	if filter.OwnerUserID != 0 {
 		query += ` AND owner_user_id = ? AND org_id = 0`
 		args = append(args, filter.OwnerUserID)

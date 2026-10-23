@@ -12,6 +12,7 @@ import (
 	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
 
+	"github.com/gosuda/rukie/internal/cli"
 	"github.com/gosuda/rukie/internal/config"
 	"github.com/gosuda/rukie/internal/store"
 	"github.com/gosuda/rukie/internal/sysops"
@@ -64,6 +65,8 @@ var handWrittenAdminLeaves = map[string]bool{
 	"status":     true,
 	"reconcile":  true,
 	"ssh-keygen": true,
+	"gc":         true,
+	"repo":       true,
 }
 
 func tryHandWrittenAdmin(argv []string) (int, bool) {
@@ -82,6 +85,14 @@ func tryHandWrittenAdmin(argv []string) (int, bool) {
 		code = runStatus(argv[1:])
 	case "reconcile":
 		code = runReconcile(argv[1:])
+	case "gc":
+		code = cli.TryAdminGC(argv[1:])
+	case "repo":
+		if len(argv) > 1 && argv[1] == "import" {
+			code = cli.TryAdminRepoImport(argv[2:])
+		} else {
+			return 0, false
+		}
 	}
 	return code, true
 }

@@ -226,8 +226,54 @@ func (w *Watcher) RunSweeper(ctx context.Context, interval time.Duration) error 
 		case <-timer.C:
 		}
 		_ = w.SweepDuePurges(ctx)
+		_ = w.SweepDueUserPurges(ctx)
 		timer.Reset(interval)
 	}
+}
+
+// SweepDueUserPurges hard-deletes tombstoned users whose purge horizon has
+// passed once no repository rows reference them. The repo purge machinery
+// owns daemon removal; a user with remaining repos waits for the next sweep
+// so no repository is orphaned with a null owner. Guard refusals (a user who
+// somehow became a sole owner or the last admin after deletion) skip the row
+// instead of failing the sweep.
+func (w *Watcher) SweepDueUserPurges(ctx context.Context) error {
+	if w.store == nil {
+		return fmt.Errorf("repowatch: store is required")
+	}
+	var due []store.AuthUser
+	rerr := w.store.Read(ctx, func(tx *store.ReadTx) error {
+		var lerr error
+		due, lerr = tx.DueUserPurges(w.now())
+		return lerr
+	})
+	if rerr != nil {
+		return rerr
+	}
+	for _, user := range due {
+		var remaining int64
+		if cerr := w.store.Read(ctx, func(tx *store.ReadTx) error {
+			var lerr error
+			remaining, lerr = tx.CountUserRepos(user.ID)
+			return lerr
+		}); cerr != nil {
+			return cerr
+		}
+		if remaining > 0 {
+			continue
+		}
+		if derr := w.store.DeleteAuthUser(ctx, user.ID); derr != nil {
+			if errors.Is(derr, store.ErrLastAdmin) || errors.Is(derr, store.ErrSoleOwner) {
+				continue
+			}
+			return derr
+		}
+		_ = w.store.RecordAudit(ctx, store.AuditRecord{
+			Action: "user.purge", TargetType: "user", TargetID: user.Name,
+			Result: "ok", At: w.now().UnixMilli(),
+		})
+	}
+	return nil
 }
 
 func (w *Watcher) SweepDuePurges(ctx context.Context) error {

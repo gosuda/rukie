@@ -721,6 +721,12 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		OnRepoCreated: func(repoID int64) { watcher.Start(ctx, repoID) },
 		OnRepoDeleted: watcher.Stop,
 	}
+	// AdminF14 needs the repo dependency set: repo verify and attest verify
+	// call the daemon through Deps.Ruk, which authDeps does not carry.
+	if regErr := api.RegisterAdminF14(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	if regErr := api.RegisterRepos(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
@@ -788,6 +794,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterUserViews(views)
 	api.RegisterSSHKeysViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterAdminF14Views(views)
 	api.RegisterF12Views(views)
 	api.RegisterReposViews(views)
 	api.RegisterSearchViews(views)
@@ -878,7 +885,8 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		return nil, cleanup, err
 	}
 	raw := api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server})
-	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.CIRunnerV1(repoDeps.CIRaw(raw)))), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}}, cleanup, nil
+	adminPaged := repoDeps.AdminRaw(repoDeps.CIRunnerV1(repoDeps.CIRaw(raw)), csrfKey)
+	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(adminPaged)), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}}, cleanup, nil
 }
 
 func dialRepoClient(ctx context.Context, logger *slog.Logger, socket string) *ruk.Client {
