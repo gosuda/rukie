@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -331,23 +332,44 @@ func TestEveryOpHasPageTest(t *testing.T) {
 			tc.check(t, rec.Body.String())
 		}
 	}
-	forms := map[string]string{
-		"admin.user.delete":  "/admin/users/ada/delete",
-		"admin.repo.purge":   "/admin/repos/abc/purge",
-		"admin.job.retry":    "/admin/jobs/no-such-job/retry",
-		"admin.token.create": "/admin/users/ada/tokens",
-		"admin.token.revoke": "/admin/users/ada/tokens/revoke",
-		"admin.search.sync":  "/admin/search/sync",
-		"admin.mirror.sync":  "/admin/mirrors/abc/sync",
-		"admin.mirror.retry": "/admin/mirror/runs/no-such-run/retry",
-		"admin.inbox.test":   "/admin/inbox/test",
+	type formProbe struct {
+		target string
+		action string
+	}
+	forms := map[string]formProbe{
+		"admin.user.delete":  {target: "/admin/users/ada/delete", action: `action="/admin/users/`},
+		"admin.repo.purge":   {target: "/admin/repos/abc/purge", action: `action="/admin/repos/`},
+		"admin.job.retry":    {target: "/admin/jobs/no-such-job/retry", action: `action="/admin/jobs/`},
+		"admin.token.create": {target: "/admin/users/ada/tokens", action: `action="/admin/users/`},
+		"admin.token.revoke": {target: "/admin/users/ada/tokens/revoke", action: `action="/admin/users/`},
+		"admin.search.sync":  {target: "/admin/search/sync", action: `action="/admin/search/sync"`},
+		"admin.mirror.sync":  {target: "/admin/mirrors/abc/sync", action: `action="/admin/mirrors/`},
+		"admin.mirror.retry": {target: "/admin/mirror/runs/no-such-run/retry", action: `action="/admin/mirror/runs/`},
+		"admin.inbox.test":   {target: "/admin/inbox/test", action: `action="/admin/inbox/test"`},
 	}
 	if len(forms) != 9 {
 		t.Fatalf("form map covers %d mutations, want 9", len(forms))
 	}
-	for name, target := range forms {
+	// Every admin op the table knows must be covered by a probe above: a new
+	// op without a page or form fixture fails here, not in a dump gate.
+	landedAdmin := map[string]bool{
+		"admin.user.create": true, "admin.user.update": true, "admin.user.unlock": true,
+		"admin.user.reset-password": true, "admin.user.totp-reset": true, "admin.land.run": true,
+		"admin.user.list": true,
+	}
+	for name, spec := range specs {
+		if !strings.HasPrefix(name, "admin.") || landedAdmin[name] {
+			continue
+		}
+		if _, ok := reads[name]; !ok {
+			if _, ok := forms[name]; !ok {
+				t.Fatalf("admin op %q (%v) has no page or form probe", name, spec.Kind)
+			}
+		}
+	}
+	for name, probe := range forms {
 		csrfCookie, csrfField := f14CSRF(t, e, "/admin/users", acookie)
-		rec := f14Call(t, e, f14Req{Method: http.MethodPost, Target: target,
+		rec := f14Call(t, e, f14Req{Method: http.MethodPost, Target: probe.target,
 			Auth:   acookie + "; " + csrfCookie,
 			Accept: "text/html",
 			Headers: map[string]string{
@@ -355,13 +377,16 @@ func TestEveryOpHasPageTest(t *testing.T) {
 			},
 			Body: "_csrf=" + csrfField + "&_idem=f14-" + f14IDem() + "&bogus-field=1"})
 		if rec.Code < 400 || rec.Code >= 500 {
-			t.Fatalf("POST %s = %d, want a 4xx form re-render:\n%s", target, rec.Code, rec.Body.String())
+			t.Fatalf("POST %s = %d, want a 4xx form re-render:\n%s", probe.target, rec.Code, rec.Body.String())
 		}
 		if !strings.Contains(rec.Body.String(), "<form") {
-			t.Fatalf("POST %s renders no form for %s:\n%s", target, name, rec.Body.String())
+			t.Fatalf("POST %s renders no form for %s:\n%s", probe.target, name, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), probe.action) {
+			t.Fatalf("POST %s re-render is not the %s form:\n%s", probe.target, name, rec.Body.String())
 		}
 		if err := zerojs.Assert(rec.Body.Bytes()); err != nil {
-			t.Fatalf("%s zero-JS: %v", target, err)
+			t.Fatalf("%s zero-JS: %v", probe.target, err)
 		}
 	}
 }
@@ -423,16 +448,63 @@ func TestAdminOpScopes(t *testing.T) {
 		if rec := f14Call(t, e, adminRead); rec.Code != http.StatusForbidden {
 			t.Fatalf("%s %s admin without write scope = %d, want 403:\n%s", probe.Method, probe.Target, rec.Code, rec.Body.String())
 		}
-		_ = adaWrite
-		_ = adaCookie
 	}
-	adminWrite := f14Req{Method: http.MethodGet, Target: "/admin/health", Auth: adaWrite}
-	if rec := f14Call(t, e, adminWrite); rec.Code != http.StatusOK {
-		t.Fatalf("admin write token health = %d, want 200:\n%s", rec.Code, rec.Body.String())
+	deleteAs := func(name, pw, cred string, want int) {
+		t.Helper()
+		f14User(t, e, 1, name, pw)
+		victim, err := e.svc.GetUser(t.Context(), name)
+		if err != nil {
+			t.Fatalf("lookup %s: %v", name, err)
+		}
+		rec := f14Call(t, e, f14Req{Method: http.MethodPost, Target: "/admin/users/" + name + "/delete",
+			Auth: cred, Headers: map[string]string{"If-Match": f14ETag(t, e, victim.ID)},
+			Body: `{"confirm":"` + name + `"}`})
+		if rec.Code != want {
+			t.Fatalf("delete %s = %d, want %d:\n%s", name, rec.Code, want, rec.Body.String())
+		}
 	}
-	adminSession := f14Req{Method: http.MethodGet, Target: "/admin/health", Auth: adaCookie}
-	if rec := f14Call(t, e, adminSession); rec.Code != http.StatusOK {
-		t.Fatalf("admin session health = %d, want 200:\n%s", rec.Code, rec.Body.String())
+	deleteAs("carol", randomPW(t), adaCookie, http.StatusAccepted)
+	deleteAs("dave", randomPW(t), adaWrite, http.StatusAccepted)
+	allow := []struct {
+		req  f14Req
+		want int
+	}{
+		{f14Req{Method: http.MethodGet, Target: "/admin/repos", Auth: adaCookie}, http.StatusOK},
+		{f14Req{Method: http.MethodPost, Target: "/admin/repos/999999/purge", Auth: adaCookie, Body: `{"confirm":"a/b"}`}, http.StatusNotFound},
+		{f14Req{Method: http.MethodGet, Target: "/admin/repos/1/verify", Auth: adaCookie}, http.StatusNotFound},
+		{f14Req{Method: http.MethodGet, Target: "/admin/jobs", Auth: adaCookie}, http.StatusOK},
+		{f14Req{Method: http.MethodPost, Target: "/admin/jobs/x/retry", Auth: adaCookie}, http.StatusNotFound},
+		{f14Req{Method: http.MethodGet, Target: "/admin/audit", Auth: adaCookie}, http.StatusOK},
+		{f14Req{Method: http.MethodGet, Target: "/admin/health", Auth: adaCookie}, http.StatusOK},
+		{f14Req{Method: http.MethodGet, Target: "/admin/users/bob/tokens", Auth: adaCookie}, http.StatusOK},
+		{f14Req{Method: http.MethodPost, Target: "/admin/users/bob/tokens", Auth: adaCookie, Body: `{"scopes":"repo:read"}`}, http.StatusCreated},
+		{f14Req{Method: http.MethodPost, Target: "/admin/users/bob/tokens/revoke", Auth: adaCookie, Body: `{"prefix":"deadbeefcafe"}`}, http.StatusNotFound},
+		{f14Req{Method: http.MethodPost, Target: "/admin/search/sync", Auth: adaCookie}, http.StatusCreated},
+		{f14Req{Method: http.MethodPost, Target: "/admin/mirrors/1/sync", Auth: adaCookie}, http.StatusNotFound},
+		{f14Req{Method: http.MethodPost, Target: "/admin/mirror/runs/x/retry", Auth: adaCookie}, http.StatusNotFound},
+		{f14Req{Method: http.MethodPost, Target: "/admin/inbox/test", Auth: adaCookie, Body: `{"user":"bob"}`}, http.StatusAccepted},
+		{f14Req{Method: http.MethodGet, Target: "/admin/attestations/verify?owner=a&repo=b&subject=c", Auth: adaCookie}, http.StatusNotFound},
+	}
+	for _, tc := range allow {
+		for _, cred := range []struct {
+			name string
+			auth string
+		}{{"session", adaCookie}, {"write-token", adaWrite}} {
+			rec := tc.req
+			rec.Auth = cred.auth
+			got := f14Call(t, e, rec)
+			if got.Code != tc.want {
+				t.Fatalf("%s %s admin %s = %d, want documented %d:\n%s", rec.Method, rec.Target, cred.name, got.Code, tc.want, got.Body.String())
+			}
+		}
+	}
+	bobWrite := f14Bearer(t, e, 2, op.ScopeAdminWrite)
+	for _, probe := range probes {
+		rec := probe
+		rec.Auth = bobWrite
+		if got := f14Call(t, e, rec); got.Code != http.StatusForbidden {
+			t.Fatalf("%s %s non-admin with admin:write = %d, want 403", probe.Method, probe.Target, got.Code)
+		}
 	}
 }
 
@@ -528,6 +600,142 @@ func TestAdminUserDeleteLifecycle(t *testing.T) {
 	}
 }
 
+// TestAdminPurgeLiveRow pins the live-purge contract: a missing If-Match is
+// refused, a stale one conflicts, and a current one tombstones and purges
+// the row at once.
+func TestAdminPurgeLiveRow(t *testing.T) {
+	e := buildF14Env(t)
+	pw := randomPW(t)
+	f14Admin(t, e, "ada", pw)
+	acookie := f14Login(t, e, "ada", pw)
+	var id int64
+	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		var werr error
+		id, werr = tx.InsertRepo(time.Now(), store.RepoInsert{
+			Name: "live", Visibility: "public", DefaultBranch: "main",
+			RukPath: "", OwnerUserID: sql.NullInt64{Int64: 1, Valid: true},
+		})
+		return werr
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	target := "/admin/repos/" + strconv.FormatInt(id, 10) + "/purge"
+	noMatch := f14Call(t, e, f14Req{Method: http.MethodPost, Target: target,
+		Auth: acookie, Body: `{"confirm":"ada/live"}`})
+	if noMatch.Code != http.StatusPreconditionRequired {
+		t.Fatalf("purge without etag = %d, want 428", noMatch.Code)
+	}
+	stale := f14Call(t, e, f14Req{Method: http.MethodPost, Target: target, Auth: acookie,
+		Headers: map[string]string{"If-Match": `"repo-ada-live-1"`}, Body: `{"confirm":"ada/live"}`})
+	if stale.Code != http.StatusConflict && stale.Code != http.StatusPreconditionFailed {
+		t.Fatalf("purge with stale etag = %d, want 409 or 412", stale.Code)
+	}
+	var updated int64
+	if err := e.st.Read(t.Context(), func(tx *store.ReadTx) error {
+		row, gerr := tx.GetRepo(id)
+		if gerr != nil {
+			return gerr
+		}
+		updated = row.UpdatedAt
+		return nil
+	}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	ok := f14Call(t, e, f14Req{Method: http.MethodPost, Target: target, Auth: acookie,
+		Headers: map[string]string{"If-Match": fmt.Sprintf("repo-ada-live-%d", updated)},
+		Body:    `{"confirm":"ada/live"}`})
+	if ok.Code != http.StatusAccepted {
+		t.Fatalf("purge with etag = %d, want 202:\n%s", ok.Code, ok.Body.String())
+	}
+	gone := f14Call(t, e, f14Req{Method: http.MethodGet, Target: "/ada/live"})
+	if gone.Code != http.StatusNotFound {
+		t.Fatalf("purged repo resolves = %d, want 404", gone.Code)
+	}
+}
+
+// TestAdminPageScopeGate pins the raw-page gates: the admin console and the
+// repo plumbing pages require the admin scope as well as a site admin, and a
+// token scoped to another repository cannot read across namespaces.
+func TestAdminPageScopeGate(t *testing.T) {
+	e := buildF14Env(t)
+	pw := randomPW(t)
+	f14Admin(t, e, "ada", pw)
+	acookie := f14Login(t, e, "ada", pw)
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	wrapped := e.deps.AdminRaw(e.server, key)
+	fetch := func(target, cookie string) int {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Accept", "text/html")
+		if cookie != "" {
+			req.Header.Set("Cookie", cookie)
+		}
+		rec := httptest.NewRecorder()
+		wrapped.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, target := range []string{"/admin", "/admin/monitor", "/admin/users/ada", "/admin/orgs"} {
+		if code := fetch(target, ""); code != http.StatusForbidden {
+			t.Fatalf("GET %s anon = %d, want 403", target, code)
+		}
+		if code := fetch(target, acookie); code != http.StatusOK {
+			t.Fatalf("GET %s admin = %d, want 200", target, code)
+		}
+	}
+	readOnly := f14Bearer(t, e, 1, op.ScopeRepoRead)
+	for _, target := range []string{"/admin", "/admin/monitor"} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Accept", "text/html")
+		req.Header.Set("Authorization", readOnly)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("GET %s read-only admin token = %d, want 403", target, rr.Code)
+		}
+	}
+	var aid int64
+	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		var werr error
+		aid, werr = tx.InsertRepo(time.Now(), store.RepoInsert{
+			Name: "alpha", Visibility: "public", DefaultBranch: "main",
+			OwnerUserID: sql.NullInt64{Int64: 1, Valid: true},
+		})
+		if werr != nil {
+			return werr
+		}
+		_, werr = tx.InsertRepo(time.Now(), store.RepoInsert{
+			Name: "beta", Visibility: "public", DefaultBranch: "main",
+			OwnerUserID: sql.NullInt64{Int64: 1, Valid: true},
+		})
+		return werr
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	minted, err := e.svc.CreateToken(t.Context(), auth.CreateTokenInput{
+		UserID: 1, Name: "scoped", Scopes: op.Scopes(0).Add(op.ScopeAdminWrite), Repos: []int64{aid},
+	})
+	if err != nil {
+		t.Fatalf("mint scoped: %v", err)
+	}
+	scoped := "Bearer " + minted.Secret
+	plumb := func(target string) int {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Accept", "text/html")
+		req.Header.Set("Authorization", scoped)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+		return rr.Code
+	}
+	if code := plumb("/ada/beta/-/claims"); code != http.StatusNotFound {
+		t.Fatalf("cross-repo claims = %d, want 404", code)
+	}
+	if code := plumb("/ada/alpha/-/claims"); code == http.StatusNotFound || code == http.StatusForbidden {
+		t.Fatalf("own-repo claims = %d, want the daemon path", code)
+	}
+}
+
 // TestAdminViolationMatrix pins one named violation per assumption on the
 // F14 error surface.
 func TestAdminViolationMatrix(t *testing.T) {
@@ -535,14 +743,17 @@ func TestAdminViolationMatrix(t *testing.T) {
 	pw := randomPW(t)
 	f14Admin(t, e, "ada", pw)
 	acookie := f14Login(t, e, "ada", pw)
+	f14User(t, e, 1, "bob", randomPW(t))
 	cases := []struct {
 		req    f14Req
 		name   string
 		absent string
 		want   int
 	}{
-		{req: f14Req{Method: http.MethodPost, Target: "/admin/repos/abc/purge", Auth: acookie, Body: `{"confirm":"a/b"}`}, name: "purge-live-conflict", want: 422},
+		{req: f14Req{Method: http.MethodPost, Target: "/admin/repos/abc/purge", Auth: acookie, Body: `{"confirm":"a/b"}`}, name: "purge-bad-id", want: 422},
 		{req: f14Req{Method: http.MethodPost, Target: "/admin/repos/999999/purge", Auth: acookie, Body: `{"confirm":"a/b"}`}, name: "purge-unknown-id", want: 404},
+		{req: f14Req{Method: http.MethodPost, Target: "/admin/users/bob/tokens", Auth: acookie, Body: `{"scopes":"repo:read admin:write"}`}, name: "token-create-admin-write-scope", want: 403},
+		{req: f14Req{Method: http.MethodPost, Target: "/admin/users/bob/tokens", Auth: acookie, Body: `{"scopes":"repo:read admin:read"}`}, name: "token-create-admin-read-scope", want: 403},
 		{req: f14Req{Method: http.MethodGet, Target: "/admin/repos/zero/verify", Auth: acookie}, name: "verify-bad-id", want: 422},
 		{req: f14Req{Method: http.MethodGet, Target: "/admin/repos/999999/verify", Auth: acookie}, name: "verify-unknown-id", want: 404},
 		{req: f14Req{Method: http.MethodGet, Target: "/admin/repos?state=burning", Auth: acookie}, name: "repo-list-bad-state", want: 422},

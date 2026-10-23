@@ -2,9 +2,9 @@
 
 # `admin.repo.purge`
 
-Purge a soft-deleted repository
+Purge a repository immediately
 
-Site admins only. Removes the daemon repository and hard-deletes a soft-deleted row at once. The confirmation must name the full owner/name. Refuses live rows.
+Site admins only. Removes the daemon repository and hard-deletes the row at once. Live rows are tombstoned first, so a current If-Match is always required. The confirmation must name the full owner/name. A daemon miss on a live row fails instead of purging.
 
 - Method and path: `POST /admin/repos/{id}/purge`
 - Scope: `admin:write`
@@ -19,9 +19,10 @@ Site admins only. Removes the daemon repository and hard-deletes a soft-deleted 
 | --- | --- | --- | --- |
 | `$schema` | body | no | `string` |
 | `Idempotency-Key` | header | no | `string` |
+| `If-Match` | header | no | `string` |
 | `confirm` | body | yes | `string` |
 | `id` | path | yes | `string` |
 
 ## Errors
 
-`conflict`, `forbidden`, `invalid`, `not-found`, `unavailable`, `validation`, plus the framework problems.
+`conflict`, `forbidden`, `invalid`, `not-found`, `precondition-required`, `stale`, `unavailable`, `validation`, plus the framework problems.

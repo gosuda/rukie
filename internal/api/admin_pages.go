@@ -77,6 +77,22 @@ func (d Deps) adminRawPrincipal(r *http.Request) op.Principal {
 	return RawBytes{Deps: d}.principalFor(r)
 }
 
+// adminPageAuth enforces the same gate as the admin operations: the caller
+// must carry the admin scope and belong to an active site admin. Scope first,
+// like the op framework, so a scoped-down token fails closed.
+func (d Deps) adminPageAuth(r *http.Request) (op.Principal, error) {
+	p := d.adminRawPrincipal(r)
+	if !p.Can(op.ScopeAdminWrite) {
+		return op.Principal{}, op.Errorf(op.CodeForbidden, "site admin required")
+	}
+	admin, err := requireAdmin(r.Context(), d.Service, p)
+	if err != nil {
+		return op.Principal{}, err
+	}
+	_ = admin
+	return p, nil
+}
+
 func writeAdminProblem(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	if oerr, ok := errors.AsType[*op.Error](err); ok {
@@ -95,6 +111,22 @@ func writeAdminProblem(w http.ResponseWriter, err error) {
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, pageShell("Admin", heading("Admin")+
 		"<p>"+esc(firstLine(err.Error()))+"</p>\n"))
+}
+
+// adminPlumbProblem renders a daemon failure for a page-only surface. The
+// daemon detail never reaches HTML: pages carry a fixed sentence plus the
+// problem code, while JSON op errors keep the verbatim detail their contract
+// already promises.
+func adminPlumbProblem(title string, err error) (string, string) {
+	code := op.CodeUnavailable
+	if oerr, ok := errors.AsType[*op.Error](err); ok {
+		code = oerr.Code
+	}
+	var b strings.Builder
+	b.WriteString(heading(title))
+	b.WriteString("<p>The daemon request failed.</p>\n")
+	b.WriteString("<p><code>" + esc(code.Slug()) + "</code></p>\n")
+	return title, b.String()
 }
 
 func (d Deps) serveAdminConsole(w http.ResponseWriter, r *http.Request, csrfKey []byte) bool {
@@ -120,7 +152,7 @@ func (d Deps) serveAdminConsole(w http.ResponseWriter, r *http.Request, csrfKey 
 
 func (d Deps) serveAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if _, err := requireAdmin(ctx, d.Service, d.adminRawPrincipal(r)); err != nil {
+	if _, err := d.adminPageAuth(r); err != nil {
 		writeAdminProblem(w, err)
 		return
 	}
@@ -180,7 +212,7 @@ func (d Deps) serveAdminDashboard(w http.ResponseWriter, r *http.Request) {
 
 func (d Deps) serveAdminOrgs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if _, err := requireAdmin(ctx, d.Service, d.adminRawPrincipal(r)); err != nil {
+	if _, err := d.adminPageAuth(r); err != nil {
 		writeAdminProblem(w, err)
 		return
 	}
@@ -212,7 +244,7 @@ func (d Deps) serveAdminOrgs(w http.ResponseWriter, r *http.Request) {
 
 func (d Deps) serveAdminMonitor(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if _, err := requireAdmin(ctx, d.Service, d.adminRawPrincipal(r)); err != nil {
+	if _, err := d.adminPageAuth(r); err != nil {
 		writeAdminProblem(w, err)
 		return
 	}
@@ -254,7 +286,7 @@ func adminDaemonState(d Deps) string {
 
 func (d Deps) serveAdminUserDetail(w http.ResponseWriter, r *http.Request, name string, csrfKey []byte) {
 	ctx := r.Context()
-	if _, err := requireAdmin(ctx, d.Service, d.adminRawPrincipal(r)); err != nil {
+	if _, err := d.adminPageAuth(r); err != nil {
 		writeAdminProblem(w, err)
 		return
 	}
@@ -320,11 +352,11 @@ func (d Deps) serveRepoPlumbing(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	ctx := r.Context()
-	if _, err := requireAdmin(ctx, d.Service, d.adminRawPrincipal(r)); err != nil {
+	p, err := d.adminPageAuth(r)
+	if err != nil {
 		writeAdminProblem(w, err)
 		return true
 	}
-	p := d.adminRawPrincipal(r)
 	rq, rerr := d.requester(ctx, p)
 	if rerr != nil {
 		writeAdminProblem(w, rerr)
@@ -333,6 +365,14 @@ func (d Deps) serveRepoPlumbing(w http.ResponseWriter, r *http.Request) bool {
 	rc, cerr := d.resolveRepo(ctx, rq, owner, repo, false)
 	if cerr != nil {
 		writeAdminProblem(w, cerr)
+		return true
+	}
+	// Per-repo authorization applies to site admins too: a token scoped to
+	// another repository must not read this one. checkRepoAccess folds the
+	// token's repo restriction into the decision and answers 404 either way
+	// so private repositories do not leak existence.
+	if derr := d.checkRepoAccess(rq, rc.row, "repo.view", ""); derr != nil {
+		writeAdminProblem(w, derr)
 		return true
 	}
 	daemon, oerr := d.openDaemonRepo(ctx, rc.row)
@@ -365,8 +405,7 @@ type opLogPageReply struct {
 func (d Deps) plumbOpLog(ctx context.Context, daemon ruk.Repo, owner, repo string) (string, string) {
 	var reply opLogPageReply
 	if rerr := d.callRuk(ctx, daemon, wire.MethodOpLog, map[string]any{"page": map[string]any{"limit": 100}}, &reply); rerr != nil {
-		return "Operations", heading("Operations in "+owner+" / "+repo) +
-			"<p>" + esc(firstLine(rerr.Error())) + "</p>\n"
+		return adminPlumbProblem("Operations", rerr)
 	}
 	var b strings.Builder
 	b.WriteString(heading("Operations in " + owner + " / " + repo))
@@ -383,8 +422,7 @@ func (d Deps) plumbOpLog(ctx context.Context, daemon ruk.Repo, owner, repo strin
 func (d Deps) plumbClaims(ctx context.Context, daemon ruk.Repo, owner, repo string) (string, string) {
 	items, rerr := d.liveClaims(ctx, daemon)
 	if rerr != nil {
-		return "Claims", heading("Claims in "+owner+" / "+repo) +
-			"<p>" + esc(firstLine(rerr.Error())) + "</p>\n"
+		return adminPlumbProblem("Claims", rerr)
 	}
 	var b strings.Builder
 	b.WriteString(heading("Claims in " + owner + " / " + repo))
@@ -414,8 +452,7 @@ func (d Deps) plumbAttestations(ctx context.Context, r *http.Request, daemon ruk
 	var reply attestListReply
 	if rerr := d.callRuk(ctx, daemon, wire.MethodAttestList,
 		map[string]any{"subject": subject, "page": map[string]any{"limit": 100}}, &reply); rerr != nil {
-		b.WriteString("<p>" + esc(firstLine(rerr.Error())) + "</p>\n")
-		return "Attestations", b.String()
+		return adminPlumbProblem("Attestations", rerr)
 	}
 	b.WriteString("<ul>\n")
 	for _, record := range reply.Records.Items {
@@ -430,8 +467,7 @@ func (d Deps) plumbRefs(ctx context.Context, daemon ruk.Repo, owner, repo string
 	var reply refsListReply
 	if rerr := d.callRuk(ctx, daemon, wire.MethodRefsList,
 		map[string]any{"prefix": "refs/", "limit": 200}, &reply); rerr != nil {
-		return "Refs", heading("Refs in "+owner+" / "+repo) +
-			"<p>" + esc(firstLine(rerr.Error())) + "</p>\n"
+		return adminPlumbProblem("Refs", rerr)
 	}
 	var b strings.Builder
 	b.WriteString(heading("Refs in " + owner + " / " + repo))

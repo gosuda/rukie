@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
@@ -18,7 +19,10 @@ import (
 	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
 
+	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/config"
+	"github.com/gosuda/rukie/internal/op"
+	"github.com/gosuda/rukie/internal/store"
 	"github.com/gosuda/rukie/internal/sysops"
 )
 
@@ -79,12 +83,64 @@ func adminServerToken(std IO, tokenFlag, tokenFileFlag string) (string, int) {
 	return raw, 0
 }
 
+// adminLocalOperator resolves the invoking site admin for offline hand-written
+// commands, mirroring the local-dispatch credential rule: a bearer token or a
+// session is required, it must authenticate, and its account must be an
+// active site admin.
+func adminLocalOperator(ctx context.Context, std IO, svc *auth.Service, tokenFlag, tokenFileFlag, sessionFileFlag string) (auth.User, int) {
+	token, code := adminServerToken(std, tokenFlag, tokenFileFlag)
+	if code != 0 {
+		return auth.User{}, code
+	}
+	auther := auth.NewAuthenticator(svc)
+	if token != "" {
+		p, err := auther.Bearer(ctx, token)
+		if err != nil {
+			emit(std.Stderr, "rukie admin: invalid token")
+			return auth.User{}, 3
+		}
+		return adminOperatorUser(ctx, std, svc, p)
+	}
+	sessionFile := strings.TrimSpace(cmp.Or(sessionFileFlag, std.getenv("RUKIE_SESSION_FILE")))
+	if sessionFile == "" {
+		sessionFile = DefaultSessionFile(std.Getenv)
+	}
+	raw, err := readSecretFile(sessionFile)
+	if err != nil {
+		emit(std.Stderr, "rukie admin: --token-file or --session-file is required")
+		return auth.User{}, 3
+	}
+	secret := strings.TrimSpace(raw)
+	if _, value, ok := strings.Cut(secret, "="); ok {
+		secret = strings.TrimSpace(value)
+	}
+	p, err := auther.Session(ctx, secret)
+	if err != nil {
+		emit(std.Stderr, "rukie admin: invalid session")
+		return auth.User{}, 3
+	}
+	return adminOperatorUser(ctx, std, svc, p)
+}
+
+func adminOperatorUser(ctx context.Context, std IO, svc *auth.Service, p op.Principal) (auth.User, int) {
+	u, err := svc.GetUserByID(ctx, p.UserID)
+	if err != nil || !u.IsAdmin || !u.IsActive {
+		emit(std.Stderr, "rukie admin: site admin required")
+		return auth.User{}, 3
+	}
+	return u, 0
+}
+
 func runAdminGC(ctx context.Context, std IO, argv []string) int {
 	fs := flag.NewFlagSet("admin gc", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	configFlag := fs.String("config", "", "config file path")
 	dryRun := fs.Bool("dry-run", false, "list what would be collected without writing")
+	confirm := fs.Bool("confirm", false, "acknowledge the destructive collection pass")
 	repo := fs.String("repo", "", "limit collection to one owner/name repository")
+	tokenFlag := fs.String("token", "", "admin bearer token (prefer --token-file)")
+	tokenFileFlag := fs.String("token-file", "", "file holding the admin bearer token")
+	sessionFileFlag := fs.String("session-file", "", "file holding the admin session cookie")
 	asJSON := fs.Bool("json", false, "machine output")
 	if err := fs.Parse(argv); err != nil {
 		emit(std.Stderr, "rukie admin gc: flag parse failed")
@@ -98,6 +154,26 @@ func runAdminGC(ctx context.Context, std IO, argv []string) int {
 	if err != nil {
 		emit(std.Stderr, "rukie admin gc:", err.Error())
 		return 78
+	}
+	validate := func() int {
+		st, openErr := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path})
+		if openErr != nil {
+			emit(std.Stderr, "rukie admin gc:", openErr.Error())
+			return 1
+		}
+		defer func() { _ = st.Close(ctx) }()
+		svc := auth.New(st)
+		if _, code := adminLocalOperator(ctx, std, svc, *tokenFlag, *tokenFileFlag, *sessionFileFlag); code != 0 {
+			return code
+		}
+		return 0
+	}
+	if code := validate(); code != 0 {
+		return code
+	}
+	if !*dryRun && !*confirm {
+		emit(std.Stderr, "rukie admin gc: --confirm is required without --dry-run")
+		return 64
 	}
 	rep, err := sysops.GC(ctx, cfg, *dryRun, *repo)
 	if err != nil {
@@ -149,8 +225,19 @@ func runAdminGC(ctx context.Context, std IO, argv []string) int {
 // failures deterministically.
 type importHooks struct {
 	mirrorClone func(ctx context.Context, from, dir string) error
-	mirrorPush  func(ctx context.Context, dir, remote, username, secret string) error
-	verify      func(ctx context.Context, dir, remote, username, secret string) error
+	mirrorPush  func(ctx context.Context, dir, remote, auth string) error
+	verify      func(ctx context.Context, dir, remote, auth string) error
+}
+
+// gitAuthEnv carries the push credential as an extra HTTP header instead of
+// embedding it in the URL, so the secret never appears in argv, error
+// output, or the process table.
+func gitAuthEnv(auth string) []string {
+	return append(os.Environ(),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraHeader",
+		"GIT_CONFIG_VALUE_0="+auth,
+	)
 }
 
 func liveImportHooks() importHooks {
@@ -171,13 +258,9 @@ func gitMirrorClone(ctx context.Context, from, dir string) error {
 	return nil
 }
 
-func gitMirrorPush(ctx context.Context, dir, remote, username, secret string) error {
-	url := remote
-	if username != "" {
-		url = strings.Replace(remote, "://", "://"+username+":"+secret+"@", 1)
-	}
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "push", "--mirror", "--", url)
-	cmd.Env = append([]string{}, os.Environ()...)
+func gitMirrorPush(ctx context.Context, dir, remote, auth string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "push", "--mirror", "--", remote)
+	cmd.Env = gitAuthEnv(auth)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("push --mirror: %w: %s", err, strings.TrimSpace(string(out)))
@@ -185,17 +268,13 @@ func gitMirrorPush(ctx context.Context, dir, remote, username, secret string) er
 	return nil
 }
 
-func gitLsRemote(ctx context.Context, remote, username, secret string, tags bool) (string, error) {
-	url := remote
-	if username != "" {
-		url = strings.Replace(remote, "://", "://"+username+":"+secret+"@", 1)
-	}
-	args := []string{"ls-remote", "--", url}
+func gitLsRemote(ctx context.Context, remote, auth string, tags bool) (string, error) {
+	args := []string{"ls-remote", "--", remote}
 	if tags {
-		args = []string{"ls-remote", "--tags", "--", url}
+		args = []string{"ls-remote", "--tags", "--", remote}
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append([]string{}, os.Environ()...)
+	cmd.Env = gitAuthEnv(auth)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ls-remote: %w: %s", err, strings.TrimSpace(string(out)))
@@ -203,7 +282,7 @@ func gitLsRemote(ctx context.Context, remote, username, secret string, tags bool
 	return string(out), nil
 }
 
-func verifyMirrorPush(ctx context.Context, dir, remote, username, secret string) error {
+func verifyMirrorPush(ctx context.Context, dir, remote, auth string) error {
 	headCmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD")
 	headCmd.Env = append([]string{}, os.Environ()...)
 	headOut, err := headCmd.Output()
@@ -211,7 +290,7 @@ func verifyMirrorPush(ctx context.Context, dir, remote, username, secret string)
 		return fmt.Errorf("source HEAD: %w", err)
 	}
 	sourceHEAD := strings.TrimSpace(string(headOut))
-	remotes, err := gitLsRemote(ctx, remote, username, secret, false)
+	remotes, err := gitLsRemote(ctx, remote, auth, false)
 	if err != nil {
 		return err
 	}
@@ -242,7 +321,7 @@ func verifyMirrorPush(ctx context.Context, dir, remote, username, secret string)
 	for range strings.Lines(strings.TrimSpace(string(tagOut))) {
 		sourceTags++
 	}
-	remoteTags, err := gitLsRemote(ctx, remote, username, secret, true)
+	remoteTags, err := gitLsRemote(ctx, remote, auth, true)
 	if err != nil {
 		return err
 	}
@@ -373,48 +452,80 @@ type importSpec struct {
 	AsJSON        bool
 }
 
-// importRepo imports one stock-git repo and deletes it again when any step
-// after creation fails (ENG-50). The one-shot token is revoked on the way
-// out whether the import succeeded or not.
-func importRepo(ctx context.Context, std IO, api importAPI, spec importSpec, hooks importHooks) int {
+// importRepo imports one stock-git repo and purges it again when any step
+// after creation fails (ENG-50). Tokens are minted least-privilege: a
+// create-only token for the owner namespace first, then a push token scoped
+// to the new repository id. Every outstanding token is revoked before return,
+// and a failed revoke is fatal because the token may still be valid.
+func importRepo(ctx context.Context, std IO, api importAPI, spec importSpec, hooks importHooks) (code int) {
 	owner, name := spec.Owner, spec.Name
 	full := owner + "/" + name
 	var created bool
-	revoke := func(secret, prefix string) {
-		if secret == "" {
-			return
+	type oneShot struct {
+		secret string
+		prefix string
+	}
+	var held []oneShot
+	defer func() {
+		for _, tk := range held {
+			if _, err := api.do(ctx, http.MethodPost, "/admin/users/"+owner+"/tokens/revoke",
+				map[string]any{"prefix": tk.prefix}, nil); err != nil {
+				emit(std.Stderr, "rukie admin repo import: revoke one-shot token: "+err.Error()+": the token may still be valid")
+				code = 1
+			}
 		}
-		_, _ = api.do(ctx, http.MethodPost, "/admin/users/"+owner+"/tokens/revoke",
+	}()
+	drop := func(prefix string) {
+		kept := make([]oneShot, 0, len(held))
+		for _, tk := range held {
+			if tk.prefix != prefix {
+				kept = append(kept, tk)
+			}
+		}
+		held = kept
+	}
+	revokeFatal := func(prefix string) bool {
+		_, err := api.do(ctx, http.MethodPost, "/admin/users/"+owner+"/tokens/revoke",
 			map[string]any{"prefix": prefix}, nil)
+		drop(prefix)
+		if err != nil {
+			emit(std.Stderr, "rukie admin repo import: revoke one-shot token: "+err.Error()+": the token may still be valid")
+			return true
+		}
+		return false
 	}
 	fail := func(step string, err error) int {
 		emit(std.Stderr, "rukie admin repo import: "+step+": "+err.Error())
-		return 1
-	}
-	rollback := func(step string, err error, shot importAPI) int {
-		emit(std.Stderr, "rukie admin repo import: "+step+": "+err.Error())
 		if created {
-			if rerr := rollbackImport(ctx, api, shot, owner, name); rerr != nil {
+			if rerr := rollbackImport(ctx, api, owner, name); rerr != nil {
 				emit(std.Stderr, "rukie admin repo import: rollback: "+rerr.Error())
 			}
 		}
 		return 1
 	}
-	var minted struct {
-		Prefix string `json:"prefix"`
-		Secret string `json:"secret"`
+	mint := func(label, scopes string, repos []int64) (string, string, error) {
+		var out struct {
+			Prefix string `json:"prefix"`
+			Secret string `json:"secret"`
+		}
+		tokBody := map[string]any{"name": label, "scopes": scopes, "ttl": "15m"}
+		if repos != nil {
+			tokBody["repos"] = repos
+		}
+		if _, err := api.do(ctx, http.MethodPost, "/admin/users/"+owner+"/tokens", tokBody, &out); err != nil {
+			return "", "", err
+		}
+		if out.Secret == "" {
+			return "", "", fmt.Errorf("server returned no secret")
+		}
+		held = append(held, oneShot{secret: out.Secret, prefix: out.Prefix})
+		return out.Secret, out.Prefix, nil
 	}
-	// The one-shot token carries admin:write so the rollback can soft-delete
-	// the repo it just created. It lives 15 minutes and is revoked below.
-	if _, err := api.do(ctx, http.MethodPost, "/admin/users/"+owner+"/tokens",
-		map[string]any{"name": "repo-import", "scopes": "repo:create repo:read repo:write admin:write", "ttl": "15m"}, &minted); err != nil {
+	createSecret, createPrefix, err := mint("repo-import-create", "repo:create", nil)
+	if err != nil {
 		return fail("mint one-shot token", err)
 	}
-	defer revoke(minted.Secret, minted.Prefix)
-	if minted.Secret == "" {
-		return fail("mint one-shot token", fmt.Errorf("server returned no secret"))
-	}
-	oneShot := importAPI{base: api.base, client: api.client, token: minted.Secret}
+	creator := importAPI{base: api.base, client: api.client, token: createSecret}
 	body := map[string]any{"owner": owner, "name": name}
 	if spec.DefaultBranch != "" {
 		body["default_branch"] = spec.DefaultBranch
@@ -424,27 +535,44 @@ func importRepo(ctx context.Context, std IO, api importAPI, spec importSpec, hoo
 			DefaultBranch string `json:"default_branch"`
 		} `json:"repo"`
 	}
-	if _, err := oneShot.do(ctx, http.MethodPost, "/new/repo", body, &createdOut); err != nil {
-		return fail("create repository", err)
+	if _, cerr := creator.do(ctx, http.MethodPost, "/new/repo", body, &createdOut); cerr != nil {
+		return fail("create repository", cerr)
 	}
 	created = true
+	if revokeFatal(createPrefix) {
+		if rerr := rollbackImport(ctx, api, owner, name); rerr != nil {
+			emit(std.Stderr, "rukie admin repo import: rollback: "+rerr.Error())
+		}
+		return 1
+	}
+	repoID, err := lookupRepoID(ctx, api, owner, full)
+	if err != nil {
+		return fail("resolve repository", err)
+	}
+	pushSecret, pushPrefix, err := mint("repo-import-push", "repo:read repo:write", []int64{repoID})
+	if err != nil {
+		return fail("mint push token", err)
+	}
 	dir, err := os.MkdirTemp("", "rukie-import-")
 	if err != nil {
-		return rollback("stage import", err, oneShot)
+		return fail("stage import", err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	stage := filepath.Join(dir, "mirror.git")
 	if err := hooks.mirrorClone(ctx, spec.From, stage); err != nil {
-		return rollback("clone source", err, oneShot)
+		return fail("clone source", err)
 	}
 	remote := api.base + "/" + full + ".git"
-	if err := hooks.mirrorPush(ctx, stage, remote, owner, minted.Secret); err != nil {
-		return rollback("push mirror", err, oneShot)
+	auth := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(owner+":"+pushSecret))
+	if err := hooks.mirrorPush(ctx, stage, remote, auth); err != nil {
+		return fail("push mirror", err)
 	}
-	if err := hooks.verify(ctx, stage, remote, owner, minted.Secret); err != nil {
-		return rollback("verify import", err, oneShot)
+	if err := hooks.verify(ctx, stage, remote, auth); err != nil {
+		return fail("verify import", err)
 	}
-	revoke(minted.Secret, minted.Prefix)
+	if revokeFatal(pushPrefix) {
+		return 1
+	}
 	if spec.AsJSON {
 		emit(std.Stdout, fmt.Sprintf("{\"repo\":%q,\"default_branch\":%q}", full, createdOut.Repo.DefaultBranch))
 	} else {
@@ -453,43 +581,56 @@ func importRepo(ctx context.Context, std IO, api importAPI, spec importSpec, hoo
 	return 0
 }
 
-// rollbackImport soft-deletes the half-imported repo with the one-shot token
-// and purges the tombstone with the operator token, so a failed import
-// leaves no repository behind.
-func rollbackImport(ctx context.Context, adminAPI, oneShot importAPI, owner, name string) error {
-	full := owner + "/" + name
-	var got struct {
-		Repo struct {
-			UpdatedAt int64 `json:"updated_at"`
-		} `json:"repo"`
-	}
-	if _, err := oneShot.do(ctx, http.MethodGet, "/"+full, nil, &got); err != nil {
-		return err
-	}
-	deleter := oneShot.withHeader("If-Match", fmt.Sprintf("repo-%s-%s-%d", owner, name, got.Repo.UpdatedAt))
-	if _, err := deleter.do(ctx, http.MethodPost, "/"+full+"/settings/delete",
-		map[string]any{"confirm": full}, nil); err != nil {
-		return err
-	}
+type listedRepo struct {
+	FullName  string `json:"full_name"`
+	ID        int64  `json:"id"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+func listAdminRepos(ctx context.Context, api importAPI, owner string) ([]listedRepo, error) {
 	var listed struct {
-		Repos []struct {
-			FullName string `json:"full_name"`
-			ID       int64  `json:"id"`
-		} `json:"repos"`
+		Repos []listedRepo `json:"repos"`
 	}
-	if _, err := adminAPI.do(ctx, http.MethodGet, "/admin/repos?state=deleted&owner="+owner, nil, &listed); err != nil {
-		return err
+	if _, err := api.do(ctx, http.MethodGet, "/admin/repos?owner="+owner, nil, &listed); err != nil {
+		return nil, err
 	}
-	purgeID := int64(0)
-	for _, repo := range listed.Repos {
+	return listed.Repos, nil
+}
+
+func lookupRepoID(ctx context.Context, api importAPI, owner, full string) (int64, error) {
+	repos, err := listAdminRepos(ctx, api, owner)
+	if err != nil {
+		return 0, err
+	}
+	for _, repo := range repos {
 		if repo.FullName == full {
-			purgeID = repo.ID
+			return repo.ID, nil
 		}
 	}
-	if purgeID == 0 {
-		return fmt.Errorf("tombstoned repository %s was not found", full)
+	return 0, fmt.Errorf("repository %s was not found", full)
+}
+
+// rollbackImport purges the half-imported repo with the operator token, so a
+// failed import leaves no repository behind. The purge carries a fresh
+// If-Match taken from the admin listing, so a concurrent change fails
+// instead of purging something new.
+func rollbackImport(ctx context.Context, adminAPI importAPI, owner, name string) error {
+	full := owner + "/" + name
+	repos, err := listAdminRepos(ctx, adminAPI, owner)
+	if err != nil {
+		return err
 	}
-	_, err := adminAPI.do(ctx, http.MethodPost, "/admin/repos/"+strconv.FormatInt(purgeID, 10)+"/purge",
+	var target *listedRepo
+	for i := range repos {
+		if repos[i].FullName == full {
+			target = &repos[i]
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("repository %s was not found", full)
+	}
+	purger := adminAPI.withHeader("If-Match", fmt.Sprintf("repo-%s-%s-%d", owner, name, target.UpdatedAt))
+	_, err = purger.do(ctx, http.MethodPost, "/admin/repos/"+strconv.FormatInt(target.ID, 10)+"/purge",
 		map[string]any{"confirm": full}, nil)
 	return err
 }

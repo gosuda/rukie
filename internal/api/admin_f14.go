@@ -74,6 +74,7 @@ type AdminRepoPurgeBody struct {
 
 type AdminRepoPurgeIn struct {
 	IdempotencyKey string `header:"Idempotency-Key"`
+	IfMatch        string `header:"If-Match"`
 	ID             string `path:"id"`
 	Body           AdminRepoPurgeBody
 }
@@ -538,9 +539,9 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 	}
 	if err := op.Register(t, op.Op[AdminRepoPurgeIn, AdminRepoPurgeOut]{
 		Name: "admin.repo.purge", Kind: op.KindMutation, Method: http.MethodPost, Path: "/admin/repos/{id}/purge",
-		Scope: op.ScopeAdminWrite, Summary: "Purge a soft-deleted repository",
-		Description: "Site admins only. Removes the daemon repository and hard-deletes a soft-deleted row at once. The confirmation must name the full owner/name. Refuses live rows.",
-		Problems:    []op.Code{op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeUnavailable},
+		Scope: op.ScopeAdminWrite, Summary: "Purge a repository immediately",
+		Description: "Site admins only. Removes the daemon repository and hard-deletes the row at once. Live rows are tombstoned first, so a current If-Match is always required. The confirmation must name the full owner/name. A daemon miss on a live row fails instead of purging.",
+		Problems:    []op.Code{op.CodeForbidden, op.CodeValidation, op.CodeInvalid, op.CodeNotFound, op.CodeConflict, op.CodeStale, op.CodePreconditionReq, op.CodeUnavailable},
 		Destructive: true,
 		Status:      202,
 		Location:    func(AdminRepoPurgeOut) string { return "/admin/repos" },
@@ -565,9 +566,6 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 			}); rerr != nil {
 				return AdminRepoPurgeOut{}, mapAdminStore(rerr)
 			}
-			if !row.DeletedAt.Valid {
-				return AdminRepoPurgeOut{}, op.Errorf(op.CodeConflict, "repository is not deleted")
-			}
 			owner, oerr := adminRepoOwnerName(ctx, deps, row)
 			if oerr != nil {
 				return AdminRepoPurgeOut{}, mapAdminStore(oerr)
@@ -575,6 +573,35 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 			full := owner + "/" + row.Name
 			if in.Body.Confirm == "" || in.Body.Confirm != full {
 				return AdminRepoPurgeOut{}, op.Errorf(op.CodeValidation, "confirmation must name the repository")
+			}
+			if err := matchRepoETag(in.IfMatch, owner, row); err != nil {
+				return AdminRepoPurgeOut{}, err
+			}
+			wasDeleted := row.DeletedAt.Valid
+			if !wasDeleted {
+				now := deps.now()
+				if werr := st.Write(ctx, func(tx *store.WriteTx) error {
+					if serr := tx.SoftDeleteRepo(row.ID, now, now); serr != nil {
+						return serr
+					}
+					tombstone, _ := marshalJSON(map[string]any{
+						"owner": owner, "name": row.Name, "repo_id": row.ID,
+						"purge_after": now.UnixMilli(),
+					})
+					if _, rerr := tx.Outbox().Emit(store.Event{
+						Kind:       "repo.deleted",
+						Body:       tombstone,
+						OccurredAt: now,
+					}); rerr != nil {
+						return rerr
+					}
+					return nil
+				}); werr != nil {
+					if _, ok := errors.AsType[*op.Error](werr); ok {
+						return AdminRepoPurgeOut{}, werr
+					}
+					return AdminRepoPurgeOut{}, mapAdminStore(werr)
+				}
 			}
 			if row.RukPath != "" {
 				daemon, oerr := deps.openDaemonRepo(ctx, row)
@@ -584,7 +611,10 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 				var reply map[string]any
 				if cerr := deps.callRuk(ctx, daemon, wire.MethodRepoDelete,
 					map[string]any{"repo": row.RukPath, "confirm_path": row.RukPath}, &reply); cerr != nil {
-					if !adminDaemonGone(cerr) {
+					// A daemon miss only counts as already-purged when the
+					// row was already a tombstone. On a live row it means a
+					// bad daemon path, and failing preserves the data.
+					if !wasDeleted || !adminDaemonGone(cerr) {
 						return AdminRepoPurgeOut{}, mapRukError(cerr)
 					}
 				}
@@ -898,6 +928,9 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 			scopes, serr := auth.ParseScopeSet(strings.Fields(in.Body.Scopes))
 			if serr != nil {
 				return AdminTokenCreateOut{}, mapAuthError(serr)
+			}
+			if !target.IsAdmin && (scopes.Has(op.ScopeAdminWrite) || scopes.Has(op.ScopeAdminRead)) {
+				return AdminTokenCreateOut{}, op.Errorf(op.CodeForbidden, "admin scope requires an admin account")
 			}
 			var ttl time.Duration
 			if in.Body.TTL != "" {
@@ -1340,6 +1373,7 @@ func RegisterAdminF14Views(v *op.Views) {
 		body := heading("Purge repository") + errorList(c.Errors) +
 			para("The daemon repository and the tombstoned row are removed at once. This cannot be undone.") +
 			formOpen("/admin/repos/"+c.Input.Get("id")+"/purge", c.CSRF) +
+			hiddenField("_etag", c.Input.Get("_etag")) +
 			textField("confirm", "Confirm owner/name", c.Input.Get("confirm"), false) +
 			submitField("Purge repository")
 		_, err := io.WriteString(w, pageShell("Purge repository", body))
