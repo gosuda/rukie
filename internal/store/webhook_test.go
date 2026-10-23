@@ -370,7 +370,13 @@ func TestClaimLeaseSweep(t *testing.T) {
 
 	// Per-endpoint cap of 1 admits a single row.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
-		claimed, cerr := tx.ClaimWebhookMessages(9500, 10, 1)
+		if _, cerr := tx.ClaimWebhookMessages(9500, 10, 1, ""); !errors.Is(cerr, ErrInvalid) {
+			t.Fatalf("empty owner claim = %v, want ErrInvalid", cerr)
+		}
+		if _, serr := tx.SweepWebhookLeases(9500, 0); !errors.Is(serr, ErrInvalid) {
+			t.Fatalf("zero-budget sweep = %v, want ErrInvalid", serr)
+		}
+		claimed, cerr := tx.ClaimWebhookMessages(9500, 10, 1, "inst-a")
 		if cerr != nil {
 			return cerr
 		}
@@ -380,6 +386,9 @@ func TestClaimLeaseSweep(t *testing.T) {
 		if claimed[0].LeaseExpiresAt != 9500+5*60*1000 {
 			t.Fatalf("lease = %d", claimed[0].LeaseExpiresAt)
 		}
+		if claimed[0].LeaseOwner != "inst-a" {
+			t.Fatalf("owner = %q, want inst-a", claimed[0].LeaseOwner)
+		}
 		return nil
 	}); err != nil {
 		t.Fatalf("claim: %v", err)
@@ -387,11 +396,11 @@ func TestClaimLeaseSweep(t *testing.T) {
 
 	// Full claim takes the second row; sweep before expiry is a no-op (N-1).
 	if err := s.Write(ctx, func(tx *WriteTx) error {
-		claimed, cerr := tx.ClaimWebhookMessages(9500, 10, 0)
+		claimed, cerr := tx.ClaimWebhookMessages(9500, 10, 0, "inst-a")
 		if cerr != nil || len(claimed) != 1 {
 			t.Fatalf("claim2 = %d, %v", len(claimed), cerr)
 		}
-		n, serr := tx.SweepWebhookLeases(9500 + 5*60*1000 - 1)
+		n, serr := tx.SweepWebhookLeases(9500+5*60*1000-1, 10)
 		if serr != nil || n != 0 {
 			t.Fatalf("early sweep = %d, %v; want 0", n, serr)
 		}
@@ -400,10 +409,10 @@ func TestClaimLeaseSweep(t *testing.T) {
 		t.Fatalf("claim2/sweep: %v", err)
 	}
 
-	// Sweep after expiry returns both rows to pending with the same ids and
-	// unchanged attempt counts (N+1 boundary).
+	// Sweep after expiry returns both rows to pending with the same ids,
+	// spending one attempt each and clearing the lease fields.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
-		n, serr := tx.SweepWebhookLeases(9500 + 5*60*1000)
+		n, serr := tx.SweepWebhookLeases(9500+5*60*1000, 10)
 		if serr != nil || n != 2 {
 			t.Fatalf("sweep = %d, %v; want 2", n, serr)
 		}
@@ -412,13 +421,169 @@ func TestClaimLeaseSweep(t *testing.T) {
 			if gerr != nil {
 				return gerr
 			}
-			if m.State != "pending" || m.AttemptCount != 0 {
+			if m.State != "pending" || m.AttemptCount != 1 {
 				t.Fatalf("%s = %+v", id, m)
+			}
+			if m.LeaseOwner != "" || m.LeaseExpiresAt != 0 {
+				t.Fatalf("%s keeps lease %+v", id, m)
 			}
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("sweep: %v", err)
+	}
+}
+
+func TestSweepSpendsBudgetToDead(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	now := time.UnixMilli(20000)
+	ada := seedF8User(t, s, "sweepada")
+	repo := seedF8Repo(ctx, t, s, ada.ID, "sweeps")
+	ep := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		return tx.InsertWebhookMessages([]WebhookMessageInsert{{ID: "msg_loop", EndpointID: ep.ID,
+			EventType: "task.created", OutboxSeq: 51, EventTime: 20000, NextAttemptAt: 20000,
+			Payload: []byte(`{}`)}})
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// Crash loop: claim, expire the lease, sweep — ten times. Each sweep
+	// spends one attempt; the tenth exhausts the budget and dead-letters the
+	// same row without a single delivery.
+	for i := 0; i < 10; i++ {
+		if err := s.Write(ctx, func(tx *WriteTx) error {
+			claimed, cerr := tx.ClaimWebhookMessages(20000, 10, 0, "inst-loop")
+			if cerr != nil {
+				return cerr
+			}
+			if len(claimed) != 1 || claimed[0].ID != "msg_loop" {
+				t.Fatalf("loop %d: claimed = %+v", i, claimed)
+			}
+			n, serr := tx.SweepWebhookLeases(20000+5*60*1000, 10)
+			if serr != nil || n != 1 {
+				t.Fatalf("loop %d: sweep = %d, %v; want 1", i, n, serr)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("loop %d: %v", i, err)
+		}
+	}
+	if err := s.Read(ctx, func(tx *ReadTx) error {
+		m, gerr := tx.GetWebhookMessage("msg_loop")
+		if gerr != nil {
+			return gerr
+		}
+		if m.ID != "msg_loop" || m.State != "dead" {
+			t.Fatalf("looped = %+v, want same id dead", m)
+		}
+		if m.LastError != "delivery lease expired repeatedly" {
+			t.Fatalf("last_error = %q", m.LastError)
+		}
+		if m.DeliveredAt != 0 || m.LastStatusCode != 0 {
+			t.Fatalf("looped shows a delivery: %+v", m)
+		}
+		if m.LeaseOwner != "" || m.LeaseExpiresAt != 0 {
+			t.Fatalf("looped keeps lease %+v", m)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
+func TestStaleCompletionNoOp(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	now := time.UnixMilli(30000)
+	ada := seedF8User(t, s, "staleada")
+	repo := seedF8Repo(ctx, t, s, ada.ID, "stales")
+	ep := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		return tx.InsertWebhookMessages([]WebhookMessageInsert{{ID: "msg_stale", EndpointID: ep.ID,
+			EventType: "task.created", OutboxSeq: 61, EventTime: 30000, NextAttemptAt: 30000,
+			Payload: []byte(`{}`)}})
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		if _, cerr := tx.ClaimWebhookMessages(30000, 10, 0, "owner-a"); cerr != nil {
+			return cerr
+		}
+		// Owner A crashes; the sweep spends one attempt and frees the lease.
+		if n, serr := tx.SweepWebhookLeases(30000+5*60*1000, 10); serr != nil || n != 1 {
+			t.Fatalf("sweep = %d, %v; want 1", n, serr)
+		}
+		// Owner B claims the freed row.
+		claimed, cerr := tx.ClaimWebhookMessages(30000+5*60*1000, 10, 0, "owner-b")
+		if cerr != nil || len(claimed) != 1 || claimed[0].ID != "msg_stale" {
+			t.Fatalf("reclaim = %+v, %v", claimed, cerr)
+		}
+		// Owner A's late completion is stale and changes nothing.
+		if derr := tx.MarkWebhookDelivered("msg_stale", 30000+5*60*1000, 200, "owner-a"); !errors.Is(derr, ErrStale) {
+			t.Fatalf("late deliver = %v, want ErrStale", derr)
+		}
+		if _, rerr := tx.RequeueWebhookMessage("msg_stale", "late", 500, 31000+5*60*1000, 30000+5*60*1000, "owner-a"); !errors.Is(rerr, ErrStale) {
+			t.Fatalf("late requeue = %v, want ErrStale", rerr)
+		}
+		m, gerr := tx.GetWebhookMessage("msg_stale")
+		if gerr != nil {
+			return gerr
+		}
+		if m.State != "inflight" || m.LeaseOwner != "owner-b" || m.AttemptCount != 1 {
+			t.Fatalf("stolen row = %+v, want inflight owned by B", m)
+		}
+		// Owner B completes normally.
+		if derr := tx.MarkWebhookDelivered("msg_stale", 30000+5*60*1000, 200, "owner-b"); derr != nil {
+			return derr
+		}
+		m, gerr = tx.GetWebhookMessage("msg_stale")
+		if gerr != nil {
+			return gerr
+		}
+		if m.State != "delivered" || m.LeaseOwner != "" {
+			t.Fatalf("delivered = %+v", m)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("stale: %v", err)
+	}
+}
+
+func TestClearExpiredEndpointSecrets(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	now := time.UnixMilli(40000)
+	ada := seedF8User(t, s, "clearada")
+	repo := seedF8Repo(ctx, t, s, ada.ID, "clears")
+	ep := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		if _, rerr := tx.RotateWebhookEndpointSecret(ep.ID, now, []byte("new-sealed-secret-00000000000000")); rerr != nil {
+			return rerr
+		}
+		if n, cerr := tx.ClearExpiredEndpointSecrets(now.UnixMilli()); cerr != nil || n != 0 {
+			t.Fatalf("early clear = %d, %v; want 0", n, cerr)
+		}
+		got, gerr := tx.GetWebhookEndpoint(ep.ID)
+		if gerr != nil {
+			return gerr
+		}
+		if len(got.PrevSecretEnc) == 0 || got.PrevSecretExpiresAt != now.UnixMilli()+24*60*60*1000 {
+			t.Fatalf("rotated = %+v", got)
+		}
+		if n, cerr := tx.ClearExpiredEndpointSecrets(now.UnixMilli() + 24*60*60*1000); cerr != nil || n != 1 {
+			t.Fatalf("expiry clear = %d, %v; want 1", n, cerr)
+		}
+		got, gerr = tx.GetWebhookEndpoint(ep.ID)
+		if gerr != nil {
+			return gerr
+		}
+		if got.PrevSecretEnc != nil || got.PrevSecretExpiresAt != 0 {
+			t.Fatalf("prev survives: %+v", got.PrevSecretEnc)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("clear: %v", err)
 	}
 }
 
@@ -498,10 +663,16 @@ func TestRedeliverWalk(t *testing.T) {
 	mk("msg_dead", 31)
 	mk("msg_ok", 32)
 	if err := s.Write(ctx, func(tx *WriteTx) error {
-		if merr := tx.MarkWebhookDead("msg_dead", "gone", 14001, 410); merr != nil {
+		if _, cerr := tx.ClaimWebhookMessages(14000, 10, 0, "inst-a"); cerr != nil {
+			return cerr
+		}
+		if merr := tx.MarkWebhookDead("msg_dead", "gone", 14001, 410, "inst-a"); merr != nil {
 			return merr
 		}
-		if merr := tx.MarkWebhookDelivered("msg_ok", 14001, 200); merr != nil {
+		if merr := tx.MarkWebhookDelivered("msg_ok", 14001, 200, "inst-b"); !errors.Is(merr, ErrStale) {
+			t.Fatalf("foreign-owner deliver = %v, want ErrStale", merr)
+		}
+		if merr := tx.MarkWebhookDelivered("msg_ok", 14001, 200, "inst-a"); merr != nil {
 			return merr
 		}
 		red, rerr := tx.RedeliverWebhookMessage("msg_dead", 14002)
@@ -521,10 +692,23 @@ func TestRedeliverWalk(t *testing.T) {
 		if _, rerr = tx.RedeliverWebhookMessage("msg_ok", 14003); !errors.Is(rerr, ErrInvalid) {
 			t.Fatalf("redeliver pending = %v, want ErrInvalid", rerr)
 		}
+		if red.LeaseOwner != "" {
+			t.Fatalf("redelivered keeps lease owner %q", red.LeaseOwner)
+		}
+		// Requeue needs a fresh claim; a foreign owner goes stale.
+		if _, cerr := tx.ClaimWebhookMessages(14003, 10, 0, "inst-a"); cerr != nil {
+			return cerr
+		}
+		if _, rerr = tx.RequeueWebhookMessage("msg_dead", "x", 503, 15000, 14003, "inst-b"); !errors.Is(rerr, ErrStale) {
+			t.Fatalf("foreign-owner requeue = %v, want ErrStale", rerr)
+		}
 		// Requeue bumps the attempt count and reschedules.
-		rq, rerr := tx.RequeueWebhookMessage("msg_dead", "again", 503, 15000, 14003)
+		rq, rerr := tx.RequeueWebhookMessage("msg_dead", "again", 503, 15000, 14003, "inst-a")
 		if rerr != nil || rq.AttemptCount != 1 || rq.NextAttemptAt != 15000 || rq.LastStatusCode != 503 {
 			t.Fatalf("requeued = %+v, %v", rq, rerr)
+		}
+		if rq.LeaseOwner != "" || rq.State != "pending" {
+			t.Fatalf("requeued keeps lease %+v", rq)
 		}
 		return nil
 	}); err != nil {
@@ -553,13 +737,16 @@ func TestPruneWebhookHistory(t *testing.T) {
 	seed("msg_p2", 42)
 	seed("msg_p3", 43)
 	if err := s.Write(ctx, func(tx *WriteTx) error {
-		if merr := tx.MarkWebhookDelivered("msg_p1", 1000, 200); merr != nil {
+		if _, cerr := tx.ClaimWebhookMessages(16000, 10, 0, "inst-a"); cerr != nil {
+			return cerr
+		}
+		if merr := tx.MarkWebhookDelivered("msg_p1", 1000, 200, "inst-a"); merr != nil {
 			return merr
 		}
-		if merr := tx.MarkWebhookDead("msg_p2", "x", 2000, 500); merr != nil {
+		if merr := tx.MarkWebhookDead("msg_p2", "x", 2000, 500, "inst-a"); merr != nil {
 			return merr
 		}
-		if merr := tx.MarkWebhookDelivered("msg_p3", 3000, 200); merr != nil {
+		if merr := tx.MarkWebhookDelivered("msg_p3", 3000, 200, "inst-a"); merr != nil {
 			return merr
 		}
 		n, perr := tx.PruneWebhookHistory(2000)

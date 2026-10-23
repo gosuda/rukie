@@ -121,6 +121,7 @@ type WebhookMessageRow struct {
 	EventType      string
 	State          string
 	LastError      string
+	LeaseOwner     string
 	Payload        []byte
 	OutboxSeq      int64
 	EventTime      int64
@@ -247,7 +248,7 @@ func scanWebhookMessage(scan func(...any) error) (WebhookMessageRow, error) {
 	var deliveredAt sql.NullInt64
 	err := scan(&r.ID, &r.EndpointID, &r.OutboxSeq, &r.EventType, &r.EventTime,
 		&r.Payload, &r.State, &r.AttemptCount, &r.NextAttemptAt, &r.LeaseExpiresAt,
-		&r.LastError, &lastStatus, &deliveredAt, &redelivery, &r.UpdatedAt)
+		&r.LeaseOwner, &r.LastError, &lastStatus, &deliveredAt, &redelivery, &r.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return r, fmt.Errorf("scanWebhookMessage: %w", ErrNotFound)
@@ -683,16 +684,20 @@ VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, 0, '', NULL, NULL, NULL, ?)`,
 }
 
 const webhookMessageColumns = `id, endpoint_id, outbox_seq, event_type, event_time,
-payload, state, attempt_count, next_attempt_at, lease_expires_at, last_error,
+payload, state, attempt_count, next_attempt_at, lease_expires_at, lease_owner, last_error,
 last_status_code, delivered_at, redelivery_of, updated_at`
 
 const webhookLeaseMillis = 5 * 60 * 1000
 
-// ClaimWebhookMessages moves due pending rows to inflight with a 5-minute lease.
-// Per-endpoint concurrency is enforced: at most perEndpointCap rows per endpoint are
+// ClaimWebhookMessages moves due pending rows to inflight with a 5-minute lease
+// owned by leaseOwner. An empty leaseOwner is rejected. Per-endpoint concurrency
+// is enforced: at most perEndpointCap rows per endpoint are
 // inflight-or-newly-claimed (perEndpointCap <= 0 falls back to each endpoint's own
 // concurrency). Inactive endpoints and endpoints at cap are skipped.
-func (tx *WriteTx) ClaimWebhookMessages(nowMillis int64, batch int, perEndpointCap int) ([]WebhookMessageRow, error) {
+func (tx *WriteTx) ClaimWebhookMessages(nowMillis int64, batch int, perEndpointCap int, leaseOwner string) ([]WebhookMessageRow, error) {
+	if leaseOwner == "" {
+		return nil, fmt.Errorf("ClaimWebhookMessages: %w: lease owner is required", ErrInvalid)
+	}
 	if batch <= 0 {
 		batch = 64
 	}
@@ -753,8 +758,8 @@ WHERE endpoint_id = ? AND state = 'inflight'`, c.EndpointID).Scan(&n); qerr != n
 			continue
 		}
 		n, uerr := execAffected(tx.ctx, inner, `UPDATE webhook_messages SET
-state = 'inflight', lease_expires_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
-			nowMillis+webhookLeaseMillis, nowMillis, c.ID)
+state = 'inflight', lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
+			leaseOwner, nowMillis+webhookLeaseMillis, nowMillis, c.ID)
 		if uerr != nil {
 			return nil, fmt.Errorf("ClaimWebhookMessages: %w", uerr)
 		}
@@ -771,18 +776,49 @@ state = 'inflight', lease_expires_at = ?, updated_at = ? WHERE id = ? AND state 
 	return out, nil
 }
 
-// SweepWebhookLeases returns expired-lease inflight rows to pending.
-// Attempt counts are unchanged; lease ownership simply lapses.
-func (tx *WriteTx) SweepWebhookLeases(nowMillis int64) (int64, error) {
+// SweepWebhookLeases transitions expired-lease inflight rows in this transaction.
+// Rows whose next failure would exhaust the attempt budget go dead with
+// last_error set; the rest return to pending with the attempt count incremented
+// (the crashed attempt counts as spent). Lease fields are cleared in both
+// cases. It returns the total rows transitioned.
+func (tx *WriteTx) SweepWebhookLeases(nowMillis int64, maxAttempts int) (int64, error) {
+	if maxAttempts <= 0 {
+		return 0, fmt.Errorf("SweepWebhookLeases: %w: max attempts must be positive", ErrInvalid)
+	}
 	inner, err := tx.live()
 	if err != nil {
 		return 0, err
 	}
-	n, serr := execAffected(tx.ctx, inner, `UPDATE webhook_messages SET
-state = 'pending', lease_expires_at = 0, updated_at = ?
+	dead, derr := execAffected(tx.ctx, inner, `UPDATE webhook_messages SET
+state = 'dead', last_error = 'delivery lease expired repeatedly',
+lease_expires_at = 0, lease_owner = '', updated_at = ?
+WHERE state = 'inflight' AND lease_expires_at <= ? AND attempt_count + 1 >= ?`,
+		nowMillis, nowMillis, maxAttempts)
+	if derr != nil {
+		return 0, fmt.Errorf("SweepWebhookLeases: %w", derr)
+	}
+	pending, perr := execAffected(tx.ctx, inner, `UPDATE webhook_messages SET
+state = 'pending', attempt_count = attempt_count + 1,
+lease_expires_at = 0, lease_owner = '', updated_at = ?
 WHERE state = 'inflight' AND lease_expires_at <= ?`, nowMillis, nowMillis)
-	if serr != nil {
-		return 0, fmt.Errorf("SweepWebhookLeases: %w", serr)
+	if perr != nil {
+		return 0, fmt.Errorf("SweepWebhookLeases: %w", perr)
+	}
+	return dead + pending, nil
+}
+
+// ClearExpiredEndpointSecrets NULLs previous endpoint secrets whose rotation
+// overlap expired. It returns the cleared endpoint count.
+func (tx *WriteTx) ClearExpiredEndpointSecrets(nowMillis int64) (int64, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return 0, err
+	}
+	n, uerr := execAffected(tx.ctx, inner, `UPDATE webhook_endpoints SET
+prev_secret_enc = NULL, prev_secret_expires_at = NULL
+WHERE prev_secret_expires_at IS NOT NULL AND prev_secret_expires_at <= ?`, nowMillis)
+	if uerr != nil {
+		return 0, fmt.Errorf("ClearExpiredEndpointSecrets: %w", mapErr(uerr))
 	}
 	return n, nil
 }
@@ -871,9 +907,9 @@ func truncateError(s string) string {
 }
 
 // RequeueWebhookMessage records one failed attempt's outcome and schedules the next
-// try. The attempt count increments; the worker dead-letters once it decides the
-// message exhausted its budget.
-func (tx *WriteTx) RequeueWebhookMessage(id string, errText string, statusCode int64, nextAttemptAt int64, nowMillis int64) (WebhookMessageRow, error) {
+// try. Only the lease owner may requeue its inflight message; the attempt count
+// increments and lease fields clear on success. Zero matched rows report ErrStale.
+func (tx *WriteTx) RequeueWebhookMessage(id string, errText string, statusCode int64, nextAttemptAt int64, nowMillis int64, leaseOwner string) (WebhookMessageRow, error) {
 	if nextAttemptAt <= 0 {
 		return WebhookMessageRow{}, fmt.Errorf("RequeueWebhookMessage: %w: next_attempt_at must be positive", ErrInvalid)
 	}
@@ -883,56 +919,59 @@ func (tx *WriteTx) RequeueWebhookMessage(id string, errText string, statusCode i
 	}
 	n, uerr := execAffected(tx.ctx, inner, `UPDATE webhook_messages SET
 state = 'pending', attempt_count = attempt_count + 1, last_error = ?,
-last_status_code = ?, next_attempt_at = ?, lease_expires_at = 0, updated_at = ?
-WHERE id = ? AND state IN ('pending','inflight')`,
+last_status_code = ?, next_attempt_at = ?, lease_expires_at = 0, lease_owner = '',
+updated_at = ? WHERE id = ? AND state = 'inflight' AND lease_owner = ?`,
 		truncateError(errText), nullInt(sql.NullInt64{Int64: statusCode, Valid: true}),
-		nextAttemptAt, nowMillis, id)
+		nextAttemptAt, nowMillis, id, leaseOwner)
 	if uerr != nil {
 		return WebhookMessageRow{}, fmt.Errorf("RequeueWebhookMessage: %w", mapErr(uerr))
 	}
 	if n == 0 {
-		if _, gerr := tx.GetWebhookMessage(id); gerr != nil {
-			return WebhookMessageRow{}, gerr
-		}
-		return WebhookMessageRow{}, fmt.Errorf("RequeueWebhookMessage: %w: message is not retryable", ErrInvalid)
+		return WebhookMessageRow{}, fmt.Errorf("RequeueWebhookMessage: %w: message is not owned by this lease", ErrStale)
 	}
 	return tx.GetWebhookMessage(id)
 }
 
-// MarkWebhookDelivered records a 2xx outcome.
-func (tx *WriteTx) MarkWebhookDelivered(id string, nowMillis int64, statusCode int64) error {
+// MarkWebhookDelivered records a 2xx outcome. Only the lease owner may complete
+// its inflight message; lease fields clear on success. Zero matched rows report
+// ErrStale.
+func (tx *WriteTx) MarkWebhookDelivered(id string, nowMillis int64, statusCode int64, leaseOwner string) error {
 	inner, err := tx.live()
 	if err != nil {
 		return err
 	}
 	n, uerr := execAffected(tx.ctx, inner, `UPDATE webhook_messages SET
 state = 'delivered', delivered_at = ?, last_status_code = ?, last_error = '',
-lease_expires_at = 0, updated_at = ? WHERE id = ?`,
-		nowMillis, nullInt(sql.NullInt64{Int64: statusCode, Valid: true}), nowMillis, id)
+lease_expires_at = 0, lease_owner = '', updated_at = ?
+WHERE id = ? AND state = 'inflight' AND lease_owner = ?`,
+		nowMillis, nullInt(sql.NullInt64{Int64: statusCode, Valid: true}), nowMillis, id, leaseOwner)
 	if uerr != nil {
 		return fmt.Errorf("MarkWebhookDelivered: %w", mapErr(uerr))
 	}
 	if n == 0 {
-		return fmt.Errorf("MarkWebhookDelivered: %w", ErrNotFound)
+		return fmt.Errorf("MarkWebhookDelivered: %w", ErrStale)
 	}
 	return nil
 }
 
-// MarkWebhookDead records a terminal failure.
-func (tx *WriteTx) MarkWebhookDead(id, errText string, nowMillis int64, statusCode int64) error {
+// MarkWebhookDead records a terminal failure. Only the lease owner may complete
+// its inflight message; lease fields clear on success. Zero matched rows report
+// ErrStale.
+func (tx *WriteTx) MarkWebhookDead(id, errText string, nowMillis int64, statusCode int64, leaseOwner string) error {
 	inner, err := tx.live()
 	if err != nil {
 		return err
 	}
 	n, uerr := execAffected(tx.ctx, inner, `UPDATE webhook_messages SET
-state = 'dead', last_error = ?, last_status_code = ?, lease_expires_at = 0, updated_at = ?
-WHERE id = ?`, truncateError(errText),
-		nullInt(sql.NullInt64{Int64: statusCode, Valid: true}), nowMillis, id)
+state = 'dead', last_error = ?, last_status_code = ?, lease_expires_at = 0,
+lease_owner = '', updated_at = ? WHERE id = ? AND state = 'inflight' AND lease_owner = ?`,
+		truncateError(errText),
+		nullInt(sql.NullInt64{Int64: statusCode, Valid: true}), nowMillis, id, leaseOwner)
 	if uerr != nil {
 		return fmt.Errorf("MarkWebhookDead: %w", mapErr(uerr))
 	}
 	if n == 0 {
-		return fmt.Errorf("MarkWebhookDead: %w", ErrNotFound)
+		return fmt.Errorf("MarkWebhookDead: %w", ErrStale)
 	}
 	return nil
 }
@@ -958,8 +997,8 @@ func (tx *WriteTx) RedeliverWebhookMessage(id string, nowMillis int64) (WebhookM
 	}
 	_, uerr := inner.ExecContext(tx.ctx, `UPDATE webhook_messages SET
 state = 'pending', attempt_count = 0, next_attempt_at = ?, lease_expires_at = 0,
-last_error = '', last_status_code = NULL, delivered_at = NULL, redelivery_of = ?,
-updated_at = ? WHERE id = ?`, nowMillis, nullStr(redelivery), nowMillis, id)
+lease_owner = '', last_error = '', last_status_code = NULL, delivered_at = NULL,
+redelivery_of = ?, updated_at = ? WHERE id = ?`, nowMillis, nullStr(redelivery), nowMillis, id)
 	if uerr != nil {
 		return WebhookMessageRow{}, fmt.Errorf("RedeliverWebhookMessage: %w", mapErr(uerr))
 	}
