@@ -72,17 +72,17 @@ type benchWorkload struct {
 }
 
 type benchCase struct {
-	stock      benchWorkload
-	daemon     benchWorkload
-	warmups    int
-	total      int
-	setup      func(context.Context, int) error
-	after      func(context.Context) error
 	name       string
 	budget     string
 	authority  string
-	ratioMax   float64
+	stock      benchWorkload
+	daemon     benchWorkload
+	setup      func(context.Context, int) error
+	after      func(context.Context) error
 	limitMax   time.Duration
+	ratioMax   float64
+	warmups    int
+	total      int
 	reportOnly bool
 }
 
