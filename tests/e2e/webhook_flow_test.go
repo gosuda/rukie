@@ -5,8 +5,10 @@ package e2e
 import (
 	"encoding/base64"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +27,12 @@ type webhookHit struct {
 	timestamp string
 	signature string
 	body      []byte
+	method    string
+	peer      string
+	clen      string
+	keys      string
+	ua        string
+	path      string
 }
 
 func webhookAgentFlow(t *testing.T) {
@@ -42,24 +50,41 @@ func webhookAgentFlow(t *testing.T) {
 	var mu sync.Mutex
 	var hits []webhookHit
 	failOpen := true
-	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+	record := func(w http.ResponseWriter, r *http.Request) (body []byte, first bool) {
+		body, _ = io.ReadAll(r.Body)
 		mu.Lock()
+		defer mu.Unlock()
 		hits = append(hits, webhookHit{
 			id:        r.Header.Get("webhook-id"),
 			timestamp: r.Header.Get("webhook-timestamp"),
 			signature: r.Header.Get("webhook-signature"),
 			body:      body,
+			method:    r.Method,
+			peer:      r.RemoteAddr,
+			clen:      r.Header.Get("Content-Length"),
+			keys:      strings.Join(slices.Sorted(maps.Keys(r.Header)), ","),
+			ua:        r.Header.Get("User-Agent"),
+			path:      r.URL.Path,
 		})
-		first := failOpen
+		first = failOpen
 		failOpen = false
-		mu.Unlock()
+		return body, first
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /{$}", func(w http.ResponseWriter, r *http.Request) {
+		_, first := record(w, r)
 		if first {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-	}))
+	})
+	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
+		record(w, r)
+		t.Logf("non-POST probe ignored: method=%q ua=%q path=%q", r.Method, r.Header.Get("User-Agent"), r.URL.Path)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
+	fake := httptest.NewServer(mux)
 	defer fake.Close()
 
 	status, created := apiCall(t, h, "POST", "/ada/hooks/settings/hooks", token,
@@ -108,17 +133,29 @@ func webhookAgentFlow(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(hits) < 2 {
-		t.Fatalf("fake hits = %d, want at least 2 (retry after the 500)", len(hits))
+	var posts []webhookHit
+	for _, h := range hits {
+		if h.method == http.MethodPost {
+			posts = append(posts, h)
+		}
 	}
-	first, second := hits[0], hits[1]
+	if len(posts) < 2 {
+		for i, h := range hits {
+			t.Logf("hit %d: id=%q ts=%q sig=%.12q body=%dB method=%q peer=%q clen=%q keys=%q ua=%q path=%q", i, h.id, h.timestamp, h.signature, len(h.body), h.method, h.peer, h.clen, h.keys, h.ua, h.path)
+		}
+		t.Fatalf("fake posts = %d, want at least 2 (retry after the 500)", len(posts))
+	}
+	first, second := posts[0], posts[1]
 	if first.id == "" || first.id != second.id {
-		t.Fatalf("webhook ids differ: %q vs %q", first.id, second.id)
+		for i, h := range hits {
+			t.Logf("hit %d: id=%q ts=%q sig=%.12q body=%dB method=%q peer=%q clen=%q keys=%q ua=%q path=%q", i, h.id, h.timestamp, h.signature, len(h.body), h.method, h.peer, h.clen, h.keys, h.ua, h.path)
+		}
+		t.Fatalf("webhook ids differ: %q vs %q (%d posts)", first.id, second.id, len(posts))
 	}
 	if first.timestamp == second.timestamp {
 		t.Fatal("attempt timestamps must differ per attempt")
 	}
-	for i, hit := range hits {
+	for i, hit := range posts {
 		ts, terr := strconv.ParseInt(hit.timestamp, 10, 64)
 		if terr != nil {
 			t.Fatalf("hit %d timestamp: %v", i, terr)
