@@ -948,29 +948,51 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 				return RepoRenameOut{}, oerr
 			}
 		}
-		newUser, uerr := d.Store.LookupUserByName(ctx, newOwnerName)
-		if uerr != nil {
-			return RepoRenameOut{}, op.Errorf(op.CodeValidation, "destination owner does not exist")
+		var destUserID, destOrgID int64
+		destDisplay := newOwnerName
+		if umeta, uerr := d.Store.LookupUserByName(ctx, newOwnerName); uerr == nil {
+			destUserID = umeta.ID
+			destDisplay = umeta.Name
+		} else if !errors.Is(uerr, store.ErrNotFound) {
+			return RepoRenameOut{}, op.Wrap(op.CodeInternal, uerr, "repository rename failed")
+		} else if oerr := st.Read(ctx, func(tx *store.ReadTx) error {
+			org, ferr := tx.FindOrgByName(newOwnerName)
+			if ferr != nil {
+				return ferr
+			}
+			destOrgID = org.ID
+			destDisplay = org.Name
+			return nil
+		}); oerr != nil {
+			if errors.Is(oerr, store.ErrNotFound) {
+				return RepoRenameOut{}, op.Errorf(op.CodeValidation, "destination owner does not exist")
+			}
+			return RepoRenameOut{}, op.Wrap(op.CodeInternal, oerr, "repository rename failed")
 		}
-		moving := newUser.ID != rc.row.OwnerUserID.Int64
+		var moving bool
+		if destOrgID != 0 {
+			moving = rc.row.OrgID != destOrgID || rc.row.OwnerUserID.Valid
+		} else {
+			moving = !rc.row.OwnerUserID.Valid || rc.row.OwnerUserID.Int64 != destUserID
+		}
 		if moving {
-			if newOwnerName != strings.ToLower(rq.user.Name) {
+			if destUserID != 0 && newOwnerName != strings.ToLower(rq.user.Name) {
 				return RepoRenameOut{}, op.Errorf(op.CodeForbidden, "renames stay in the caller's namespace")
 			}
 			if rq.isToken && !rq.caller.Scopes.Has(op.ScopeRepoCreate) {
 				return RepoRenameOut{}, op.Errorf(op.CodeForbidden, "token needs the repo:create scope for the destination")
 			}
-			if derr := d.checkRepoAccessWithDest(rq, rc.row, "repo.transfer", "", newUser.ID, 0); derr != nil {
+			if derr := d.checkRepoAccessWithDest(rq, rc.row, "repo.transfer", "", destUserID, destOrgID); derr != nil {
 				return RepoRenameOut{}, derr
 			}
 		} else if derr := d.checkRepoAccess(rq, rc.row, "repo.settings", ""); derr != nil {
 			return RepoRenameOut{}, derr
 		}
-		if d.Ruk == nil {
-			return RepoRenameOut{}, op.Errorf(op.CodeUnavailable, "ruk backend is not configured")
-		}
 		oldPath := rc.row.RukPath
 		newPath := newOwnerName + "/" + in.Body.Name + ".git"
+		if oldPath != "" && oldPath != newPath && d.Ruk == nil {
+			return RepoRenameOut{}, op.Errorf(op.CodeUnavailable, "ruk backend is not configured")
+		}
 		now := d.now()
 		var updated store.RepoRow
 		renamed := false
@@ -994,7 +1016,14 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 				// metadata commit below succeeds.
 				renamed = true
 			}
-			if rerr := tx.RenameRepo(rc.row.ID, newUser.ID, in.Body.Name, newPath, now); rerr != nil {
+			if destOrgID != 0 {
+				if rerr := tx.RenameRepoToOrg(rc.row.ID, destOrgID, in.Body.Name, newPath, now); rerr != nil {
+					if isUniqueViolation(rerr) {
+						return op.Errorf(op.CodeConflict, "repository name is already taken")
+					}
+					return rerr
+				}
+			} else if rerr := tx.RenameRepo(rc.row.ID, destUserID, in.Body.Name, newPath, now); rerr != nil {
 				if isUniqueViolation(rerr) {
 					return op.Errorf(op.CodeConflict, "repository name is already taken")
 				}
@@ -1022,7 +1051,7 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 			}
 			return RepoRenameOut{}, op.Wrap(op.CodeInternal, werr, "repository rename failed")
 		}
-		return RepoRenameOut{Repo: repoJSON(newUser.Name, updated)}, nil
+		return RepoRenameOut{Repo: repoJSON(destDisplay, updated)}, nil
 	}
 }
 

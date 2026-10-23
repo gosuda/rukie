@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -137,7 +138,7 @@ func PrepareAttempt(cfg Config, grant *Grant) (AttemptWork, error) {
 	}
 	key := repoKeyOf(grant)
 	mirror := MirrorPath(cfg.StateDir, key)
-	tokenEnv := append(os.Environ(), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader", "GIT_CONFIG_VALUE_0=AUTHORIZATION: Bearer "+grant.Attempt.Token)
+	tokenEnv := append(os.Environ(), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader", "GIT_CONFIG_VALUE_0="+fetchBearerHeader(grant))
 	if err := UpdateMirror(mirror, fetchURL(cfg, grant), grant.Fetch.Want, tokenEnv); err != nil {
 		return AttemptWork{}, err
 	}
@@ -227,6 +228,10 @@ func repoKeyOf(grant *Grant) string {
 
 func fetchURL(cfg Config, grant *Grant) string {
 	return strings.TrimSuffix(cfg.Server, "/") + grant.Fetch.URL
+}
+
+func fetchBearerHeader(grant *Grant) string {
+	return "AUTHORIZATION: Bearer " + cmp.Or(grant.Fetch.Token, grant.Attempt.Token)
 }
 
 // MapVerdict converts an executor exit into a finish outcome.
@@ -469,11 +474,12 @@ type AttemptDone struct {
 }
 
 func (l *Loop) finish(ctx context.Context, done AttemptDone) {
-	done.Stream.ship()
 	refs := []ArtifactRef{}
+	incomplete := false
 	for _, name := range done.Grant.Job.Artifacts {
 		digest, raw, err := CollectArtifact(done.Work.Work, name)
 		if err != nil {
+			incomplete = true
 			continue
 		}
 		if err := l.Client.PutArtifact(done.Grant.Attempt, raw); err != nil {
@@ -481,15 +487,20 @@ func (l *Loop) finish(ctx context.Context, done AttemptDone) {
 		}
 		refs = append(refs, ArtifactRef{Name: name, Digest: digest, Size: int64(len(raw))})
 	}
-	in := FinishInput{
-		Outcome: done.Outcome, Class: done.Class, ExitCode: done.Exit, Fence: done.Grant.Attempt.Fence,
-		LogSHA: done.Stream.digest(), LogSeq: done.Stream.seq, LogEnd: done.Stream.end, Artifacts: refs,
-	}
-	raw, err := jsonv2.Marshal(in)
-	if err == nil {
-		_ = os.WriteFile(filepath.Join(done.Work.Dir, "result.json"), raw, 0600)
+	outcome, class := done.Outcome, done.Class
+	if incomplete && outcome == "passed" {
+		outcome, class = "failed", "script_failure"
 	}
 	for attempt := 0; ; attempt++ {
+		done.Stream.ship()
+		in := FinishInput{
+			Outcome: outcome, Class: class, ExitCode: done.Exit, Fence: done.Grant.Attempt.Fence,
+			LogSHA: done.Stream.digest(), LogSeq: done.Stream.seq, LogEnd: done.Stream.end, Artifacts: refs,
+		}
+		raw, err := jsonv2.Marshal(in)
+		if err == nil {
+			_ = os.WriteFile(filepath.Join(done.Work.Dir, "result.json"), raw, 0600)
+		}
 		_, ferr := l.Client.Finish(done.Grant.Attempt, in)
 		if ferr == nil {
 			return
@@ -523,24 +534,20 @@ func (s *logStreamer) ship() {
 		s.offsets = map[string]int64{}
 	}
 	for _, stream := range []string{"job.stdout", "job.stderr"} {
-		raw, err := OpenLogChunk(filepath.Join(s.logDir, stream))
-		if err != nil {
-			continue
-		}
-		at := s.offsets[stream]
-		if int64(len(raw)) <= at {
-			continue
-		}
-		chunk := raw[at:]
-		for len(chunk) > 0 {
-			take := min(len(chunk), ChunkMax)
-			_, _ = s.client.AppendLog(s.attempt, s.seq+1, s.end, chunk[:take], nil)
+		for {
+			raw, err := OpenLogChunk(filepath.Join(s.logDir, stream), s.offsets[stream])
+			if err != nil || len(raw) == 0 {
+				break
+			}
+			ack, aerr := s.client.AppendLog(s.attempt, s.seq+1, s.end, raw, nil)
+			if aerr != nil {
+				break
+			}
 			s.seq++
-			s.end += int64(take)
-			s.sum = append(s.sum, chunk[:take]...)
-			chunk = chunk[take:]
+			s.end = ack
+			s.offsets[stream] += int64(len(raw))
+			s.sum = append(s.sum, raw...)
 		}
-		s.offsets[stream] = int64(len(raw))
 	}
 }
 

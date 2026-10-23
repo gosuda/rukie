@@ -444,8 +444,8 @@ func (s *Store) DeleteAuthUser(ctx context.Context, userID int64) error {
 		}
 		var lastAdmin int64
 		if qerr := inner.QueryRowContext(tx.ctx, `SELECT COUNT(*) FROM users
-			WHERE id = ? AND is_admin = 1 AND is_active = 1
-			AND (SELECT COUNT(*) FROM users WHERE is_admin = 1 AND is_active = 1) <= 1`, userID).Scan(&lastAdmin); qerr != nil {
+			WHERE id = ? AND is_admin != 0 AND is_active != 0
+			AND (SELECT COUNT(*) FROM users WHERE is_admin != 0 AND is_active != 0) <= 1`, userID).Scan(&lastAdmin); qerr != nil {
 			return fmt.Errorf("DeleteAuthUser: %w", qerr)
 		}
 		if lastAdmin > 0 {

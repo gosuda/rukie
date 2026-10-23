@@ -16,6 +16,7 @@ import (
 	jsonv2 "encoding/json/v2"
 
 	"github.com/gosuda/rukie/internal/api"
+	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/store"
 )
@@ -25,13 +26,20 @@ type crashClock struct{ now time.Time }
 func (f *crashClock) Now() time.Time          { return f.now }
 func (f *crashClock) Advance(d time.Duration) { f.now = f.now.Add(d) }
 
-func openCrashCI(t *testing.T, clk *crashClock) *ci.Controller {
+func openCrashCI(t *testing.T, clk *crashClock) (*ci.Controller, *auth.Service) {
 	t.Helper()
 	st, err := store.Open(t.Context(), store.Options{Path: t.TempDir() + "/ci.sqlite"})
 	if err != nil {
 		t.Fatalf("store open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
+	svc := auth.New(st)
+	if _, ierr := st.InsertAuthUser(t.Context(), store.AuthUserCreate{
+		Name: "ada", Lower: "ada", Email: "ada@example.test",
+		Hash: "test-hash", Algo: "argon2id-v19", Now: 1,
+	}); ierr != nil {
+		t.Fatalf("seed user: %v", ierr)
+	}
 	seed := sha256.Sum256([]byte("f6-crash-test"))
 	seal := sha256.Sum256([]byte("f6-crash-seal"))
 	c := ci.NewController(st, ci.Config{
@@ -44,7 +52,7 @@ func openCrashCI(t *testing.T, clk *crashClock) *ci.Controller {
 	if err := c.Recover(t.Context()); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	return c
+	return c, svc
 }
 
 const crashSpecTOML = `schema = "rukie.ci/v1"
@@ -97,10 +105,10 @@ func crashRunner(t *testing.T, c *ci.Controller) (string, string) {
 	return runner.ID, token
 }
 
-func crashServer(t *testing.T, c *ci.Controller) (*httptest.Server, *Client, string, string) {
+func crashServer(t *testing.T, c *ci.Controller, svc *auth.Service) (*httptest.Server, *Client, string, string) {
 	t.Helper()
 	id, token := crashRunner(t, c)
-	srv := httptest.NewServer(api.Deps{CI: c}.CIRunnerV1(http.NotFoundHandler()))
+	srv := httptest.NewServer(api.Deps{CI: c, Service: svc}.CIRunnerV1(http.NotFoundHandler()))
 	t.Cleanup(srv.Close)
 	return srv, NewClient(srv.URL, id, token), id, token
 }
@@ -126,9 +134,9 @@ func mustHTTPLease(t *testing.T, client *Client) *Grant {
 
 func TestRunnerKillRequeuesWithNewFence(t *testing.T) {
 	clk := &crashClock{now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
-	c := openCrashCI(t, clk)
+	c, svc := openCrashCI(t, clk)
 	crashRun(t, c, "change:kill:tip")
-	_, client, _, _ := crashServer(t, c)
+	_, client, _, _ := crashServer(t, c, svc)
 	first := mustHTTPLease(t, client)
 	if _, err := client.Heartbeat(first.Attempt); err != nil {
 		t.Fatalf("heartbeat: %v", err)
@@ -159,9 +167,9 @@ func TestRunnerKillRequeuesWithNewFence(t *testing.T) {
 
 func TestRunnerCrashMatrix(t *testing.T) {
 	clk := &crashClock{now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
-	c := openCrashCI(t, clk)
+	c, svc := openCrashCI(t, clk)
 	crashRun(t, c, "change:matrix:tip")
-	_, client, _, _ := crashServer(t, c)
+	_, client, _, _ := crashServer(t, c, svc)
 	first := mustHTTPLease(t, client)
 	clk.Advance(200 * time.Second)
 	if err := c.Reap(t.Context()); err != nil {
@@ -200,9 +208,9 @@ func runnerIDOf(t *testing.T, c *ci.Controller, attemptID string) string {
 
 func TestRunnerKillAfter200Restart(t *testing.T) {
 	clk := &crashClock{now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
-	c := openCrashCI(t, clk)
+	c, svc := openCrashCI(t, clk)
 	crashRun(t, c, "change:restart:tip")
-	srv, client, _, _ := crashServer(t, c)
+	srv, client, _, _ := crashServer(t, c, svc)
 	_ = srv
 	grant := mustHTTPLease(t, client)
 	if _, err := client.Heartbeat(grant.Attempt); err != nil {
@@ -246,9 +254,9 @@ func TestRunnerKillAfter200Restart(t *testing.T) {
 
 func TestCICacheHitAttestsWithoutRun(t *testing.T) {
 	clk := &crashClock{now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
-	c := openCrashCI(t, clk)
+	c, svc := openCrashCI(t, clk)
 	crashRun(t, c, "change:cache:one")
-	_, client, _, _ := crashServer(t, c)
+	_, client, _, _ := crashServer(t, c, svc)
 	grant := mustHTTPLease(t, client)
 	if _, err := client.Heartbeat(grant.Attempt); err != nil {
 		t.Fatalf("heartbeat: %v", err)
@@ -322,9 +330,9 @@ func writeReapAttempt(t *testing.T, state, id, token string, in FinishInput) {
 
 func TestRunnerReapsResultFromDisk(t *testing.T) {
 	clk := &crashClock{now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
-	c := openCrashCI(t, clk)
+	c, svc := openCrashCI(t, clk)
 	crashRun(t, c, "change:reap:tip")
-	_, client, _, _ := crashServer(t, c)
+	_, client, _, _ := crashServer(t, c, svc)
 	grant := mustHTTPLease(t, client)
 	state := t.TempDir()
 	writeReapAttempt(t, state, grant.Attempt.ID, grant.Attempt.Token, FinishInput{

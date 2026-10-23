@@ -431,13 +431,34 @@ func (tx *WriteTx) RenameRepo(id, newOwner int64, newName, newPath string, now t
 		return err
 	}
 	moved, merr := execAffected(tx.ctx, inner, `UPDATE repos
-SET owner_user_id = ?, name = ?, ruk_path = ?, updated_at = ?
+SET owner_user_id = ?, org_id = 0, name = ?, ruk_path = ?, updated_at = ?
 WHERE id = ? AND deleted_at IS NULL`, newOwner, newName, newPath, msOf(now), id)
 	if merr != nil {
 		return mapErr(merr)
 	}
 	if moved == 0 {
 		return fmt.Errorf("RenameRepo: %w: repo %d", ErrNotFound, id)
+	}
+	return nil
+}
+
+// RenameRepoToOrg moves a repository into an org namespace: the user owner
+// is cleared and org_id takes the destination. RenameRepo covers the
+// user-owned destination; the rename handler picks by destination kind so
+// org renames no longer write owner_user_id.
+func (tx *WriteTx) RenameRepoToOrg(id, orgID int64, newName, newPath string, now time.Time) error {
+	inner, err := tx.live()
+	if err != nil {
+		return err
+	}
+	moved, merr := execAffected(tx.ctx, inner, `UPDATE repos
+SET owner_user_id = NULL, org_id = ?, name = ?, ruk_path = ?, updated_at = ?
+WHERE id = ? AND deleted_at IS NULL`, orgID, newName, newPath, msOf(now), id)
+	if merr != nil {
+		return mapErr(merr)
+	}
+	if moved == 0 {
+		return fmt.Errorf("RenameRepoToOrg: %w: repo %d", ErrNotFound, id)
 	}
 	return nil
 }

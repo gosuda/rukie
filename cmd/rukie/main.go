@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -923,7 +924,12 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	}
 	raw := api.RawBytes{Deps: repoDeps}.Wrap(gitFallback{git: gitHandler, keys: authDeps, fallback: server})
 	adminPaged := repoDeps.AdminRaw(repoDeps.CIRunnerV1(repoDeps.CIRaw(raw)), csrfKey)
-	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.InboxPages(repoDeps.WebhookPages(adminPaged)))), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}, webhooks: webhookWorker}, cleanup, nil
+	pushTimeoutMs := cfg.Mirrors.PushTimeoutMs
+	const maxPushTimeoutMs = uint64(math.MaxInt64 / int64(time.Millisecond))
+	if pushTimeoutMs > maxPushTimeoutMs {
+		pushTimeoutMs = maxPushTimeoutMs
+	}
+	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.InboxPages(repoDeps.WebhookPages(adminPaged)))), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes, PushTimeout: time.Duration(pushTimeoutMs) * time.Millisecond}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}, webhooks: webhookWorker}, cleanup, nil
 }
 
 // webhookRetention converts operator-configured days to a Duration,

@@ -604,3 +604,108 @@ func TestRepoPagesZeroJS(t *testing.T) {
 		}
 	}
 }
+
+func rseedOrgRepo(t *testing.T, e *repoEnv, orgID int64, name string) int64 {
+	t.Helper()
+	var id int64
+	err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		var ierr error
+		id, ierr = tx.InsertRepo(time.Now(), store.RepoInsert{
+			OwnerUserID:   sql.NullInt64{},
+			OrgID:         orgID,
+			Name:          name,
+			Visibility:    "private",
+			Topics:        "[]",
+			DefaultBranch: "main",
+			RukPath:       "",
+		})
+		if ierr != nil {
+			return ierr
+		}
+		return tx.InsertDefaultRule(id, time.Now(), "main")
+	})
+	if err != nil {
+		t.Fatalf("seed org repo: %v", err)
+	}
+	return id
+}
+
+func rorgRepoOwner(t *testing.T, e *repoEnv, orgID int64, name string) store.RepoRow {
+	t.Helper()
+	var row store.RepoRow
+	if rerr := e.st.Read(t.Context(), func(tx *store.ReadTx) error {
+		var ferr error
+		row, ferr = tx.FindRepo(0, orgID, name)
+		return ferr
+	}); rerr != nil {
+		t.Fatalf("find org repo: %v", rerr)
+	}
+	return row
+}
+
+func rrenameRepo(t *testing.T, e *repoEnv, owner, repo, cookie, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	etag := rdo(t, e, "GET", "/"+owner+"/"+repo, cookie, "").Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("GET %s/%s returns no ETag", owner, repo)
+	}
+	return rdoFull(t, e, "POST", "/"+owner+"/"+repo+"/settings/rename", cookie,
+		"application/json", map[string]string{"If-Match": etag}, body)
+}
+
+func TestRepoRenameOrgOwners(t *testing.T) {
+	e := buildRepoEnv(t)
+	rbootstrap(t, e, "ada", "long-test-password-01")
+	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
+	ada, err := e.svc.GetUser(t.Context(), "ada")
+	if err != nil {
+		t.Fatalf("get ada: %v", err)
+	}
+	var acmeID, otherID int64
+	if serr := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
+		acme, ierr := tx.InsertOrg(time.Now(), store.OrgInsert{Name: "acme", Visibility: "private"})
+		if ierr != nil {
+			return ierr
+		}
+		other, ierr := tx.InsertOrg(time.Now(), store.OrgInsert{Name: "other", Visibility: "private"})
+		if ierr != nil {
+			return ierr
+		}
+		acmeID, otherID = acme.ID, other.ID
+		if ierr := tx.AddOwnersMember(acmeID, ada.ID); ierr != nil {
+			return ierr
+		}
+		return tx.AddOwnersMember(otherID, ada.ID)
+	}); serr != nil {
+		t.Fatalf("org setup: %v", serr)
+	}
+	rseedOrgRepo(t, e, acmeID, "lib")
+	rseedOrgRepo(t, e, acmeID, "moveme")
+
+	moved := rrenameRepo(t, e, "acme", "lib", adaCookie, `{"name":"lib2"}`)
+	if moved.Code != http.StatusOK {
+		t.Fatalf("same-org rename = %d, want 200: %s", moved.Code, moved.Body.String())
+	}
+	got := rdecode(t, moved)["repo"].(map[string]any)
+	if got["owner"] != "acme" || got["name"] != "lib2" {
+		t.Fatalf("same-org rename returned %v, want owner acme name lib2", got)
+	}
+	if row := rorgRepoOwner(t, e, acmeID, "lib2"); row.OrgID != acmeID || row.OwnerUserID.Valid {
+		t.Fatalf("same-org rename left org=%d user=%+v, want org %d and no user", row.OrgID, row.OwnerUserID, acmeID)
+	}
+
+	xorg := rrenameRepo(t, e, "acme", "moveme", adaCookie, `{"name":"moveme","new_owner":"other"}`)
+	if xorg.Code != http.StatusOK {
+		t.Fatalf("cross-org rename = %d, want 200: %s", xorg.Code, xorg.Body.String())
+	}
+	xgot := rdecode(t, xorg)["repo"].(map[string]any)
+	if xgot["owner"] != "other" || xgot["name"] != "moveme" {
+		t.Fatalf("cross-org rename returned %v, want owner other name moveme", xgot)
+	}
+	if row := rorgRepoOwner(t, e, otherID, "moveme"); row.OrgID != otherID || row.OwnerUserID.Valid {
+		t.Fatalf("cross-org rename left org=%d user=%+v, want org %d and no user", row.OrgID, row.OwnerUserID, otherID)
+	}
+
+	ghost := rrenameRepo(t, e, "other", "moveme", adaCookie, `{"name":"moveme","new_owner":"ghost"}`)
+	rassertProblem(t, ghost, 422, "validation")
+}

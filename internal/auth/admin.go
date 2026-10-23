@@ -361,12 +361,12 @@ func (s *Service) DeleteSelf(ctx context.Context, userID int64, ifMatch, ip stri
 	if !etagMatch(ifMatch, quoteETag(u.ID, u.UpdatedAt)) {
 		return errStale
 	}
-	if u.IsAdmin && u.IsActive && s.CountActiveAdmins(ctx) <= 1 {
-		return errors.New("cannot delete the last active admin")
-	}
 	if derr := s.store.DeleteAuthUser(ctx, userID); derr != nil {
 		if errors.Is(derr, store.ErrSoleOwner) {
 			return errors.New("cannot delete the last org owner")
+		}
+		if errors.Is(derr, store.ErrLastAdmin) {
+			return errors.New("cannot delete the last active admin")
 		}
 		return derr
 	}

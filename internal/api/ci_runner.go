@@ -1,16 +1,19 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	jsonv2 "encoding/json/v2"
 
+	"github.com/gosuda/rukie/internal/auth"
 	"github.com/gosuda/rukie/internal/ci"
 	"github.com/gosuda/rukie/internal/op"
 )
@@ -23,6 +26,8 @@ func ciRunnerStatus(code string) int {
 		return http.StatusUnprocessableEntity
 	case "E_RECOVERING":
 		return http.StatusServiceUnavailable
+	case "E_BUSY":
+		return http.StatusTooManyRequests
 	case "E_LIMIT":
 		return http.StatusRequestEntityTooLarge
 	case "E_UNAUTHENTICATED":
@@ -100,6 +105,67 @@ func ciProblem(code string) error {
 	return &ci.Problem{Code: code}
 }
 
+const maxRunnerArtifactBytes = 512 << 20
+
+const maxArtifactInflightBytes = 2 << 30
+
+var artifactInflight atomic.Int64
+
+func reserveArtifactBytes(n int64) bool {
+	for {
+		cur := artifactInflight.Load()
+		if cur+n > maxArtifactInflightBytes {
+			return false
+		}
+		if artifactInflight.CompareAndSwap(cur, cur+n) {
+			return true
+		}
+	}
+}
+
+func releaseArtifactBytes(n int64) {
+	artifactInflight.Add(-n)
+}
+
+func (d Deps) preAuthAttempt(w http.ResponseWriter, r *http.Request) (string, *ci.Controller, bool) {
+	token, ctrl, ok := d.attemptToken(r)
+	if !ok {
+		writeRunnerProblem(w, ciProblem("E_RECOVERING"))
+		return "", nil, false
+	}
+	if err := ctrl.CheckAttemptToken(r.Context(), r.PathValue("id"), token); err != nil {
+		writeRunnerProblem(w, err)
+		return "", nil, false
+	}
+	return token, ctrl, true
+}
+
+func (d Deps) mintFetchToken(ctx context.Context, lease *ci.Lease) (string, error) {
+	user, uerr := d.Service.GetUser(ctx, lease.Run.Principal)
+	if uerr != nil {
+		return "", op.Wrap(op.CodeInvalid, uerr, "run principal is unknown")
+	}
+	if !user.IsActive {
+		return "", op.Wrap(op.CodeInvalid, uerr, "run principal is inactive")
+	}
+	timeout, perr := time.ParseDuration(lease.Job.Spec.Timeout)
+	if perr != nil || timeout <= 0 {
+		timeout = time.Hour
+	}
+	secret, cerr := d.Service.CreateToken(ctx, auth.CreateTokenInput{
+		UserID: user.ID,
+		Name:   ci.FetchCredentialPrefix + lease.Attempt.ID,
+		Scopes: op.Scopes(0).Add(op.ScopeRepoRead),
+		TTL:    timeout + 10*time.Minute,
+		Repos:  []int64{lease.Run.RepoID},
+		IP:     op.ClientIP(ctx),
+	})
+	if cerr != nil {
+		return "", op.Wrap(op.CodeInternal, cerr, "fetch credential was not minted")
+	}
+	return secret.Secret, nil
+}
+
 func runnerBearer(r *http.Request) string {
 	scheme, value, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !strings.EqualFold(scheme, "Bearer") {
@@ -147,6 +213,13 @@ func (d Deps) runnerLease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if lease != nil {
+			fetch, ferr := d.mintFetchToken(r.Context(), lease)
+			if ferr != nil {
+				_ = ctrl.Release(r.Context(), lease.Attempt.ID, lease.Token, lease.Attempt.Fence, "not_started")
+				writeRunnerProblem(w, ferr)
+				return
+			}
+			lease.FetchToken = fetch
 			writeRunnerLease(w, lease)
 			return
 		}
@@ -210,6 +283,7 @@ func writeRunnerLease(w http.ResponseWriter, lease *ci.Lease) {
 		"fetch": map[string]string{
 			"url":  "/" + lease.Run.Owner + "/" + lease.Run.Repo + ".git",
 			"want": lease.Run.Subject, "expect_tree": lease.Run.Tree,
+			"token": lease.FetchToken,
 		},
 		"secrets": secrets,
 		"timers":  map[string]int64{"heartbeat_s": 10, "lease_ttl_s": 30, "self_fence_s": 135},
@@ -250,13 +324,12 @@ func (d Deps) runnerStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) runnerHeartbeat(w http.ResponseWriter, r *http.Request) {
-	var in runnerFenceIn
-	if !readRunnerBody(w, r, &in) {
+	token, ctrl, ok := d.preAuthAttempt(w, r)
+	if !ok {
 		return
 	}
-	token, ctrl, ok := d.attemptToken(r)
-	if !ok {
-		writeRunnerProblem(w, ciProblem("E_RECOVERING"))
+	var in runnerFenceIn
+	if !readRunnerBody(w, r, &in) {
 		return
 	}
 	reply, err := ctrl.Heartbeat(r.Context(), r.PathValue("id"), token, in.Fence)
@@ -272,6 +345,10 @@ func (d Deps) runnerHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) runnerLogs(w http.ResponseWriter, r *http.Request) {
+	token, ctrl, ok := d.preAuthAttempt(w, r)
+	if !ok {
+		return
+	}
 	var in struct {
 		SHA256 string        `json:"sha256"`
 		Data   string        `json:"data_b64"`
@@ -281,11 +358,6 @@ func (d Deps) runnerLogs(w http.ResponseWriter, r *http.Request) {
 		Offset int64         `json:"offset"`
 	}
 	if !readRunnerBody(w, r, &in) {
-		return
-	}
-	token, ctrl, ok := d.attemptToken(r)
-	if !ok {
-		writeRunnerProblem(w, ciProblem("E_RECOVERING"))
 		return
 	}
 	raw, derr := base64.StdEncoding.DecodeString(in.Data)
@@ -368,14 +440,23 @@ func (d Deps) runnerRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d Deps) runnerBlob(w http.ResponseWriter, r *http.Request) {
+	token, ctrl, ok := d.preAuthAttempt(w, r)
+	if !ok {
+		return
+	}
 	if r.ContentLength <= 0 {
 		writeRunnerProblem(w, ciProblem("E_INVALID"))
 		return
 	}
-	if r.ContentLength > 1<<30 {
+	if r.ContentLength > maxRunnerArtifactBytes {
 		writeRunnerProblem(w, ciProblem("E_LIMIT"))
 		return
 	}
+	if !reserveArtifactBytes(r.ContentLength) {
+		writeRunnerProblem(w, ciProblem("E_BUSY"))
+		return
+	}
+	defer releaseArtifactBytes(r.ContentLength)
 	var fence int64
 	if raw := r.Header.Get("X-Rukie-Fence"); raw != "" {
 		parsed, perr := strconv.ParseInt(raw, 10, 64)
@@ -385,18 +466,13 @@ func (d Deps) runnerBlob(w http.ResponseWriter, r *http.Request) {
 		}
 		fence = parsed
 	}
-	raw, rerr := io.ReadAll(io.LimitReader(r.Body, (1<<30)+1))
+	raw, rerr := io.ReadAll(io.LimitReader(r.Body, maxRunnerArtifactBytes+1))
 	if rerr != nil {
 		writeRunnerProblem(w, rerr)
 		return
 	}
 	if int64(len(raw)) != r.ContentLength {
 		writeRunnerProblem(w, ciProblem("E_INVALID"))
-		return
-	}
-	token, ctrl, ok := d.attemptToken(r)
-	if !ok {
-		writeRunnerProblem(w, ciProblem("E_RECOVERING"))
 		return
 	}
 	full := "sha256:" + strings.TrimPrefix(r.PathValue("digest"), "sha256:")

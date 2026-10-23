@@ -1078,7 +1078,7 @@ func mirrorSyncHandler(d Deps) func(context.Context, op.Principal, MirrorSyncIn)
 		if rerr != nil {
 			return MirrorSyncOut{}, rerr
 		}
-		plan, perr := mirror.ComputePlan(local, remote, cfg, defBranch, in.Body.ConfirmDigest)
+		plan, perr := mirror.ComputePlan(local, remote, cfg, rc.row.DefaultBranch, defBranch, in.Body.ConfirmDigest)
 		needed := errors.Is(perr, mirror.ErrNeedsConfirmation)
 		if perr != nil && !needed {
 			return MirrorSyncOut{}, op.Wrap(op.CodeInternal, perr, "mirror plan failed")

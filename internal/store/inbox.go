@@ -1,12 +1,15 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/gosuda/rukie/internal/access"
 )
 
 // WatchRow is one user's watch level for one repo. Times are Unix millis.
@@ -361,6 +364,38 @@ func (tx *ReadTx) CountSnoozedAwake(userID int64, nowMillis int64) (int64, error
 	if serr := inner.QueryRowContext(tx.ctx, `SELECT count(*) FROM inbox_threads
 WHERE user_id = ? AND state = 'snoozed' AND snooze_until <= ?`, userID, nowMillis).Scan(&n); serr != nil {
 		return 0, fmt.Errorf("CountSnoozedAwake: %w", serr)
+	}
+	return n, nil
+}
+
+// InboxPromoteBatchLimit caps lazy snooze promotion per read so one inbox
+// list or get never rewrites an unbounded backlog; the remainder wakes on
+// later reads.
+const InboxPromoteBatchLimit = 100
+
+// PromoteAwakeSnoozes moves up to limit of the user's snoozed threads whose
+// deadline passed back to unread, clearing the deadline, and returns the
+// promoted count. Non-positive or over-cap limits clamp to
+// InboxPromoteBatchLimit. CountSnoozedAwake on the same clock drops by the
+// returned count while CountUnreadInbox rises by it.
+func (tx *WriteTx) PromoteAwakeSnoozes(userID, nowMillis int64, limit int) (int64, error) {
+	if limit <= 0 || limit > InboxPromoteBatchLimit {
+		limit = InboxPromoteBatchLimit
+	}
+	inner, err := tx.live()
+	if err != nil {
+		return 0, err
+	}
+	res, uerr := inner.ExecContext(tx.ctx, `UPDATE inbox_threads SET state = 'unread',
+snooze_until = 0, updated_at = ? WHERE id IN (SELECT id FROM inbox_threads
+WHERE user_id = ? AND state = 'snoozed' AND snooze_until <= ?
+ORDER BY snooze_until ASC, id ASC LIMIT ?)`, nowMillis, userID, nowMillis, limit)
+	if uerr != nil {
+		return 0, fmt.Errorf("PromoteAwakeSnoozes: %w", mapErr(uerr))
+	}
+	n, rerr := res.RowsAffected()
+	if rerr != nil {
+		return 0, fmt.Errorf("PromoteAwakeSnoozes: %w", rerr)
 	}
 	return n, nil
 }
@@ -739,6 +774,9 @@ func fanoutInbox(core *txCore, row OutboxRow) error {
 		eventType: row.Kind, actorName: itemActorName, actorID: itemActorID,
 	}
 	for userID, rec := range recipients {
+		if !inboxRecipientCanView(core.ctx, tx, userID, parsed.repoID) {
+			continue
+		}
 		base.reasons = rec.reasons
 		if rerr := upsertInboxThread(core, tx, userID, parsed.repoID, subjectKind, subjectID,
 			base, eventMillis); rerr != nil {
@@ -746,6 +784,68 @@ func fanoutInbox(core *txCore, row OutboxRow) error {
 		}
 	}
 	return nil
+}
+
+func inboxRecipientCanView(ctx context.Context, tx *sql.Tx, userID, repoID int64) bool {
+	var active int64
+	if serr := tx.QueryRowContext(ctx, `SELECT is_active FROM users WHERE id = ?`, userID).Scan(&active); serr != nil || active == 0 {
+		return false
+	}
+	var owner sql.NullInt64
+	var orgID int64
+	var visibility string
+	if serr := tx.QueryRowContext(ctx, `SELECT owner_user_id, org_id, visibility FROM repos WHERE id = ? AND deleted_at IS NULL`,
+		repoID).Scan(&owner, &orgID, &visibility); serr != nil {
+		return errors.Is(serr, sql.ErrNoRows)
+	}
+	switch visibility {
+	case "public", "internal":
+		return true
+	case "private":
+	default:
+		return false
+	}
+	if orgID == 0 && owner.Valid && owner.Int64 == userID {
+		return true
+	}
+	var n int64
+	if orgID != 0 {
+		if serr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_members m
+JOIN teams t ON t.id = m.team_id
+WHERE t.org_id = ? AND t.lower_name = 'owners' AND m.user_id = ?`, orgID, userID).Scan(&n); serr == nil && n > 0 {
+			return true
+		}
+	}
+	if orgID == 0 {
+		var raw string
+		if serr := tx.QueryRowContext(ctx, `SELECT role FROM repo_grants WHERE repo_id = ? AND user_id = ?`,
+			repoID, userID).Scan(&raw); serr == nil {
+			if role, ok := access.ParseRole(raw); ok && role >= access.RoleRead {
+				return true
+			}
+		}
+	}
+	rows, qerr := tx.QueryContext(ctx, `SELECT t.permission FROM teams t
+JOIN team_members m ON m.team_id = t.id
+JOIN repos r ON r.id = ? AND r.deleted_at IS NULL
+WHERE m.user_id = ? AND t.org_id = r.org_id
+AND (t.repo_scope = 'all' OR EXISTS
+ (SELECT 1 FROM team_repos tr WHERE tr.team_id = t.id AND tr.repo_id = r.id))`, repoID, userID)
+	if qerr != nil {
+		return false
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var perm string
+		if serr := rows.Scan(&perm); serr != nil {
+			return false
+		}
+		if role, ok := access.ParseRole(perm); ok && role >= access.RoleRead {
+			_ = rows.Close()
+			return true
+		}
+	}
+	return false
 }
 
 // inboxFanoutItem carries one new event's item content: identity (the outbox

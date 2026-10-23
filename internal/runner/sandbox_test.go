@@ -567,10 +567,65 @@ func TestSandboxLogChunkRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenLogChunk(link); err == nil {
+	if _, err := OpenLogChunk(link, 0); err == nil {
 		t.Fatal("symlinked log opens")
 	} else if !strings.Contains(err.Error(), "HOST_PATH_VIOLATION") {
 		t.Fatalf("symlink error = %v, want E_HOST_PATH_VIOLATION", err)
+	}
+}
+
+func TestSandboxCollectRefusesIntermediateSymlink(t *testing.T) {
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	if err := os.MkdirAll(filepath.Join(work, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "attempt.token"), []byte("sekrit"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "sub", "ok.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..", filepath.Join(work, "out")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CollectArtifact(work, "out/attempt.token"); err == nil {
+		t.Fatal("intermediate symlink escape collected")
+	} else if !strings.Contains(err.Error(), "HOST_PATH_VIOLATION") {
+		t.Fatalf("escape error = %v, want E_HOST_PATH_VIOLATION", err)
+	}
+	if err := os.Symlink("sub", filepath.Join(work, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CollectArtifact(work, "alias/ok.txt"); err == nil {
+		t.Fatal("aliased directory traversal collected")
+	} else if !strings.Contains(err.Error(), "HOST_PATH_VIOLATION") {
+		t.Fatalf("alias error = %v, want E_HOST_PATH_VIOLATION", err)
+	}
+	if digest, raw, err := CollectArtifact(work, "sub/ok.txt"); err != nil || string(raw) != "data" || digest == "" {
+		t.Fatalf("nested artifact = %q %v", raw, err)
+	}
+}
+
+func TestSandboxCollectFailsOverLimit(t *testing.T) {
+	work := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(work, 0755); err != nil {
+		t.Fatal(err)
+	}
+	big, err := os.Create(filepath.Join(work, "big.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Truncate(ArtifactMaxBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CollectArtifact(work, "big.bin"); err == nil {
+		t.Fatal("oversized artifact collected")
+	} else if !strings.Contains(err.Error(), "ARTIFACT_LIMIT") {
+		t.Fatalf("over-limit error = %v, want E_ARTIFACT_LIMIT", err)
 	}
 }
 

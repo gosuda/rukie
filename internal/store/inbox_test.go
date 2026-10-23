@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -86,6 +87,9 @@ func seedInboxThread(ctx context.Context, t *testing.T, s *Store, now int64) (re
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		if _, werr := tx.SetWatch(watcher.ID, repo, "all", nil, now); werr != nil {
 			return werr
+		}
+		if gerr := tx.PutGrant(repo, watcher.ID, "read"); gerr != nil {
+			return gerr
 		}
 		_, ierr := tx.InsertIntent(time.UnixMilli(now), IntentRow{
 			RepoID: repo, Title: "mark me", Body: "b", CreatedBy: reporter.ID,
@@ -463,6 +467,9 @@ func TestIgnoreSuppressesAll(t *testing.T) {
 		if _, werr := tx.SetWatch(ignorer.ID, repo, "ignore", nil, now); werr != nil {
 			return werr
 		}
+		if gerr := tx.PutGrant(repo, other.ID, "read"); gerr != nil {
+			return gerr
+		}
 		_, ierr := tx.InsertIntent(time.UnixMilli(now), IntentRow{
 			RepoID: repo, Title: "ignored task", Body: "b", CreatedBy: other.ID,
 			AssigneeUserID: sql.NullInt64{Int64: ignorer.ID, Valid: true},
@@ -608,6 +615,261 @@ func TestListInboxThreadsFilters(t *testing.T) {
 		}
 		if _, gerr := tx.GetInboxThread(other.ID, threads[0].ID); !errors.Is(gerr, ErrNotFound) {
 			t.Fatalf("foreign get = %v, want ErrNotFound", gerr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+}
+
+func TestPromoteAwakeSnoozesBounded(t *testing.T) {
+	if InboxPromoteBatchLimit != 100 {
+		t.Fatalf("batch limit = %d, want 100", InboxPromoteBatchLimit)
+	}
+	ctx := t.Context()
+	s := openF8Store(t)
+	reporter, watcher, repo, _ := seedInboxThread(ctx, t, s, 40000)
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		for _, title := range []string{"second panel", "third panel"} {
+			if _, ierr := tx.InsertIntent(time.UnixMilli(40000), IntentRow{
+				RepoID: repo, Title: title, Body: "b", CreatedBy: reporter.ID,
+			}); ierr != nil {
+				return ierr
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed more: %v", err)
+	}
+	var ids []string
+	if err := s.Read(ctx, func(tx *ReadTx) error {
+		threads, _, lerr := tx.ListInboxThreads(watcher.ID, "", "", 0, "", 10)
+		if lerr != nil || len(threads) != 3 {
+			t.Fatalf("threads = %d, %v; want 3", len(threads), lerr)
+		}
+		for _, th := range threads {
+			ids = append(ids, th.ID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		for i, until := range []int64{100000, 100000, 40000 + 3600*1000} {
+			if _, _, merr := tx.MarkInboxThreads(watcher.ID, []string{ids[i]}, "snooze", until, 40000); merr != nil {
+				return merr
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("snooze: %v", err)
+	}
+	promote := func(at int64, limit int) int64 {
+		t.Helper()
+		var n int64
+		if err := s.Write(ctx, func(tx *WriteTx) error {
+			var perr error
+			n, perr = tx.PromoteAwakeSnoozes(watcher.ID, at, limit)
+			return perr
+		}); err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		return n
+	}
+	counts := func(at int64) (awake, unread int64) {
+		t.Helper()
+		if err := s.Read(ctx, func(tx *ReadTx) error {
+			var aerr, uerr error
+			awake, aerr = tx.CountSnoozedAwake(watcher.ID, at)
+			unread, uerr = tx.CountUnreadInbox(watcher.ID)
+			if aerr != nil || uerr != nil {
+				return aerr
+			}
+			return uerr
+		}); err != nil {
+			t.Fatalf("counts: %v", err)
+		}
+		return awake, unread
+	}
+	if awake, _ := counts(40000); awake != 0 {
+		t.Fatalf("awake early = %d, want 0", awake)
+	}
+	if n := promote(100000, 1); n != 1 {
+		t.Fatalf("promoted = %d, want 1", n)
+	}
+	if awake, unread := counts(100000); awake != 1 || unread != 1 {
+		t.Fatalf("after bounded promote awake/unread = (%d, %d), want (1, 1)", awake, unread)
+	}
+	if n := promote(100000, 0); n != 1 {
+		t.Fatalf("promoted = %d, want 1", n)
+	}
+	if awake, unread := counts(100000); awake != 0 || unread != 2 {
+		t.Fatalf("after catch-up awake/unread = (%d, %d), want (0, 2)", awake, unread)
+	}
+	if err := s.Read(ctx, func(tx *ReadTx) error {
+		for i, id := range ids[:2] {
+			th, gerr := tx.GetInboxThread(watcher.ID, id)
+			if gerr != nil {
+				return gerr
+			}
+			if th.State != "unread" || th.SnoozeUntil != 0 {
+				t.Fatalf("woken %d = %+v, want unread with cleared deadline", i, th)
+			}
+		}
+		future, gerr := tx.GetInboxThread(watcher.ID, ids[2])
+		if gerr != nil {
+			return gerr
+		}
+		if future.State != "snoozed" || future.SnoozeUntil != 40000+3600*1000 {
+			t.Fatalf("future = %+v, want untouched snooze", future)
+		}
+		if awake, aerr := tx.CountSnoozedAwake(watcher.ID, 40000+3600*1000); aerr != nil || awake != 1 {
+			t.Fatalf("awake at far deadline = %d, %v; want 1", awake, aerr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+}
+
+func TestPromoteAwakeSnoozesHardCap(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	user := seedF8User(t, s, "capwatcher")
+	repo := seedF8Repo(ctx, t, s, user.ID, "caps")
+	now := int64(200000)
+	const total = InboxPromoteBatchLimit + 5
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		inner, lerr := tx.live()
+		if lerr != nil {
+			return lerr
+		}
+		for i := range total {
+			id := fmt.Sprintf("msg_cap_%04d", i)
+			if _, ierr := inner.ExecContext(tx.ctx, `INSERT INTO inbox_threads
+(id, user_id, subject_kind, subject_id, repo_id, state, muted, reasons, snippet,
+ unread_items, total_items, bumped_at, snooze_until, updated_at)
+VALUES (?, ?, 'task', ?, ?, 'snoozed', 0, '[]', 'cap', 1, 1, ?, ?, ?)`,
+				id, user.ID, fmt.Sprintf("cap-%d", i), repo, now-1000, now-500, now-1000); ierr != nil {
+				return ierr
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	promote := func(limit int) int64 {
+		t.Helper()
+		var n int64
+		if err := s.Write(ctx, func(tx *WriteTx) error {
+			var perr error
+			n, perr = tx.PromoteAwakeSnoozes(user.ID, now, limit)
+			return perr
+		}); err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		return n
+	}
+	if n := promote(InboxPromoteBatchLimit + 1000); n != InboxPromoteBatchLimit {
+		t.Fatalf("over-cap promoted = %d, want %d", n, InboxPromoteBatchLimit)
+	}
+	if err := s.Read(ctx, func(tx *ReadTx) error {
+		if awake, aerr := tx.CountSnoozedAwake(user.ID, now); aerr != nil || awake != 5 {
+			t.Fatalf("awake remainder = %d, %v; want 5", awake, aerr)
+		}
+		if unread, uerr := tx.CountUnreadInbox(user.ID); uerr != nil || unread != InboxPromoteBatchLimit {
+			t.Fatalf("unread = %d, %v; want %d", unread, uerr, InboxPromoteBatchLimit)
+		}
+		th, gerr := tx.GetInboxThread(user.ID, "msg_cap_0000")
+		if gerr != nil {
+			return gerr
+		}
+		if th.State != "unread" || th.SnoozeUntil != 0 {
+			t.Fatalf("woken = %+v, want unread with cleared deadline", th)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if n := promote(InboxPromoteBatchLimit); n != 5 {
+		t.Fatalf("remainder promoted = %d, want 5", n)
+	}
+}
+
+func TestFanoutFiltersViewersWithoutAccess(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	now := int64(80000)
+	owner := seedF8User(t, s, "viewowner")
+	stranger := seedF8User(t, s, "viewstranger")
+	repo := seedF8Repo(ctx, t, s, owner.ID, "privaterepo")
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		_, werr := tx.SetWatch(stranger.ID, repo, "all", nil, now)
+		return werr
+	}); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	emit := func(title string, at int64) {
+		t.Helper()
+		if err := s.Write(ctx, func(tx *WriteTx) error {
+			_, ierr := tx.InsertIntent(time.UnixMilli(at), IntentRow{
+				RepoID: repo, Title: title, Body: "b", CreatedBy: owner.ID,
+			})
+			return ierr
+		}); err != nil {
+			t.Fatalf("emit: %v", err)
+		}
+	}
+	threadsOf := func(userID int64) []InboxThreadRow {
+		t.Helper()
+		var out []InboxThreadRow
+		if err := s.Read(ctx, func(tx *ReadTx) error {
+			listed, _, lerr := tx.ListInboxThreads(userID, "", "", 0, "", 10)
+			if lerr != nil {
+				return lerr
+			}
+			out = listed
+			return nil
+		}); err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		return out
+	}
+	emit("hidden panel", now)
+	if got := threadsOf(stranger.ID); len(got) != 0 {
+		t.Fatalf("stranger threads = %d, want 0", len(got))
+	}
+	if got := threadsOf(owner.ID); len(got) != 1 {
+		t.Fatalf("owner threads = %d, want 1", len(got))
+	}
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		return tx.PutGrant(repo, stranger.ID, "read")
+	}); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	emit("shared panel", now+1000)
+	granted := threadsOf(stranger.ID)
+	if len(granted) != 1 {
+		t.Fatalf("granted stranger threads = %d, want 1", len(granted))
+	}
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		return tx.DeleteGrant(repo, stranger.ID)
+	}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	emit("revoked panel", now+2000)
+	revoked := threadsOf(stranger.ID)
+	if len(revoked) != 1 || revoked[0].ID != granted[0].ID {
+		t.Fatalf("revoked stranger threads = %d, want the same 1", len(revoked))
+	}
+	if err := s.Read(ctx, func(tx *ReadTx) error {
+		items, lerr := tx.ListInboxItems(granted[0].ID, 10)
+		if lerr != nil || len(items) != 1 {
+			t.Fatalf("revoked items = %d, %v; want 1", len(items), lerr)
+		}
+		owned, _, lerr := tx.ListInboxThreads(owner.ID, "", "", 0, "", 10)
+		if lerr != nil || len(owned) != 3 {
+			t.Fatalf("owner threads = %d, %v; want 3", len(owned), lerr)
 		}
 		return nil
 	}); err != nil {

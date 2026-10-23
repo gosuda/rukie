@@ -241,12 +241,27 @@ type CreateRunRequest struct {
 	Spec       Spec
 	RepoID     int64
 }
+
+// FetchCredentialPrefix marks CI-minted git fetch credentials. Tokens
+// bearing this name prefix are fetch-only: the git read path accepts them
+// for clone/fetch of their single bound repository and refuses every
+// receive-pack (push) operation. The prefix is server-assigned at lease;
+// a user token that happens to carry the prefix only restricts itself.
+const FetchCredentialPrefix = "ci-fetch/"
+
+// IsFetchCredentialName reports whether a token name marks a CI-minted
+// fetch-only credential.
+func IsFetchCredentialName(name string) bool {
+	return strings.HasPrefix(name, FetchCredentialPrefix)
+}
+
 type Lease struct {
-	Token   string
-	Secrets []SealedSecret
-	Run     Run
-	Job     Job
-	Attempt Attempt
+	Token      string
+	FetchToken string
+	Secrets    []SealedSecret
+	Run        Run
+	Job        Job
+	Attempt    Attempt
 }
 type HeartbeatReply struct {
 	State                string
@@ -588,6 +603,9 @@ func eligible(state *ciState, j Job, runner Runner, now int64) bool {
 	if len(j.Spec.Secrets) > 0 && (run.Trust != "trusted" || runner.Scope != "trusted") {
 		return false
 	}
+	if len(j.Spec.Secrets) > 0 && len(runner.PubKey) != 32 {
+		return false
+	}
 	for _, label := range j.Spec.RunsOn {
 		if !slices.Contains(runner.Labels, label) {
 			return false
@@ -654,7 +672,7 @@ func (c *Controller) MintRegToken(ctx context.Context, scope string, labels []st
 	return token, merr
 }
 
-func (c *Controller) RegisterWithToken(ctx context.Context, token string) (Runner, string, error) {
+func (c *Controller) RegisterWithToken(ctx context.Context, token string, pubkey []byte) (Runner, string, error) {
 	var runner Runner
 	var secret string
 	err := c.mutate(ctx, func(state *ciState, _ *int64, now int64) error {
@@ -672,7 +690,10 @@ func (c *Controller) RegisterWithToken(ctx context.Context, token string) (Runne
 		if rerr != nil {
 			return rerr
 		}
-		runner = Runner{ID: id, Labels: entry.Labels, Scope: entry.Scope, Capacity: entry.Capacity, TokenHash: tokenHash(secret), Status: "active"}
+		if len(pubkey) != 32 {
+			return problem("E_INVALID")
+		}
+		runner = Runner{ID: id, Labels: entry.Labels, Scope: entry.Scope, Capacity: entry.Capacity, TokenHash: tokenHash(secret), Status: "active", PubKey: slices.Clone(pubkey)}
 		state.Runners[id] = runner
 		return nil
 	})
@@ -704,6 +725,40 @@ func (c *Controller) RotateRunner(ctx context.Context, runnerID, token string, f
 		return nil
 	})
 	return runner, secret, err
+}
+
+// CheckAttemptToken verifies an attempt bearer without mutating state so
+// HTTP handlers can authenticate before reading request bodies. Fence and
+// lifecycle checks stay in the mutating call that follows.
+func (c *Controller) CheckAttemptToken(ctx context.Context, id, token string) error {
+	var authErr error
+	if rerr := c.store.Read(ctx, func(tx *store.ReadTx) error {
+		_, _, data, cerr := tx.CIState()
+		if cerr != nil {
+			return cerr
+		}
+		state, derr := decodeState(data)
+		if derr != nil {
+			return derr
+		}
+		a, ok := state.Attempts[id]
+		if !ok {
+			authErr = problem("E_NOT_FOUND")
+			return nil
+		}
+		if a.TokenHash != tokenHash(token) {
+			authErr = problem("E_UNAUTHENTICATED")
+			return nil
+		}
+		if runner, ok := state.Runners[a.RunnerID]; !ok || runner.Status != "active" {
+			authErr = problem("E_UNAUTHENTICATED")
+			return nil
+		}
+		return nil
+	}); rerr != nil {
+		return rerr
+	}
+	return authErr
 }
 
 func (c *Controller) Lease(ctx context.Context, runnerID, token string) (*Lease, error) {

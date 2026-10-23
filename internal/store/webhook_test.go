@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -872,7 +873,13 @@ func TestInboxFanOutSameTx(t *testing.T) {
 	epOwnerOrg := seedF8Endpoint(ctx, t, s, now, "owner", "org", 0, reporter.ID, []string{"task.created"})
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		_, werr := tx.SetWatch(watcher.ID, repo, "all", nil, 20000)
-		return werr
+		if werr != nil {
+			return werr
+		}
+		if gerr := tx.PutGrant(repo, assignee.ID, "read"); gerr != nil {
+			return gerr
+		}
+		return tx.PutGrant(repo, watcher.ID, "read")
 	}); err != nil {
 		t.Fatalf("watch: %v", err)
 	}
@@ -1071,6 +1078,199 @@ func TestInboxFanOutSameTx(t *testing.T) {
 		return eerr
 	}); err != nil {
 		t.Fatalf("unknown kind emit: %v", err)
+	}
+}
+
+func seedF8DueMessages(t *testing.T, s *Store, endpointID, prefix string, n int, at int64) {
+	t.Helper()
+	msgs := make([]WebhookMessageInsert, 0, n)
+	for i := range n {
+		msgs = append(msgs, WebhookMessageInsert{
+			ID: prefix + itoa(int64(i)), EndpointID: endpointID,
+			EventType: "task.created", OutboxSeq: at + int64(i),
+			EventTime: at, NextAttemptAt: at, Payload: []byte(`{}`),
+		})
+	}
+	if err := s.Write(context.Background(), func(tx *WriteTx) error {
+		return tx.InsertWebhookMessages(msgs)
+	}); err != nil {
+		t.Fatalf("seed %d messages: %v", n, err)
+	}
+}
+
+func TestClaimSkipsInactiveEndpoints(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	now := time.UnixMilli(40000)
+	ada := seedF8User(t, s, "skipinactiveada")
+	repo := seedF8Repo(ctx, t, s, ada.ID, "skips")
+	healthy := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	dead := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	inactive := false
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		_, uerr := tx.UpdateWebhookEndpoint(dead.ID, now, WebhookEndpointUpdate{Active: &inactive})
+		return uerr
+	}); err != nil {
+		t.Fatalf("disable endpoint: %v", err)
+	}
+	seedF8DueMessages(t, s, dead.ID, "msg_dead_", 70, 39000)
+	seedF8DueMessages(t, s, healthy.ID, "msg_live_", 3, 39000)
+	var claimed []WebhookMessageRow
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		var cerr error
+		claimed, cerr = tx.ClaimWebhookMessages(40000, 64, 0, "inst-skip")
+		return cerr
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(claimed) != 3 {
+		t.Fatalf("claimed = %d, want 3 healthy rows (disabled endpoint must not starve the batch)", len(claimed))
+	}
+	for _, m := range claimed {
+		if m.EndpointID != healthy.ID {
+			t.Fatalf("claimed row from disabled endpoint: %+v", m)
+		}
+	}
+}
+
+func TestClaimSkipsCappedEndpoints(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	now := time.UnixMilli(50000)
+	ada := seedF8User(t, s, "skipcapada")
+	repo := seedF8Repo(ctx, t, s, ada.ID, "capskips")
+	capped := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	healthy := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	one := int64(1)
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		_, uerr := tx.UpdateWebhookEndpoint(capped.ID, now, WebhookEndpointUpdate{Concurrency: &one})
+		return uerr
+	}); err != nil {
+		t.Fatalf("cap endpoint: %v", err)
+	}
+	seedF8DueMessages(t, s, capped.ID, "msg_cap_", 70, 49000)
+	seedF8DueMessages(t, s, healthy.ID, "msg_ok_", 3, 49500)
+	var claimed []WebhookMessageRow
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		var cerr error
+		claimed, cerr = tx.ClaimWebhookMessages(50000, 64, 0, "inst-cap")
+		return cerr
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	seen := map[string]int{}
+	for _, m := range claimed {
+		seen[m.EndpointID]++
+	}
+	if seen[capped.ID] != 1 || seen[healthy.ID] != 3 {
+		t.Fatalf("claimed per endpoint = %v, want 1 capped + 3 healthy", seen)
+	}
+}
+
+func TestNoteWebhookFailureConcurrent(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	now := time.UnixMilli(60000)
+	ada := seedF8User(t, s, "concfailada")
+	repo := seedF8Repo(ctx, t, s, ada.ID, "concs")
+	ep := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	const workers = 8
+	const perWorker = 25
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	for range workers {
+		wg.Go(func() {
+			for range perWorker {
+				if err := s.Write(ctx, func(tx *WriteTx) error {
+					_, nerr := tx.NoteWebhookFailure(ep.ID, now.UnixMilli())
+					return nerr
+				}); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent failure: %v", err)
+	}
+	if err := s.Read(ctx, func(tx *ReadTx) error {
+		got, gerr := tx.GetWebhookEndpoint(ep.ID)
+		if gerr != nil {
+			return gerr
+		}
+		if got.ConsecutiveFailures != workers*perWorker {
+			t.Fatalf("failures = %d, want %d", got.ConsecutiveFailures, workers*perWorker)
+		}
+		if got.Active || got.LastStatus != "disabled" || got.DisableReason != "undeliverable" {
+			t.Fatalf("endpoint not suspended in-tx: %+v", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}
+
+func TestNoteWebhookFailureWarnAndReset(t *testing.T) {
+	ctx := t.Context()
+	s := openF8Store(t)
+	now := time.UnixMilli(70000)
+	ada := seedF8User(t, s, "warnresetada")
+	repo := seedF8Repo(ctx, t, s, ada.ID, "warns")
+	ep := seedF8Endpoint(ctx, t, s, now, "repo", "", repo, 0, []string{"task.created"})
+	for range WebhookWarnAfterFailures {
+		if err := s.Write(ctx, func(tx *WriteTx) error {
+			_, nerr := tx.NoteWebhookFailure(ep.ID, now.UnixMilli())
+			return nerr
+		}); err != nil {
+			t.Fatalf("failure: %v", err)
+		}
+	}
+	if err := s.Read(ctx, func(tx *ReadTx) error {
+		got, gerr := tx.GetWebhookEndpoint(ep.ID)
+		if gerr != nil {
+			return gerr
+		}
+		if got.ConsecutiveFailures != WebhookWarnAfterFailures || got.LastStatus != "failing" || !got.Active {
+			t.Fatalf("warn level = %+v", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify warn: %v", err)
+	}
+	zero := int64(0)
+	ok := "ok"
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		_, uerr := tx.UpdateWebhookEndpoint(ep.ID, now, WebhookEndpointUpdate{ConsecutiveFailures: &zero, LastStatus: &ok})
+		return uerr
+	}); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		_, nerr := tx.NoteWebhookFailure(ep.ID, now.UnixMilli())
+		return nerr
+	}); err != nil {
+		t.Fatalf("post-reset failure: %v", err)
+	}
+	if err := s.Read(ctx, func(tx *ReadTx) error {
+		got, gerr := tx.GetWebhookEndpoint(ep.ID)
+		if gerr != nil {
+			return gerr
+		}
+		if got.ConsecutiveFailures != 1 || got.LastStatus != "ok" {
+			t.Fatalf("after reset+failure = %+v, want count 1 status ok", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify reset: %v", err)
+	}
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		_, nerr := tx.NoteWebhookFailure("wh_missing", now.UnixMilli())
+		return nerr
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing endpoint err = %v, want ErrNotFound", err)
 	}
 }
 

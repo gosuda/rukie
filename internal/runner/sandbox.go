@@ -347,13 +347,15 @@ func resolveLinkTarget(dir, name, target string) (string, error) {
 	return target, nil
 }
 
-// OpenLogChunk opens a container-written log file with the host-path rule.
-func OpenLogChunk(path string) ([]byte, error) {
+// OpenLogChunk reads one bounded log window starting at offset from a
+// container-written log file, enforcing the host-path rule. Callers ship
+// successive windows until exhaustion; an empty return means no new bytes.
+func OpenLogChunk(path string, offset int64) ([]byte, error) {
+	if info, serr := os.Lstat(path); serr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fail("HOST_PATH_VIOLATION", path+" is a symlink", "treat the attempt as compromised and kill the container")
+	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		if info, serr := os.Lstat(path); serr == nil && info.Mode()&os.ModeSymlink != 0 {
-			return nil, fail("HOST_PATH_VIOLATION", path+" is a symlink", "treat the attempt as compromised and kill the container")
-		}
 		return nil, fmt.Errorf("OpenLogChunk: %w", err)
 	}
 	defer func() { _ = f.Close() }()
@@ -364,7 +366,10 @@ func OpenLogChunk(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fail("HOST_PATH_VIOLATION", path+" is not a regular file", "treat the attempt as compromised and kill the container")
 	}
-	raw, err := io.ReadAll(io.LimitReader(f, ChunkMax+1))
+	if _, serr := f.Seek(offset, io.SeekStart); serr != nil {
+		return nil, fmt.Errorf("OpenLogChunk: %w", serr)
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, ChunkMax))
 	if err != nil {
 		return nil, fmt.Errorf("OpenLogChunk: %w", err)
 	}
@@ -391,13 +396,27 @@ func CacheDir(stateDir, trust, repoKey, name string) (string, error) {
 	return filepath.Join(stateDir, "cache", trust, repoKey, clean), nil
 }
 
-// CollectArtifact reads one declared artifact path for upload.
+// ArtifactMaxBytes caps one collected artifact. It matches the server's
+// per-request artifact cap so one limit applies end-to-end; the log-chunk
+// size (ChunkMax) is never an artifact boundary.
+const ArtifactMaxBytes = 512 << 20
+
+// CollectArtifact reads one declared artifact path for upload. Artifacts
+// over ArtifactMaxBytes fail instead of uploading a silent prefix.
 func CollectArtifact(work, name string) (string, []byte, error) {
 	clean := filepath.Clean(name)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
 		return "", nil, fmt.Errorf("CollectArtifact: artifact escapes %q", name)
 	}
-	f, err := os.OpenFile(filepath.Join(work, clean), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err := confineToWork(work, clean); err != nil {
+		return "", nil, err
+	}
+	root, err := os.OpenRoot(work)
+	if err != nil {
+		return "", nil, fmt.Errorf("CollectArtifact: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.Open(clean)
 	if err != nil {
 		if info, serr := os.Lstat(filepath.Join(work, clean)); serr == nil && info.Mode()&os.ModeSymlink != 0 {
 			return "", nil, fail("HOST_PATH_VIOLATION", name+" is a symlink", "declare the file itself as the artifact")
@@ -412,9 +431,30 @@ func CollectArtifact(work, name string) (string, []byte, error) {
 	if !info.Mode().IsRegular() {
 		return "", nil, fail("HOST_PATH_VIOLATION", name+" is not a regular file", "declare regular files as artifacts")
 	}
-	raw, err := io.ReadAll(io.LimitReader(f, ChunkMax+1))
+	raw, err := io.ReadAll(io.LimitReader(f, ArtifactMaxBytes+1))
 	if err != nil {
 		return "", nil, fmt.Errorf("CollectArtifact: %w", err)
 	}
+	if int64(len(raw)) > ArtifactMaxBytes {
+		return "", nil, fail("ARTIFACT_LIMIT", name+" exceeds the artifact size limit", "shrink the artifact or split it across declarations")
+	}
 	return Digest(raw), raw, nil
+}
+
+func confineToWork(work, clean string) error {
+	prefix := work
+	for part := range strings.SplitSeq(clean, string(os.PathSeparator)) {
+		prefix = filepath.Join(prefix, part)
+		info, err := os.Lstat(prefix)
+		if err != nil {
+			return fmt.Errorf("CollectArtifact: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fail("HOST_PATH_VIOLATION", clean+" traverses a symlink", "declare the file itself as the artifact")
+		}
+		if !info.IsDir() && prefix != filepath.Join(work, clean) {
+			return fail("HOST_PATH_VIOLATION", clean+" traverses a non-directory", "declare regular files as artifacts")
+		}
+	}
+	return nil
 }

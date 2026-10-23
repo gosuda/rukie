@@ -10,6 +10,7 @@ func TestComputePlan(t *testing.T) {
 		local   map[string]string
 		remote  map[string]string
 		name    string
+		srcDef  string
 		def     string
 		m       Mirror
 		wantErr bool
@@ -26,16 +27,16 @@ func TestComputePlan(t *testing.T) {
 		{local: map[string]string{"refs/heads/main": "n"}, remote: map[string]string{"refs/heads/main": "o"}, name: "ff only nonempty target", m: Mirror{Mode: ModeFastForward, RefSelection: RefSelectionAll}},
 		{local: map[string]string{"refs/heads/main": "n"}, remote: map[string]string{"refs/heads/main": "o", "refs/tags/gone": "t"}, name: "exact adopt delete denied", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, wantErr: true},
 		{local: map[string]string{"refs/heads/main": "n"}, remote: map[string]string{"refs/heads/main": "o", "refs/tags/gone": "t"}, name: "exact adopt delete confirmed", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, confirm: true},
-		{local: map[string]string{}, remote: map[string]string{"refs/heads/main": "m", "refs/tags/gone": "t"}, name: "never prunes default", def: "main", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, wantErr: true},
+		{local: map[string]string{}, remote: map[string]string{"refs/heads/main": "m", "refs/tags/gone": "t"}, name: "never prunes default", srcDef: "main", def: "main", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			digest := ""
 			if tc.confirm {
-				first, _ := ComputePlan(tc.local, tc.remote, tc.m, tc.def, "")
+				first, _ := ComputePlan(tc.local, tc.remote, tc.m, tc.srcDef, tc.def, "")
 				digest = first.Digest
 			}
-			p, err := ComputePlan(tc.local, tc.remote, tc.m, tc.def, digest)
+			p, err := ComputePlan(tc.local, tc.remote, tc.m, tc.srcDef, tc.def, digest)
 			if errors.Is(err, ErrNeedsConfirmation) != tc.wantErr {
 				t.Fatalf("err=%v", err)
 			}
@@ -53,7 +54,7 @@ func TestComputePlan(t *testing.T) {
 					t.Fatalf("missing force update: %+v", p)
 				}
 			}
-			if tc.name == "ff only" && (len(p.Deletes) != 0 || len(p.Diverged) != 1) {
+			if tc.name == "ff only" && (len(p.Deletes) != 0 || len(p.Diverged) != 0 || len(p.Updates) != 1 || p.Updates[0].Action != ActionUpdate) {
 				t.Fatalf("plan=%+v", p)
 			}
 			if tc.name == "globs" && len(p.Updates) != 1 {
@@ -66,6 +67,9 @@ func TestComputePlan(t *testing.T) {
 				if len(p.Updates) != 1 || p.Updates[0].Action != ActionBlockedDF || len(p.Deletes) != 1 {
 					t.Fatalf("plan=%+v", p)
 				}
+			}
+			if tc.name == "ff only nonempty target" && (len(p.Updates) != 1 || p.Updates[0].Action != ActionUpdate || p.Updates[0].Old != "o" || p.Updates[0].New != "n") {
+				t.Fatalf("plan=%+v", p)
 			}
 			if tc.name == "opaque tag" && (len(p.Updates) != 1 || p.Updates[0].New != "object:tag") {
 				t.Fatalf("plan=%+v", p)
@@ -94,4 +98,94 @@ func TestComputePlan(t *testing.T) {
 			}
 		})
 	}
+}
+func planRefs(p Plan) map[string]RefAction {
+	out := map[string]RefAction{}
+	for _, list := range [][]RefPlan{p.Updates, p.Deletes, p.Diverged, p.Ignored} {
+		for _, r := range list {
+			out[r.Ref] = r.Action
+		}
+	}
+	return out
+}
+
+func TestComputePlanNotesSelection(t *testing.T) {
+	notesMirror := func(sel RefSelection, globs ...string) Mirror {
+		return Mirror{Mode: ModeExact, RefSelection: sel, Globs: globs, IncludeNotes: true, AdoptExistingRefs: true}
+	}
+	cases := []struct {
+		name string
+		ref  string
+		m    Mirror
+		want bool
+	}{
+		{name: "all includes notes", m: notesMirror(RefSelectionAll), ref: "refs/notes/foo", want: true},
+		{name: "notes off excludes", m: Mirror{Mode: ModeExact, RefSelection: RefSelectionAll, AdoptExistingRefs: true}, ref: "refs/notes/foo"},
+		{name: "attest excluded", m: notesMirror(RefSelectionAll), ref: "refs/notes/ruk-attest"},
+		{name: "attest subtree excluded", m: notesMirror(RefSelectionAll), ref: "refs/notes/ruk-attest/x"},
+		{name: "glob match includes", m: notesMirror(RefSelectionGlobs, "refs/notes/*"), ref: "refs/notes/foo", want: true},
+		{name: "glob miss excludes", m: notesMirror(RefSelectionGlobs, "refs/heads/*"), ref: "refs/notes/foo"},
+		{name: "default tags skip notes", m: func() Mirror { m := notesMirror(RefSelectionDefaultBranchTags); return m }(), ref: "refs/notes/foo"},
+		{name: "heads unaffected", m: notesMirror(RefSelectionAll), ref: "refs/heads/main", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := ComputePlan(map[string]string{tc.ref: "new"}, map[string]string{}, tc.m, "main", "main", "")
+			if err != nil {
+				t.Fatalf("ComputePlan: %v", err)
+			}
+			_, found := planRefs(p)[tc.ref]
+			if found != tc.want {
+				t.Fatalf("ref %q selected = %v, want %v: %+v", tc.ref, found, tc.want, p)
+			}
+		})
+	}
+}
+
+func TestComputePlanDefaultBranchTagsSource(t *testing.T) {
+	mk := Mirror{Mode: ModeExact, RefSelection: RefSelectionDefaultBranchTags}
+	t.Run("source develop selected over target main", func(t *testing.T) {
+		local := map[string]string{"refs/heads/develop": "new", "refs/heads/main": "same"}
+		remote := map[string]string{"refs/heads/main": "same"}
+		p, err := ComputePlan(local, remote, mk, "develop", "main", "")
+		if !errors.Is(err, ErrNeedsConfirmation) {
+			t.Fatalf("err = %v, want confirmation", err)
+		}
+		p, err = ComputePlan(local, remote, mk, "develop", "main", p.Digest)
+		if err != nil {
+			t.Fatalf("confirmed: %v", err)
+		}
+		refs := planRefs(p)
+		if refs["refs/heads/develop"] != ActionCreate {
+			t.Fatalf("develop not created: %+v", p)
+		}
+		if _, found := refs["refs/heads/main"]; found {
+			t.Fatalf("target main leaked into selection: %+v", p)
+		}
+	})
+	t.Run("empty target does not fall back to main", func(t *testing.T) {
+		p, err := ComputePlan(map[string]string{"refs/heads/develop": "new"}, map[string]string{}, mk, "develop", "", "")
+		if err != nil {
+			t.Fatalf("ComputePlan: %v", err)
+		}
+		refs := planRefs(p)
+		if refs["refs/heads/develop"] != ActionCreate || len(p.Updates) != 1 {
+			t.Fatalf("develop not the only update: %+v", p)
+		}
+	})
+	t.Run("empty source selects no branch", func(t *testing.T) {
+		p, err := ComputePlan(
+			map[string]string{"refs/heads/develop": "new", "refs/tags/v1": "t"},
+			map[string]string{}, mk, "", "", "")
+		if err != nil {
+			t.Fatalf("ComputePlan: %v", err)
+		}
+		refs := planRefs(p)
+		if _, found := refs["refs/heads/develop"]; found {
+			t.Fatalf("develop selected without a source default: %+v", p)
+		}
+		if refs["refs/tags/v1"] != ActionCreate {
+			t.Fatalf("tag not selected: %+v", p)
+		}
+	})
 }

@@ -100,6 +100,9 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 		writeText(w, http.StatusNotFound, "repository not found")
 		return
 	}
+	if s.denyFetchPush(w, id, name) {
+		return
+	}
 	if name == receiveServiceName {
 		if s.denyAnonymous(w, r, id) {
 			return
@@ -211,6 +214,9 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 			return
 		}
 		writeText(w, http.StatusNotFound, "repository not found")
+		return
+	}
+	if s.denyFetchPush(w, id, name) {
 		return
 	}
 	if name == receiveServiceName {
@@ -334,6 +340,14 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 		out.fail(http.StatusBadGateway, "git service failed")
 		return
 	}
+}
+
+func (s *Server) denyFetchPush(w http.ResponseWriter, id identity, name string) bool {
+	if id.fetchOnly && name == receiveServiceName {
+		writeText(w, http.StatusForbidden, "fetch credentials cannot push")
+		return true
+	}
+	return false
 }
 
 func (s *Server) openPushSession(ctx context.Context, client *ruk.Client, path string, w http.ResponseWriter) (string, string, bool) {

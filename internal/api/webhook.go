@@ -327,12 +327,12 @@ func webhookLimit(limit, def, upper int) int {
 	return limit
 }
 
-// requireRepoAdmin gates repo-scope webhook management: site admins pass,
-// otherwise the caller needs the admin grant on the repo (owner, owners team,
-// or a direct/team admin grant). Token repo bindings still apply.
 func (d Deps) requireRepoAdmin(rq requester, row store.RepoRow) error {
 	if !rq.caller.Active {
 		return op.Errorf(op.CodeForbidden, "repository access was refused")
+	}
+	if !rq.tokenAllows(row.ID) {
+		return op.Errorf(op.CodeNotFound, "repository was not found")
 	}
 	resolver := d.Store.Resolver()
 	if rq.userID != 0 && resolver.IsSiteAdmin(rq.userID) {
@@ -356,9 +356,6 @@ func (d Deps) requireRepoAdmin(rq requester, row store.RepoRow) error {
 	}
 	if grant < access.RoleAdmin {
 		return op.Errorf(op.CodeForbidden, "repository access was refused")
-	}
-	if !rq.tokenAllows(row.ID) {
-		return op.Errorf(op.CodeNotFound, "repository was not found")
 	}
 	return nil
 }
@@ -397,14 +394,15 @@ func (d Deps) resolveWebhookOwner(ctx context.Context, owner string) (webhookOwn
 	return webhookOwnerKind{name: org.Name, id: org.ID, isOrg: true}, nil
 }
 
-// requireOwnerAdmin gates owner-scope webhook management: the owning user, an
-// organization owners-team member, or a site admin.
 func (d Deps) requireOwnerAdmin(rq requester, owner webhookOwnerKind) error {
 	if !rq.caller.Active {
 		return op.Errorf(op.CodeForbidden, "webhook owner access was denied")
 	}
 	if rq.userID == 0 {
 		return op.Errorf(op.CodeForbidden, "webhook owner access was denied")
+	}
+	if rq.isToken && len(rq.tokenRepos) > 0 {
+		return op.Errorf(op.CodeNotFound, "webhook owner was not found")
 	}
 	resolver := d.Store.Resolver()
 	if resolver.IsSiteAdmin(rq.userID) {
@@ -510,9 +508,6 @@ func (d Deps) loadWebhookEndpoint(ctx context.Context, rq requester, id string) 
 	}
 	if derr := d.requireOwnerAdmin(rq, owner); derr != nil {
 		return out, derr
-	}
-	if rq.isToken && len(rq.tokenRepos) > 0 {
-		return out, op.Errorf(op.CodeNotFound, "webhook endpoint was not found")
 	}
 	out.owner = owner
 	return out, nil
@@ -773,9 +768,6 @@ func webhookEndpointCreateHandler(d Deps) func(context.Context, op.Principal, We
 				ownerKind = "org"
 			} else {
 				ownerKind = "user"
-			}
-			if rq.isToken && len(rq.tokenRepos) > 0 {
-				return WebhookEndpointCreateOut{}, op.Errorf(op.CodeNotFound, "webhook owner was not found")
 			}
 			count, cerr := webhookCountForOwner(ctx, d, ownerID)
 			if cerr != nil {
