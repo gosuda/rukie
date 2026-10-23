@@ -162,6 +162,8 @@ func mapAuthError(err error) error {
 		return op.Errorf(op.CodeValidation, "%s", msg)
 	case strings.HasPrefix(msg, "username "):
 		return op.Errorf(op.CodeValidation, "%s", msg)
+	case msg == "confirmation name does not match":
+		return op.Errorf(op.CodeValidation, "%s", msg)
 	default:
 		return op.Wrap(op.CodeInternal, err, "internal error")
 	}

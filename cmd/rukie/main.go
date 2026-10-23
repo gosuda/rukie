@@ -721,6 +721,12 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		OnRepoCreated: func(repoID int64) { watcher.Start(ctx, repoID) },
 		OnRepoDeleted: watcher.Stop,
 	}
+	// AdminF14 needs the repo dependency set: repo verify and attest verify
+	// call the daemon through Deps.Ruk, which authDeps does not carry.
+	if regErr := api.RegisterAdminF14(table, repoDeps); regErr != nil {
+		cleanup()
+		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
+	}
 	if regErr := api.RegisterRepos(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
@@ -788,6 +794,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	api.RegisterUserViews(views)
 	api.RegisterSSHKeysViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterAdminF14Views(views)
 	api.RegisterF12Views(views)
 	api.RegisterReposViews(views)
 	api.RegisterSearchViews(views)

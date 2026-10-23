@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,9 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	if err := api.RegisterAdmin(table, deps); err != nil {
 		t.Fatalf("register admin: %v", err)
 	}
+	if err := api.RegisterAdminF14(table, deps); err != nil {
+		t.Fatalf("register admin f14: %v", err)
+	}
 	if err := api.RegisterSearch(table, deps); err != nil {
 		t.Fatalf("register search: %v", err)
 	}
@@ -86,6 +90,7 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterAdminF14Views(views)
 	api.RegisterSearchViews(views)
 	api.RegisterF12Views(views)
 	api.RegisterSocialViews(views)
@@ -111,6 +116,25 @@ func buildRenderEnv(t *testing.T) *renderEnv {
 	}
 	fill(server.Document())
 	return &renderEnv{server: server, svc: svc, st: st}
+}
+
+func renderFirstAdminRepoID(t *testing.T, e *renderEnv, cookie string) string {
+	t.Helper()
+	rec := renderDoJSON(t, e, "GET", "/admin/repos?limit=1", cookie, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin repo list = %d: %s", rec.Code, rec.Body.String())
+	}
+	decoded := renderDecode(t, rec)
+	repos, _ := decoded["repos"].([]any)
+	if len(repos) == 0 {
+		t.Fatalf("no repos for repo verify fixture")
+	}
+	first, _ := repos[0].(map[string]any)
+	id, _ := first["id"].(float64)
+	if id <= 0 {
+		t.Fatalf("repo id = %v", first["id"])
+	}
+	return strconv.FormatInt(int64(id), 10)
 }
 
 func renderSeedSocial(t *testing.T, e *renderEnv) {
@@ -506,6 +530,19 @@ func collectHTMLPages(t *testing.T, e *renderEnv) []htmlPage {
 	captureGET(t, e, &pages, "auth.session.list", "security.html", "/settings/security", acookie, http.StatusOK, nil)
 	captureGET(t, e, &pages, "auth.token.list", "tokens.html", "/settings/tokens", acookie, http.StatusOK, nil)
 	captureGET(t, e, &pages, "admin.user.list", "admin-users.html", "/admin/users", acookie, http.StatusOK, nil)
+	captureGET(t, e, &pages, "admin.repo.list", "admin-repos.html", "/admin/repos", acookie, http.StatusOK, nil)
+	captureGET(t, e, &pages, "admin.job.list", "admin-jobs.html", "/admin/jobs", acookie, http.StatusOK, nil)
+	captureGET(t, e, &pages, "admin.audit.list", "admin-audit.html", "/admin/audit", acookie, http.StatusOK, nil)
+	captureGET(t, e, &pages, "admin.health.get", "admin-health.html", "/admin/health", acookie, http.StatusOK, nil)
+	captureGET(t, e, &pages, "admin.token.list", "admin-tokens-bob.html", "/admin/users/bob/tokens", acookie, http.StatusOK, nil)
+	captureGET(t, e, &pages, "admin.attest.verify", "admin-attest-verify.html", "/admin/attestations/verify?owner=ada&repo=demo&subject=head", acookie, http.StatusServiceUnavailable, nil)
+	repoID := renderFirstAdminRepoID(t, e, acookie)
+	captureGET(t, e, &pages, "admin.repo.verify", "admin-repo-verify.html", "/admin/repos/"+repoID+"/verify", acookie, http.StatusOK, func(t *testing.T, body string) {
+		t.Helper()
+		if !strings.Contains(body, "daemon-registered: FAILED") {
+			t.Fatalf("verify page shows no failed daemon check:\n%s", body)
+		}
+	})
 	captureGET(t, e, &pages, "auth.totpverify.page", "totp-challenge.html", "/login/totp", "", http.StatusOK, nil)
 	captureGET(t, e, &pages, "auth.totp.page", "totp.html", "/settings/security/totp", bcookie, http.StatusOK, nil)
 	formMint := renderPostForm(t, e, "/settings/tokens", "/settings/tokens", acookie, "name=formagent&scopes=repo%3Aread")

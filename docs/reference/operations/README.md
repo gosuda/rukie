@@ -6,7 +6,23 @@ Every operation in the table. Regenerate with `go run ./tools/docgen`.
 
 | Operation | Method | Path | Page |
 | --- | --- | --- | --- |
+| `admin.attest.verify` | `GET` | `/admin/attestations/verify` | [admin.attest.verify](./admin.attest.verify.md) |
+| `admin.audit.list` | `GET` | `/admin/audit` | [admin.audit.list](./admin.audit.list.md) |
+| `admin.health.get` | `GET` | `/admin/health` | [admin.health.get](./admin.health.get.md) |
+| `admin.inbox.test` | `POST` | `/admin/inbox/test` | [admin.inbox.test](./admin.inbox.test.md) |
+| `admin.job.list` | `GET` | `/admin/jobs` | [admin.job.list](./admin.job.list.md) |
+| `admin.job.retry` | `POST` | `/admin/jobs/{id}/retry` | [admin.job.retry](./admin.job.retry.md) |
+| `admin.mirror.retry` | `POST` | `/admin/mirror/runs/{run}/retry` | [admin.mirror.retry](./admin.mirror.retry.md) |
+| `admin.mirror.sync` | `POST` | `/admin/mirrors/{id}/sync` | [admin.mirror.sync](./admin.mirror.sync.md) |
+| `admin.repo.list` | `GET` | `/admin/repos` | [admin.repo.list](./admin.repo.list.md) |
+| `admin.repo.purge` | `POST` | `/admin/repos/{id}/purge` | [admin.repo.purge](./admin.repo.purge.md) |
+| `admin.repo.verify` | `GET` | `/admin/repos/{id}/verify` | [admin.repo.verify](./admin.repo.verify.md) |
+| `admin.search.sync` | `POST` | `/admin/search/sync` | [admin.search.sync](./admin.search.sync.md) |
+| `admin.token.create` | `POST` | `/admin/users/{user}/tokens` | [admin.token.create](./admin.token.create.md) |
+| `admin.token.list` | `GET` | `/admin/users/{user}/tokens` | [admin.token.list](./admin.token.list.md) |
+| `admin.token.revoke` | `POST` | `/admin/users/{user}/tokens/revoke` | [admin.token.revoke](./admin.token.revoke.md) |
 | `admin.user.create` | `POST` | `/admin/users` | [admin.user.create](./admin.user.create.md) |
+| `admin.user.delete` | `POST` | `/admin/users/{user}/delete` | [admin.user.delete](./admin.user.delete.md) |
 | `admin.user.list` | `GET` | `/admin/users` | [admin.user.list](./admin.user.list.md) |
 | `admin.user.reset-password` | `POST` | `/admin/users/{user}/reset-password` | [admin.user.reset-password](./admin.user.reset-password.md) |
 | `admin.user.totp-reset` | `POST` | `/admin/users/{user}/totp-reset` | [admin.user.totp-reset](./admin.user.totp-reset.md) |
