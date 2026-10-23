@@ -7,6 +7,7 @@ import (
 	"flag"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -497,5 +498,46 @@ func TestDeleteSelfRefusesSoleOrgOwner(t *testing.T) {
 	}
 	if _, err := svc.GetUserByID(ctx, u.ID); err == nil {
 		t.Fatal("user row survived self-delete")
+	}
+}
+
+func TestConcurrentLastAdminSelfDeleteKeepsOneAdmin(t *testing.T) {
+	svc, _ := openTestService(t)
+	ctx := t.Context()
+	adminA := mustCreate(t, svc, "admina", randomPassword(t, 16), true)
+	adminB := mustCreate(t, svc, "adminb", randomPassword(t, 16), true)
+	matchA, err := svc.ETagFor(ctx, adminA.ID)
+	if err != nil {
+		t.Fatalf("etag A: %v", err)
+	}
+	matchB, err := svc.ETagFor(ctx, adminB.ID)
+	if err != nil {
+		t.Fatalf("etag B: %v", err)
+	}
+	targets := []struct {
+		match string
+		id    int64
+	}{{matchA, adminA.ID}, {matchB, adminB.ID}}
+	errs := make([]error, len(targets))
+	var wg sync.WaitGroup
+	for i, target := range targets {
+		wg.Go(func() {
+			errs[i] = svc.DeleteSelf(ctx, target.id, target.match, "127.0.0.1")
+		})
+	}
+	wg.Wait()
+	succeeded := 0
+	for _, derr := range errs {
+		if derr == nil {
+			succeeded++
+		} else if !strings.Contains(derr.Error(), "last active admin") {
+			t.Fatalf("unexpected delete error: %v", derr)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("concurrent last-admin deletes: %d succeeded, want exactly 1 (%v)", succeeded, errs)
+	}
+	if n := svc.CountActiveAdmins(ctx); n < 1 {
+		t.Fatalf("no active admin remains after concurrent deletes")
 	}
 }

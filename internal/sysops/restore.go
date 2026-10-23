@@ -162,7 +162,7 @@ func placeFilesStaged(cfg config.Config, backupDir string, doc ManifestDoc) (Res
 						_ = os.Rename(p.aside+suffix, p.dst+suffix)
 					}
 				}
-			} else {
+			} else if p.installed {
 				_ = os.Remove(p.dst)
 			}
 		}
