@@ -12,6 +12,7 @@ Site admins only. Removes the daemon repository and hard-deletes the row at once
 - CLI: `rukie admin repo purge`
 - MCP: `admin_repo_purge`
 - Idempotency-Key: required on this mutation
+- ETag: served; send it back as If-Match to write safely
 
 ## Inputs
 

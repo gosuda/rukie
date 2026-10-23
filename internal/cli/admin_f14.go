@@ -155,6 +155,10 @@ func runAdminGC(ctx context.Context, std IO, argv []string) int {
 		emit(std.Stderr, "rukie admin gc:", err.Error())
 		return 78
 	}
+	if !*dryRun && !*confirm {
+		emit(std.Stderr, "rukie admin gc: --confirm is required without --dry-run")
+		return 64
+	}
 	validate := func() int {
 		st, openErr := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path})
 		if openErr != nil {
@@ -170,10 +174,6 @@ func runAdminGC(ctx context.Context, std IO, argv []string) int {
 	}
 	if code := validate(); code != 0 {
 		return code
-	}
-	if !*dryRun && !*confirm {
-		emit(std.Stderr, "rukie admin gc: --confirm is required without --dry-run")
-		return 64
 	}
 	rep, err := sysops.GC(ctx, cfg, *dryRun, *repo)
 	if err != nil {
