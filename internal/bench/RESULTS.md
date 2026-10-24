@@ -162,3 +162,22 @@ test-generated block's method line states the fetch and lookup sampling
 (100 warmups, 1000 paired samples); the clone workload in both runs used
 2 warmups and 200 paired samples (cloneWarmups, cloneSamples), matching
 the shell method paragraph above.
+
+## 2026-10-23T03:18:58Z
+
+- ruk binary: /home/alpha/rewrite/git-renewed/ruk/.outline/worktree/model-build/target/release/ruk
+- ruk version: unset
+- ruk commit: unset
+- ruk schema: unset
+- git binary: /usr/bin/git
+- host: alpha-Precision-7920-Tower
+- cpu: 80/amd64
+- go: go1.27.3
+- method: 100 warmups, then 1000 paired samples with alternating stock/daemon order (fetch, lookup, info-refs); clone uses 2 warmups and 200 paired samples as report-only data; prepare and verify outside the timer; 16 tokens minted for ada and rotated per daemon request; nearest-rank p50/p95/p99
+
+| workload | stock p50 | stock p95 | stock p99 | daemon p50 | daemon p95 | daemon p99 | ratio p95 | budget | authority | result |
+|---|---|---|---|---|---|---|---|---|---|---|
+| incremental-fetch | 242.802798ms | 321.260733ms | 329.622535ms | 636.873457ms | 1.193598144s | 1.265491236s | 3.72x | <= 7.5x stock p95 (CEO-08) | CEO-08 | PASS |
+| single-ref-lookup | 51.223455ms | 53.870127ms | 54.932446ms | 81.872583ms | 86.214232ms | 88.412213ms | 1.60x | <= 4x stock p95 (CEO-08) | CEO-08 | PASS |
+| clone | 257.045391ms | 263.823391ms | 267.866037ms | 322.091465ms | 334.636136ms | 346.724978ms | 1.27x |  | V5 brief | REPORT |
+| info-refs | 10.67959ms | 11.862733ms | 12.759236ms | 6.19952ms | 7.653645ms | 8.589317ms | 0.65x | <= 150ms daemon p95 (verification §7) | verification §7 | PASS |
