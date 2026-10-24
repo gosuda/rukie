@@ -4,11 +4,6 @@
 
 rukie hosts repositories, reviews changes, tracks tasks, and runs CI for developers and coding agents. It uses Ruk as its only repository backend, so agents can work with changes, stacks, task leases, and recorded CI results through typed operations. Compared with a Gitea, Forgejo, or GitHub workflow, rukie puts Ruk changes and stacks at the center of review, gives agents and people access to the same operations, and serves a browser interface that works without JavaScript.
 
-- **Browser cost:** {{browser_javascript_bytes}} JavaScript bytes transferred across the documented browser workflows. Measure with `./bin/rukie-doccheck measure browser --scenario docs/measurements/browser.toml --field javascript_bytes`.
-- **Page latency:** {{p95_page_ms}} ms at the percentile, offered load, and host specification recorded in the [measurement report](docs/measurements/README.md). Measure with `./bin/rukie-doccheck measure pages --scenario docs/measurements/pages.toml --field page_latency_p95_ms`.
-- **Idle memory:** {{idle_rss_mib}} MiB for rukie and its Ruk daemon together, under the conditions in the measurement report. Measure with `./bin/rukie-doccheck measure idle --scenario docs/measurements/idle.toml --field combined_rss_mib`.
-- **First push:** {{quickstart_seconds}} seconds from a ready installation to a repository pushed with stock Git. Measure with `./bin/rukie-doccheck measure quickstart --scenario docs/measurements/quickstart.toml --field elapsed_seconds`.
-
 An agent can find a task, claim it, and inspect the branch’s changes:
 
 ```bash
