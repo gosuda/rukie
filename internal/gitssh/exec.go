@@ -160,6 +160,13 @@ func (s *Server) serveExec(ctx context.Context, perms *ssh.Permissions, channel 
 		}
 		advertise.SessionID = &session
 		advertise.RequestID = &request
+	} else {
+		sessionOnly, _, openErr := s.git.OpenPushSession(runCtx, client, path)
+		if openErr != nil {
+			failExec(channel, 128, "session failed")
+			return
+		}
+		advertise.SessionID = &sessionOnly
 	}
 	advReport, advStderr, err := ruk.RunCommand(runCtx, client, ruk.Command{
 		Open: advertise, Stdout: channel, HookBudget: s.hookAfter,
@@ -200,6 +207,12 @@ func (s *Server) serveExec(ctx context.Context, perms *ssh.Permissions, channel 
 		sendExit(channel, int(pushReport.ExitCode))
 		return
 	}
+	uploadSession, _, openErr := s.git.OpenPushSession(runCtx, client, path)
+	if openErr != nil {
+		failExec(channel, 128, "session failed")
+		return
+	}
+	open.SessionID = &uploadSession
 	report, stderr, err := ruk.RunCommandStream(runCtx, client, ruk.StreamCommand{
 		Open: open, Stdin: io.Reader(channel), Stdout: channel,
 	})

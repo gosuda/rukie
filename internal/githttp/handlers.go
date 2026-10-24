@@ -155,12 +155,12 @@ func (s *Server) serveInfoRefs(w http.ResponseWriter, r *http.Request, rt route)
 		Advertise:   true,
 		Limits:      s.limits,
 	}
+	session, request, ok := s.openServiceSession(ctx, client, path, w)
+	if !ok {
+		return
+	}
+	open.SessionID = &session
 	if name == receiveServiceName {
-		session, request, ok := s.openPushSession(ctx, client, path, w)
-		if !ok {
-			return
-		}
-		open.SessionID = &session
 		open.RequestID = &request
 	}
 	v2 := strings.Contains(open.GitProtocol, "version=2")
@@ -294,12 +294,12 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 	}
 	var handle ruk.HookHandler
 	requestID := ""
+	session, request, ok := s.openServiceSession(ctx, client, path, w)
+	if !ok {
+		return
+	}
+	open.SessionID = &session
 	if name == receiveServiceName {
-		session, request, ok := s.openPushSession(ctx, client, path, w)
-		if !ok {
-			return
-		}
-		open.SessionID = &session
 		open.RequestID = &request
 		requestID = request
 		handle = s.hookHandler(id.caller, repoID, request)
@@ -350,7 +350,7 @@ func (s *Server) denyFetchPush(w http.ResponseWriter, id identity, name string) 
 	return false
 }
 
-func (s *Server) openPushSession(ctx context.Context, client *ruk.Client, path string, w http.ResponseWriter) (string, string, bool) {
+func (s *Server) openServiceSession(ctx context.Context, client *ruk.Client, path string, w http.ResponseWriter) (string, string, bool) {
 	opened, err := ruk.SessionOpen(ctx, client, ruk.Repo{Path: path}, wire.SessionOpenArgs{})
 	if err != nil {
 		writeText(w, http.StatusBadGateway, "session failed")
