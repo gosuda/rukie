@@ -77,7 +77,7 @@ type benchCase struct {
 	authority  string
 	stock      benchWorkload
 	daemon     benchWorkload
-	setup      func(context.Context, int) error
+	perSample  func(context.Context, int) error
 	after      func(context.Context) error
 	limitMax   time.Duration
 	ratioMax   float64
@@ -609,7 +609,7 @@ func TestDaemonPathBudget(t *testing.T) {
 			budget:    "<= 7.5x stock p95 (CEO-08)",
 			authority: "CEO-08",
 			ratioMax:  fetchRatioBudget,
-			setup: func(_ context.Context, sample int) error {
+			perSample: func(_ context.Context, sample int) error {
 				plan.selectSample(sample)
 				return nil
 			},
@@ -711,7 +711,7 @@ func TestDaemonPathBudget(t *testing.T) {
 	failed := false
 	var stock, daemon samples
 	for _, bc := range cases {
-		stock, daemon, err = measurePairs(ctx, bc.setup, bc.stock, bc.daemon, bc.warmups, bc.total)
+		stock, daemon, err = measurePairs(ctx, bc.perSample, bc.stock, bc.daemon, bc.warmups, bc.total)
 		if err != nil {
 			t.Fatalf("measurement incomplete at workload %s; no rows recorded: %v", bc.name, err)
 		}
