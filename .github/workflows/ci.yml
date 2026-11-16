@@ -2,45 +2,106 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUSTUP_TOOLCHAIN: 1.99.1
 
 jobs:
   rukie:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
-      - run: make check
+          cache-dependency-path: |
+            go.sum
+            Makefile
+      - run: |
+          make check
 
   ruk-integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
-      - run: git clone --depth 1 https://github.com/gosuda/ruk.git ruk
-      - run: git -C ruk fetch --depth 1 origin $(cat tools/ruk.pin) && git -C ruk checkout $(cat tools/ruk.pin)
-      - run: rustup toolchain install 1.99.1 --profile minimal
-      - run: cargo +1.99.1 build --manifest-path ruk/Cargo.toml --locked -p ruk
+      - name: Check out pinned Ruk
+        run: |
+          ruk_revision=$(<tools/ruk.pin)
+          [[ "$ruk_revision" =~ ^[0-9a-f]{40}$ ]]
+          git init ruk
+          git -C ruk remote add origin https://github.com/gosuda/ruk.git
+          git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
+          git -C ruk checkout --detach FETCH_HEAD
+      - run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: ruk -> target
+          key: ${{ hashFiles('tools/ruk.pin') }}
+          env-vars: ImageOS
+          cache-workspace-crates: true
+          cache-bin: false
+      - run: |
+          cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
       - run: |
           tools/passgate.sh '--- PASS: ' -- env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off go test -race -count=1 -v -tags integration ./internal/ruk/...
 
   ruk:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - run: git clone --depth 1 https://github.com/gosuda/ruk.git ruk
-      - run: git -C ruk fetch --depth 1 origin $(cat tools/ruk.pin) && git -C ruk checkout $(cat tools/ruk.pin)
-      - run: rustup toolchain install 1.99.1 --profile minimal
-      - run: cargo +1.99.1 install cargo-nextest --version 0.9.148 --locked
-      - run: cargo +1.99.1 fmt --all -- --check
+        with:
+          persist-credentials: false
+      - name: Check out pinned Ruk
+        run: |
+          ruk_revision=$(<tools/ruk.pin)
+          [[ "$ruk_revision" =~ ^[0-9a-f]{40}$ ]]
+          git init ruk
+          git -C ruk remote add origin https://github.com/gosuda/ruk.git
+          git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
+          git -C ruk checkout --detach FETCH_HEAD
+      - run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: ruk -> target
+          key: ${{ hashFiles('tools/ruk.pin') }}
+          env-vars: ImageOS
+          cache-workspace-crates: true
+          cache-bin: false
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519
+        with:
+          tool: cargo-nextest@0.9.148
+          fallback: none
+      - run: |
+          cargo fmt --all -- --check
         working-directory: ruk
-      - run: cargo +1.99.1 clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
         working-directory: ruk
-      - run: cargo +1.99.1 nextest run --workspace --locked
+      - run: |
+          cargo nextest run --workspace --locked
         working-directory: ruk
-      - run: cargo +1.99.1 test --workspace --locked --doc
+      - run: |
+          cargo test --workspace --locked --doc
         working-directory: ruk
