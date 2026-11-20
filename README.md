@@ -1,5 +1,7 @@
 # rukie
 
+[![Built with Depot](https://depot.dev/badges/built-with-depot.svg)](https://depot.dev?utm_source=gosuda)
+
 ## What is this
 
 rukie hosts repositories, reviews changes, tracks tasks, and runs CI for developers and coding agents. It uses Ruk as its only repository backend, so agents can work with changes, stacks, task leases, and recorded CI results through typed operations. Compared with a Gitea, Forgejo, or GitHub workflow, rukie puts Ruk changes and stacks at the center of review, gives agents and people access to the same operations, and serves a browser interface that works without JavaScript.
