@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gosuda/rukie/internal/access"
@@ -16,7 +17,7 @@ func TestRestrictedSessionCannotReadPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store open: %v", err)
 	}
-	t.Cleanup(func() { _ = st.Close(ctx) })
+	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	svc := auth.New(st)
 	admin, err := svc.BootstrapAdmin(ctx, "owner", "long-test-password-01", "127.0.0.1")
 	if err != nil {

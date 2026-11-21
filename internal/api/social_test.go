@@ -115,13 +115,9 @@ func socialJSON(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 
 func TestSocialStarAddRemoveIdempotent(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	ruser(t, e.repoEnv, ada.ID, "bob")
-	bobCookie := rlogin(t, e.repoEnv, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	repoID := socialSeed(t, e, ada.ID, "hello", "public")
 
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -179,24 +175,16 @@ func TestSocialStarAddRemoveIdempotent(t *testing.T) {
 
 func TestSocialStarRequiresSession(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
 	socialSeed(t, e, ada.ID, "hello", "public")
 	rassertProblem(t, rdo(t, e.repoEnv, http.MethodPut, "/api/user/stars/ada/hello", "", ""), 403, "forbidden")
 }
 
 func TestSocialStarMutationsRejectTokens(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, err := e.svc.GetUser(t.Context(), "ada")
-	if err != nil {
-		t.Fatal(err)
-	}
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
 	socialSeed(t, e, ada.ID, "hello", "public")
-	bob := ruser(t, e.repoEnv, ada.ID, "bob")
+	bob := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
 	token := rtoken(t, e.repoEnv, bob, "repo:read")
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		rec := rdo(t, e.repoEnv, method, "/api/user/stars/ada/hello", token, "")
@@ -206,11 +194,7 @@ func TestSocialStarMutationsRejectTokens(t *testing.T) {
 
 func TestSocialStarListRequiresOneSelector(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
 	socialSeed(t, e, ada.ID, "hello", "public")
 	for _, target := range []string{
 		"/api/stars",
@@ -226,13 +210,9 @@ func TestSocialStarListRequiresOneSelector(t *testing.T) {
 
 func TestSocialStarListHidesInvisibleRepos(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	ruser(t, e.repoEnv, ada.ID, "bob")
-	bobCookie := rlogin(t, e.repoEnv, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	publicID := socialSeed(t, e, ada.ID, "open", "public")
 	privateID := socialSeed(t, e, ada.ID, "secret", "private")
 	serr := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
@@ -268,13 +248,9 @@ func TestSocialStarListHidesInvisibleRepos(t *testing.T) {
 
 func TestSocialExploreVisibilityMatrix(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	ruser(t, e.repoEnv, ada.ID, "bob")
-	bobCookie := rlogin(t, e.repoEnv, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	socialSeed(t, e, ada.ID, "open", "public")
 	socialSeed(t, e, ada.ID, "inner", "internal")
 	socialSeed(t, e, ada.ID, "secret", "private")
@@ -304,7 +280,7 @@ func TestSocialExploreVisibilityMatrix(t *testing.T) {
 	if !bob["ada/open"] || !bob["ada/inner"] || bob["ada/secret"] {
 		t.Fatalf("member explore = %v, want public and internal only", bob)
 	}
-	adaCookie := rlogin(t, e.repoEnv, "ada", "long-test-password-01")
+	adaCookie := fixtureSession(t, e.svc, "ada")
 	owner := names(adaCookie)
 	if !owner["ada/open"] || !owner["ada/inner"] || !owner["ada/secret"] {
 		t.Fatalf("owner explore = %v, want every own repository", owner)
@@ -313,12 +289,8 @@ func TestSocialExploreVisibilityMatrix(t *testing.T) {
 
 func TestSocialExploreUsersAndOrgs(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	ruser(t, e.repoEnv, ada.ID, "bob")
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
 	rec := rdo(t, e.repoEnv, http.MethodGet, "/api/explore/users", "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("explore.users = %d: %s", rec.Code, rec.Body.String())
@@ -397,13 +369,9 @@ func socialRawCursor(t *testing.T, link string) string {
 
 func TestSocialTokenRepoSelectorFiltersAggregates(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	bob := ruser(t, e.repoEnv, ada.ID, "bob")
-	bobCookie := rlogin(t, e.repoEnv, "bob", "long-test-password-01")
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	bob := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	keep1 := socialSeed(t, e, bob.ID, "keep-1", "private")
 	keep2 := socialSeed(t, e, bob.ID, "keep-2", "private")
 	socialSeed(t, e, bob.ID, "hide-a", "private")
@@ -509,13 +477,9 @@ func TestSocialTokenRepoSelectorFiltersAggregates(t *testing.T) {
 
 func TestSocialForkVisibilityCap(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	bob := ruser(t, e.repoEnv, ada.ID, "bob")
-	bobCookie := rlogin(t, e.repoEnv, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	bob := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	socialSeed(t, e, ada.ID, "open", "public")
 	innerID := socialSeed(t, e, ada.ID, "inner", "internal")
 	secretID := socialSeed(t, e, ada.ID, "secret", "private")
@@ -542,13 +506,9 @@ func TestSocialForkVisibilityCap(t *testing.T) {
 
 func TestSocialForkTokenNamespaceOnly(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	bob := ruser(t, e.repoEnv, ada.ID, "bob")
-	ruser(t, e.repoEnv, ada.ID, "cyd")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	bob := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "cyd", Email: "cyd@example.test"})
 	socialSeed(t, e, ada.ID, "open", "public")
 	token := rtoken(t, e.repoEnv, bob, "repo:read", "repo:create")
 
@@ -562,13 +522,9 @@ func TestSocialForkTokenNamespaceOnly(t *testing.T) {
 
 func TestSocialForkRequiresRukBackend(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	ruser(t, e.repoEnv, ada.ID, "bob")
-	bobCookie := rlogin(t, e.repoEnv, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	socialSeed(t, e, ada.ID, "open", "public")
 	rec := rdo(t, e.repoEnv, http.MethodPost, "/api/repos/ada/open/forks", bobCookie, `{"name":"copy"}`)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -578,12 +534,8 @@ func TestSocialForkRequiresRukBackend(t *testing.T) {
 
 func TestSocialForkListVisibility(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
-	bob := ruser(t, e.repoEnv, ada.ID, "bob")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	bob := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
 	socialSeed(t, e, ada.ID, "hello", "public")
 	var forkID int64
 	serr := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
@@ -634,11 +586,7 @@ func TestSocialForkListVisibility(t *testing.T) {
 
 func TestSocialForkPageRenders(t *testing.T) {
 	e := buildSocialEnv(t)
-	rbootstrap(t, e.repoEnv, "ada", "long-test-password-01")
-	ada, gerr := e.svc.GetUser(t.Context(), "ada")
-	if gerr != nil {
-		t.Fatal(gerr)
-	}
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
 	socialSeed(t, e, ada.ID, "hello", "public")
 	rec := rdoFull(t, e.repoEnv, http.MethodGet, "/ada/hello/fork", "", "text/html", nil, "")
 	if rec.Code != http.StatusOK {

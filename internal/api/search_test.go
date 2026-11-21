@@ -80,25 +80,15 @@ func buildSearchEnv(t *testing.T) *searchEnv {
 func seedSearchUsers(t *testing.T, e *searchEnv) (ada, bob, cara auth.User) {
 	t.Helper()
 	ctx := t.Context()
-	var err error
-	ada, err = e.svc.BootstrapAdmin(ctx, "ada", "Aa1!test-password-01", "127.0.0.1")
-	if err != nil {
-		t.Fatalf("bootstrap: %v", err)
-	}
-	bob, err = e.svc.CreateUser(ctx, ada.ID, auth.CreateUserInput{
+	ada = fixtureUser(t, e.st, e.svc, store.AuthUserCreate{
+		Name: "ada", Email: "", FullName: "", Admin: true,
+	})
+	bob = fixtureUser(t, e.st, e.svc, store.AuthUserCreate{
 		Name: "bob", Email: "bob-secret@example.test", FullName: "Bob Builder",
-		Password: "Aa1!test-password-01",
-	}, "127.0.0.1")
-	if err != nil {
-		t.Fatalf("create bob: %v", err)
-	}
-	cara, err = e.svc.CreateUser(ctx, ada.ID, auth.CreateUserInput{
+	})
+	cara = fixtureUser(t, e.st, e.svc, store.AuthUserCreate{
 		Name: "cara", Email: "cara@example.test", FullName: "Cara Coder",
-		Password: "Aa1!test-password-01",
-	}, "127.0.0.1")
-	if err != nil {
-		t.Fatalf("create cara: %v", err)
-	}
+	})
 	if derr := e.st.UpdateAuthUserAdmin(ctx, cara.ID, cara.FullName, cara.Email, false, time.Now().UnixMilli()); derr != nil {
 		t.Fatalf("deactivate cara: %v", derr)
 	}

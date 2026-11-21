@@ -31,10 +31,20 @@ func TestCommandAdvertiseRoundTrip(t *testing.T) {
 	storeDir, client := commandRepo(t, d)
 	ctx, cancel := testCtx(t)
 	defer cancel()
+	repo, err := client.OpenRepo(ctx, storeDir)
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	opened, err := SessionOpen(ctx, client, repo, wire.SessionOpenArgs{})
+	if err != nil {
+		t.Fatalf("session open: %v", err)
+	}
+	session := opened.Session
 	var stdout bytes.Buffer
 	report, _, err := RunCommand(ctx, client, Command{Open: wire.ServiceOpen{
 		Service:    "upload-pack",
 		Repository: storeDir,
+		SessionID:  &session,
 		Advertise:  true,
 		Limits:     wire.DefaultGitLimits(),
 	}, Stdout: &stdout})

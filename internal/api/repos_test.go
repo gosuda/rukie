@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -244,6 +245,44 @@ func rdecode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return decoded
 }
 
+var fixturePasswordHash = sync.OnceValues(func() (string, error) {
+	return auth.HashPassword("long-test-password-01")
+})
+
+func fixtureUser(t *testing.T, st *store.Store, svc *auth.Service, in store.AuthUserCreate) auth.User {
+	t.Helper()
+	hash, err := fixturePasswordHash()
+	if err != nil {
+		t.Fatalf("fixture password hash: %v", err)
+	}
+	in.Lower = strings.ToLower(in.Name)
+	in.Hash = hash
+	in.Algo = "argon2id-v19"
+	in.Now = time.Now().UnixMilli()
+	au, err := st.InsertAuthUser(t.Context(), in)
+	if err != nil {
+		t.Fatalf("fixture user: %v", err)
+	}
+	u, err := svc.GetUserByID(t.Context(), au.ID)
+	if err != nil {
+		t.Fatalf("fixture user lookup: %v", err)
+	}
+	return u
+}
+
+func fixtureSession(t *testing.T, svc *auth.Service, username string) string {
+	t.Helper()
+	u, err := svc.GetUser(t.Context(), username)
+	if err != nil {
+		t.Fatalf("fixture session user: %v", err)
+	}
+	secret, _, err := svc.MintSession(t.Context(), u.ID, "password", "", "")
+	if err != nil {
+		t.Fatalf("fixture session: %v", err)
+	}
+	return auth.SessionCookieName() + "=" + secret
+}
+
 func TestRepoCreateValidation(t *testing.T) {
 	e := buildRepoEnv(t)
 	rbootstrap(t, e, "ada", "long-test-password-01")
@@ -283,12 +322,8 @@ func TestRepoCreateValidation(t *testing.T) {
 
 func TestRepoCreateTokenNamespaceOnly(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, err := e.svc.GetUser(t.Context(), "ada")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bob := ruser(t, e, ada.ID, "bob")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	bob := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
 	full := rtoken(t, e, ada, "repo:create", "repo:read", "repo:write")
 	rec := rdo(t, e, "POST", "/new/repo", full, `{"owner":"ada","name":"hello"}`)
 	rassertProblem(t, rec, 503, "unavailable")
@@ -301,11 +336,10 @@ func TestRepoCreateTokenNamespaceOnly(t *testing.T) {
 
 func TestRepoLifecycle(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
-	ruser(t, e, ada.ID, "bob")
-	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
-	bobCookie := rlogin(t, e, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	adaCookie := fixtureSession(t, e.svc, "ada")
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	privID := rseedRepo(t, e, ada.ID, "priv", "private")
 	rseedRepo(t, e, ada.ID, "pub", "public")
 
@@ -380,11 +414,10 @@ func TestRepoLifecycle(t *testing.T) {
 
 func TestRepoRestoreStrangerDenied(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
-	ruser(t, e, ada.ID, "bob")
-	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
-	bobCookie := rlogin(t, e, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	adaCookie := fixtureSession(t, e.svc, "ada")
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	goneID := rseedRepo(t, e, ada.ID, "gone", "private")
 	if werr := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
 		return tx.SoftDeleteRepo(goneID, time.Now(), time.Now().Add(time.Hour))
@@ -404,8 +437,7 @@ func TestRepoRestoreStrangerDenied(t *testing.T) {
 
 func TestRepoConditionalGet304(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
 	rseedRepo(t, e, ada.ID, "pub", "public")
 	first := rdo(t, e, "GET", "/ada/pub", "", "")
 	if first.Code != 200 {
@@ -447,11 +479,10 @@ func TestRepoOpRegistration(t *testing.T) {
 
 func TestCollaborators(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
-	ruser(t, e, ada.ID, "bob")
-	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
-	bobCookie := rlogin(t, e, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	adaCookie := fixtureSession(t, e.svc, "ada")
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	rseedRepo(t, e, ada.ID, "team", "private")
 
 	rassertProblem(t, rdo(t, e, "POST", "/ada/team/settings/collaborators/bob", adaCookie, `{"permission":"super"}`), 422, "validation")
@@ -481,11 +512,10 @@ func TestCollaborators(t *testing.T) {
 
 func TestRepoListVisibility(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
-	bob := ruser(t, e, ada.ID, "bob")
-	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
-	bobCookie := rlogin(t, e, "bob", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	bob := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	adaCookie := fixtureSession(t, e.svc, "ada")
+	bobCookie := fixtureSession(t, e.svc, "bob")
 	rseedRepo(t, e, ada.ID, "pub", "public")
 	rseedRepo(t, e, ada.ID, "inner", "internal")
 	rseedRepo(t, e, ada.ID, "priv", "private")
@@ -523,10 +553,9 @@ func TestRepoListVisibility(t *testing.T) {
 
 func TestRepoRenameValidation(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
-	ruser(t, e, ada.ID, "bob")
-	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "bob", Email: "bob@example.test"})
+	adaCookie := fixtureSession(t, e.svc, "ada")
 	rseedRepo(t, e, ada.ID, "old", "private")
 	etag := rdo(t, e, "GET", "/ada/old", adaCookie, "").Header().Get("ETag")
 	withETag := map[string]string{"If-Match": etag}
@@ -539,9 +568,8 @@ func TestRepoRenameValidation(t *testing.T) {
 
 func TestBranchTagValidation(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
-	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	adaCookie := fixtureSession(t, e.svc, "ada")
 	rseedRepo(t, e, ada.ID, "code", "public")
 
 	rassertProblem(t, rdo(t, e, "POST", "/ada/code/branches/create", adaCookie, `{"name":"a..b","from":"main"}`), 422, "validation")
@@ -555,8 +583,7 @@ func TestBranchTagValidation(t *testing.T) {
 
 func TestCodeValidation(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
 	rseedRepo(t, e, ada.ID, "pub", "public")
 
 	rassertProblem(t, rdo(t, e, "GET", "/ada/pub/tree/main/docs?limit=1001", "", ""), 400, "invalid")
@@ -575,10 +602,9 @@ func TestCodeValidation(t *testing.T) {
 
 func TestRepoPagesZeroJS(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	ada, _ := e.svc.GetUser(t.Context(), "ada")
-	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
 	rseedRepo(t, e, ada.ID, "pub", "public")
+	adaCookie := fixtureSession(t, e.svc, "ada")
 	for _, target := range []struct {
 		path string
 		auth string
@@ -655,12 +681,8 @@ func rrenameRepo(t *testing.T, e *repoEnv, owner, repo, cookie, body string) *ht
 
 func TestRepoRenameOrgOwners(t *testing.T) {
 	e := buildRepoEnv(t)
-	rbootstrap(t, e, "ada", "long-test-password-01")
-	adaCookie := rlogin(t, e, "ada", "long-test-password-01")
-	ada, err := e.svc.GetUser(t.Context(), "ada")
-	if err != nil {
-		t.Fatalf("get ada: %v", err)
-	}
+	ada := fixtureUser(t, e.st, e.svc, store.AuthUserCreate{Name: "ada", Admin: true})
+	adaCookie := fixtureSession(t, e.svc, "ada")
 	var acmeID, otherID int64
 	if serr := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
 		acme, ierr := tx.InsertOrg(time.Now(), store.OrgInsert{Name: "acme", Visibility: "private"})

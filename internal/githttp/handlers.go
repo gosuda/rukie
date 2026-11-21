@@ -246,8 +246,8 @@ func (s *Server) serveRound(w http.ResponseWriter, r *http.Request, rt route, na
 	}
 	var releaseBarrier func()
 	if name == receiveServiceName && s.barrier != nil {
-		var ok bool
-		if releaseBarrier, ok = s.barrier(); !ok {
+		var barrierOK bool
+		if releaseBarrier, barrierOK = s.barrier(); !barrierOK {
 			supervisor.WriteBackupInProgress(w)
 			return
 		}

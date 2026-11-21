@@ -18,8 +18,8 @@ env:
 
 jobs:
   rukie:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -27,6 +27,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
           cache-dependency-path: |
             go.sum
             Makefile
@@ -34,7 +35,7 @@ jobs:
           make check
 
   ruk-integration:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -43,6 +44,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - name: Check out pinned Ruk
         run: |
           ruk_revision=$(<tools/ruk.pin)
@@ -60,13 +62,14 @@ jobs:
           env-vars: ImageOS
           cache-workspace-crates: true
           cache-bin: false
+          save-if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - run: |
           cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
       - run: |
           tools/passgate.sh '--- PASS: ' -- env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off go test -race -count=1 -v -tags integration ./internal/ruk/...
 
   ruk:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -89,6 +92,7 @@ jobs:
           env-vars: ImageOS
           cache-workspace-crates: true
           cache-bin: false
+          save-if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519
         with:
           tool: cargo-nextest@0.9.148
