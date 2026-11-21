@@ -13,7 +13,7 @@ passgate() {
   done
   local out s n
   out=$(mktemp) || return 1
-  "${cmd[@]}" >"$out" 2>&1; s=$?
+  if "${cmd[@]}" >"$out" 2>&1; then s=0; else s=$?; fi
   cat "$out"
   if [ "$s" -ne 0 ]; then echo "passgate: exit $s" >&2; rm -f "$out"; return "$s"; fi
   for n in "${needles[@]}"; do
