@@ -6,12 +6,10 @@ import (
 	"github.com/gosuda/rukie/internal/runner"
 )
 
-// runRunner dispatches hand-written runner commands.
 func runRunner(argv []string) int {
 	return runner.Main(runner.IO{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv}, argv)
 }
 
-// runJobExec dispatches the hidden in-container executor.
 func runJobExec(argv []string) int {
 	probe := false
 	steps := ""

@@ -667,8 +667,6 @@ func isCancelErr(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// normalizeSearchExhausted pins the single-page contract: the daemon may
-// report an empty exhaustion mark, which readers observe as "none".
 func normalizeSearchExhausted(raw string) string {
 	if raw == "" {
 		return "none"

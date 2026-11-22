@@ -525,9 +525,6 @@ func wantCIBytes(r *http.Request) bool {
 	return r.URL.Query().Get("format") == "bytes"
 }
 
-// wantCIPage reports whether the request prefers the hand-authored CI page
-// over the op mux rendering. JSON clients fall through to the op table so
-// ci.run.get and the other dual-rendered ops stay reachable.
 func wantCIPage(r *http.Request) bool {
 	accept := strings.ToLower(r.Header.Get("Accept"))
 	if accept == "" || accept == "*/*" {

@@ -28,10 +28,6 @@ func RegisterWebhookViews(v *op.Views) {
 	op.PageView(v, "webhook.attempt.list", writeWebhookAttemptList)
 }
 
-// customCSRFToken reimplements the op layer token (internal/op/mount_huma.go
-// csrfToken) for wrapper-rendered pages: the token is bound to the CSRF
-// cookie value, not to the page, so tokens minted here validate on op form
-// posts that share the server CSRF key.
 func customCSRFToken(key []byte, cookieValue string) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte("rukie-csrf-v1\x00"))
@@ -39,9 +35,6 @@ func customCSRFToken(key []byte, cookieValue string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// ensureCustomCSRF returns a form token for a wrapper-rendered page, setting
-// the CSRF cookie when the browser has none yet. Mirrors the op layer cookie
-// attributes.
 func ensureCustomCSRF(w http.ResponseWriter, r *http.Request, key []byte) string {
 	if cookie, err := r.Cookie("__Host-rukie_csrf"); err == nil && cookie.Value != "" {
 		return customCSRFToken(key, cookie.Value)
@@ -53,8 +46,6 @@ func ensureCustomCSRF(w http.ResponseWriter, r *http.Request, key []byte) string
 	return customCSRFToken(key, value)
 }
 
-// wantsCustomHTML reports whether the request prefers a hand-authored page
-// over the op mux rendering. JSON clients fall through to the op table.
 func wantsCustomHTML(r *http.Request) bool {
 	accept := strings.ToLower(r.Header.Get("Accept"))
 	if accept == "" || accept == "*/*" {
@@ -275,8 +266,6 @@ func writeWebhookAttemptList(w io.Writer, c op.ViewCtx, out WebhookAttemptListOu
 	return err
 }
 
-// serveWebhookOwnerHooks renders the owner hooks page: every owner-scope
-// endpoint of the owner with a create form. Owner-admin gated, HTML only.
 func (d Deps) serveWebhookOwnerHooks(w http.ResponseWriter, r *http.Request, owner string) {
 	ctx := r.Context()
 	principal := RawBytes{Deps: d}.principalFor(r)

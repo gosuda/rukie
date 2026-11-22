@@ -62,7 +62,7 @@ func forbiddenMirrorIP(ip net.IP) bool {
 		return true
 	}
 	if v4 := ip.To4(); v4 != nil {
-		// RFC 6598 shared address space (100.64.0.0/10) is not public.
+
 		return v4[0] == 100 && v4[1]&0xc0 == 0x40
 	}
 	return false
@@ -96,9 +96,7 @@ func (m Mirror) Validate(_ time.Time) error {
 			return fmt.Errorf("Mirror.Validate: target resolves to a private or reserved IP")
 		}
 	}
-	// A loopback target is the operator's own host: local instances and
-	// test fakes run there over plain HTTP. The accepted risk is a local
-	// sniffer on a shared host; everything else must use TLS.
+
 	if u.Scheme != "https" && !loopbackOnly {
 		return fmt.Errorf("Mirror.Validate: target URL must use HTTPS")
 	}

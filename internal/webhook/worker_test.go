@@ -1295,7 +1295,7 @@ func TestWorkerRotate401FastRetry(t *testing.T) {
 		calls++
 		if calls == 1 {
 			firstSecrets = secrets
-			// The rotation lands mid-send: the post-401 re-fetch must observe it.
+
 			sealed, err := SealSecret(key, rawB, secretAAD("ep1"))
 			if err != nil {
 				t.Errorf("seal rotated: %v", err)
@@ -1323,7 +1323,7 @@ func TestWorkerRotate401FastRetry(t *testing.T) {
 	if !bytes.Equal(firstSecrets.Current, rawA) {
 		t.Fatal("first send did not use the pre-rotation secret")
 	}
-	// Redrive with the new secret delivers.
+
 	fake.advance(30 * time.Second)
 	if err := w.DriveOnce(t.Context()); err != nil {
 		t.Fatalf("drive 2: %v", err)

@@ -74,7 +74,6 @@ func TestInboxStatesAndSnooze(t *testing.T) {
 	id := ids[0]
 	f8threadState(t, e, cookie, id, "unread")
 
-	// Idempotent unread and read transitions.
 	mark := func(op, until string) (int, map[string]any) {
 		body := `{"thread_ids":["` + id + `"],"op":"` + op + `"`
 		if until != "" {
@@ -91,13 +90,12 @@ func TestInboxStatesAndSnooze(t *testing.T) {
 		t.Fatalf("mark_read = %d", code)
 	}
 	f8threadState(t, e, cookie, id, "read")
-	// Done sticks until a new event; mark is idempotent per thread.
+
 	if code, _ := mark("mark_done", ""); code != http.StatusCreated {
 		t.Fatalf("mark_done = %d", code)
 	}
 	f8threadState(t, e, cookie, id, "done")
 
-	// Snooze window boundaries: past and 91d refuse, 1m and 90d hold.
 	nowMillis := e.now.UnixMilli()
 	past := strconv.FormatInt(nowMillis-1000, 10)
 	far := strconv.FormatInt(nowMillis+91*24*60*60*1000, 10)
@@ -131,7 +129,7 @@ func TestInboxMuteUnmuteBulk(t *testing.T) {
 	if len(ids) != 2 {
 		t.Fatalf("unread threads = %d, want 2", len(ids))
 	}
-	// Bulk mark with one bad id: partial success, failure entry, other updated.
+
 	payload := `{"thread_ids":["` + ids[0] + `","msg_nonexistent"],"op":"mute"}`
 	rec := f8do(t, e, "POST", "/inbox", cookie, payload)
 	if rec.Code != http.StatusCreated {
@@ -151,7 +149,7 @@ func TestInboxMuteUnmuteBulk(t *testing.T) {
 	if code := f8do(t, e, "POST", "/inbox", cookie, unmute).Code; code != http.StatusCreated {
 		t.Fatalf("unmute = %d", code)
 	}
-	// Empty and oversized bulks refuse.
+
 	for _, bad := range []string{`{"thread_ids":[],"op":"mark_read"}`, `{"thread_ids":["x"],"op":"bogus"}`} {
 		if code := f8do(t, e, "POST", "/inbox", cookie, bad).Code; code != http.StatusBadRequest && code != http.StatusUnprocessableEntity {
 			t.Fatalf("bad mark %s = %d, want 400 or 422", bad, code)
@@ -180,7 +178,7 @@ func TestInboxSnoozeOp(t *testing.T) {
 		t.Fatalf("snooze = %d: %s", rec.Code, rec.Body.String())
 	}
 	f8threadState(t, e, cookie, ids[0], "snoozed")
-	// Missing until refuses; past until refuses.
+
 	if code := f8do(t, e, "POST", "/inbox/snooze", cookie, `{"thread_ids":["`+ids[0]+`"]}`).Code; code != http.StatusBadRequest && code != http.StatusUnprocessableEntity {
 		t.Fatalf("snooze without until = %d, want 400 or 422", code)
 	}
@@ -200,13 +198,13 @@ func TestInboxIsolationAndAuth(t *testing.T) {
 	if len(adaIDs) != 1 {
 		t.Fatalf("ada unread = %d, want 1", len(adaIDs))
 	}
-	// Bob sees none of ada's threads and cannot open ada's thread id.
+
 	if ids := f8threadIDs(t, e, bcookie, "?state=unread"); len(ids) != 0 {
 		t.Fatalf("bob unread = %d, want 0", len(ids))
 	}
 	f8problem(t, f8do(t, e, "GET", "/inbox/thread?thread_id="+adaIDs[0], bcookie, ""), http.StatusNotFound, "not-found")
 	f8problem(t, f8do(t, e, "GET", "/inbox/thread?thread_id="+adaIDs[0], btoken, ""), http.StatusNotFound, "not-found")
-	// Anonymous callers are refused, not filtered.
+
 	f8problem(t, f8do(t, e, "GET", "/inbox", "", ""), http.StatusUnauthorized, "unauthorized")
 	f8problem(t, f8do(t, e, "GET", "/inbox/count", "", ""), http.StatusUnauthorized, "unauthorized")
 	f8problem(t, f8do(t, e, "POST", "/inbox", "", `{"thread_ids":["x"],"op":"mark_read"}`), http.StatusUnauthorized, "unauthorized")
@@ -218,12 +216,12 @@ func TestInboxWatchAndSettings(t *testing.T) {
 	ada, _ := e.svc.GetUser(t.Context(), "ada")
 	cookie := f8login(t, e, "ada")
 	repoID := f8seedRepo(t, e, ada.ID, "hooks")
-	// Ignore without confirmation refuses.
+
 	f8problem(t, f8do(t, e, "POST", "/inbox/watch", cookie, `{"repo":"ada/hooks","level":"ignore"}`), http.StatusBadRequest, "invalid")
-	// Custom without bits refuses; unknown bits refuse.
+
 	f8problem(t, f8do(t, e, "POST", "/inbox/watch", cookie, `{"repo":"ada/hooks","level":"custom"}`), http.StatusBadRequest, "invalid")
 	f8problem(t, f8do(t, e, "POST", "/inbox/watch", cookie, `{"repo":"ada/hooks","level":"custom","custom_bits":["nope"]}`), http.StatusBadRequest, "invalid")
-	// Unknown repo refuses.
+
 	f8problem(t, f8do(t, e, "POST", "/inbox/watch", cookie, `{"repo":"ada/missing","level":"all"}`), http.StatusNotFound, "not-found")
 	rec := f8do(t, e, "POST", "/inbox/watch", cookie, `{"repo":"ada/hooks","level":"custom","custom_bits":["tasks","ci","tasks"]}`)
 	if rec.Code != http.StatusCreated {
@@ -268,7 +266,7 @@ func TestInboxWatchAndSettings(t *testing.T) {
 	if items, _ := f8decode(t, grec)["items"].([]any); len(items) != 1 {
 		t.Fatalf("bob items after revoke = %d, want 1", len(items))
 	}
-	// Watch list carries the explicit row plus the global default.
+
 	watches := f8do(t, e, "GET", "/inbox/watches", cookie, "")
 	if watches.Code != http.StatusOK {
 		t.Fatalf("watch list = %d: %s", watches.Code, watches.Body.String())
@@ -281,7 +279,7 @@ func TestInboxWatchAndSettings(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("watches = %v, want one", wdecoded)
 	}
-	// Settings: custom is forbidden as a default; windows clamp to 300..86400.
+
 	f8problem(t, f8do(t, e, "POST", "/inbox/settings", cookie, `{"default_level":"custom"}`), http.StatusBadRequest, "invalid")
 	f8problem(t, f8do(t, e, "POST", "/inbox/settings", cookie, `{"claim_warn_window_secs":60}`), http.StatusBadRequest, "invalid")
 	srec := f8do(t, e, "POST", "/inbox/settings", cookie, `{"default_level":"all","claim_warn_window_secs":900}`)
@@ -318,15 +316,14 @@ func TestInboxHTMLPages(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("unread threads = %d, want 1", len(ids))
 	}
-	// The HTML thread view marks read, then renders the thread.
+
 	if rec := f8html(t, e, "GET", "/inbox/thread?id="+ids[0], cookie); rec.Code != http.StatusOK {
 		t.Fatalf("thread page = %d: %s", rec.Code, rec.Body.String())
 	} else if !strings.Contains(rec.Body.String(), "HTML panel") {
 		t.Fatalf("thread page misses the subject: %s", rec.Body.String())
 	}
 	f8threadState(t, e, cookie, ids[0], "read")
-	// The list page carries a bulk bar whose snooze button submits a valid
-	// handler-computed preset, never an empty integer.
+
 	list := f8html(t, e, "GET", "/inbox", cookie)
 	if list.Code != http.StatusOK {
 		t.Fatalf("inbox page = %d: %s", list.Code, list.Body.String())
@@ -352,13 +349,13 @@ func TestInboxHTMLPages(t *testing.T) {
 	if millis < nowMillis+60*1000 || millis > nowMillis+90*24*60*60*1000 {
 		t.Fatalf("preset %d outside the snooze window", millis)
 	}
-	// The settings page renders watches and forms outside the op table.
+
 	if rec := f8html(t, e, "GET", "/inbox/settings", cookie); rec.Code != http.StatusOK {
 		t.Fatalf("settings page = %d: %s", rec.Code, rec.Body.String())
 	} else if !strings.Contains(rec.Body.String(), "Inbox settings") {
 		t.Fatalf("settings page misses heading: %s", rec.Body.String())
 	}
-	// Anonymous HTML views render nothing privileged.
+
 	if rec := f8html(t, e, "GET", "/inbox/settings", ""); rec.Code == http.StatusOK &&
 		strings.Contains(rec.Body.String(), "Inbox settings") {
 		t.Fatal("anonymous settings page renders private content")
@@ -375,7 +372,7 @@ func TestInboxListValidation(t *testing.T) {
 		t.Fatalf("limit 100 = %d", rec.Code)
 	}
 	f8problem(t, f8do(t, e, "GET", "/inbox?repo=ada/missing", cookie, ""), http.StatusNotFound, "not-found")
-	// Count is cheap and gated the same way.
+
 	if rec := f8do(t, e, "GET", "/inbox/count", cookie, ""); rec.Code != http.StatusOK {
 		t.Fatalf("count = %d: %s", rec.Code, rec.Body.String())
 	}

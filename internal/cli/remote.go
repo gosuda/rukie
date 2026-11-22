@@ -128,10 +128,6 @@ type RemoteInvoker struct {
 	Retries int
 }
 
-// persistJar writes the jar's session cookies back to JarFile. It only runs
-// on success and only carries the session cookie, never CSRF or other jar
-// state. A cleared or absent session leaves the file alone so a logout keeps
-// its existing dead-session behavior.
 func (r *RemoteInvoker) persistJar(u *url.URL, status int) {
 	if r.JarFile == "" || status < 200 || status >= 300 {
 		return

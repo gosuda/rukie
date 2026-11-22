@@ -1489,8 +1489,7 @@ func (s *Server) renderSuccess(st *reqState, status int, header http.Header, bod
 		c := ViewCtx{Spec: st.spec, Principal: st.principal, RequestID: st.requestID, Path: st.path, CSRF: st.csrf}
 		if err := entry.fn(&buf, c, out); err != nil {
 			raw := mustProblem(st, err)
-			// A view that fails mid-render must not keep the success status:
-			// the body is now an error page.
+
 			return s.renderProblemMedia(st, problemStatus(raw, status), header, raw)
 		}
 		return status, header, buf.Bytes()
@@ -1542,9 +1541,6 @@ func mustProblem(st *reqState, err error) []byte {
 	return raw
 }
 
-// problemStatus reads the status out of an encoded problem body so a render
-// failure replaces the pending success status instead of keeping it. The
-// fallback covers an unparseable body.
 func problemStatus(raw []byte, fallback int) int {
 	var p problemBody
 	if err := jsonv2.Unmarshal(raw, &p, jsonv1.DefaultOptionsV1()); err != nil || p.Status == 0 {

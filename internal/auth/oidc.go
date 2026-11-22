@@ -307,8 +307,7 @@ func (s *Service) HandleOIDCCallback(ctx context.Context, in OIDCCallbackInput) 
 		if serr != nil {
 			return OIDCCallbackResult{}, errInvalidCredentials
 		}
-		// A second-factor-pending session proves only the password step;
-		// it must not authorize linking an external identity.
+
 		if !pendingLevel(sess.AuthLevel) {
 			current, haveSession = u, true
 		}

@@ -149,8 +149,7 @@ func mapF12Error(err error) error {
 }
 
 func oidcSessionUser(ctx context.Context, svc *auth.Service, p op.Principal) int64 {
-	// Second-factor-pending sessions carry only public read; they must not
-	// act as the linking user for an OIDC callback.
+
 	if !p.Grants.Has(op.ScopeRepoRead) {
 		return 0
 	}

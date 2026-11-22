@@ -206,10 +206,7 @@ func Backup(ctx context.Context, st *store.Store, cfg config.Config, outBase str
 		}
 	}
 	doc.Files = append(doc.Files, repoFiles...)
-	// Release assets live outside the repository root in the content-addressed
-	// store <data-dir>/releases. Without them a restore leaves every asset
-	// download failing, so the release tree rides the same barrier-hold as the
-	// repo copy and lands under the "releases/" manifest prefix.
+
 	if info, serr := os.Stat(filepath.Join(cfg.DataDir, "releases")); serr == nil && info.IsDir() {
 		releaseFiles, rerr := copyRepoTree(filepath.Join(cfg.DataDir, "releases"), filepath.Join(dir, "releases"), "releases", skip)
 		if rerr != nil {

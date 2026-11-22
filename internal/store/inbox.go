@@ -601,9 +601,6 @@ func unionReasons(dst []string, src ...string) []string {
 	return dst
 }
 
-// customBitForType maps an event type to its watch-custom bit. Repo lifecycle
-// events map to no bit: only all-watchers (and participants, of which there are
-// none) receive them.
 func customBitForType(eventType string) string {
 	switch eventType {
 	case "task.created", "task.claimed", "task.closed":
@@ -630,9 +627,7 @@ func fanoutInbox(core *txCore, row OutboxRow) error {
 	eventMillis := msOf(row.OccurredAt)
 	var subjectKind, subjectID string
 	var title string
-	// Actor exclusion is best-effort: current producers omit pusher, but any
-	// event body carrying a pusher user name excludes that user from the
-	// recipient set (the actor never notifies themselves).
+
 	var actorID int64
 	var actorName string
 	if name, ok := parsed.body["pusher"].(string); ok && name != "" {
@@ -645,8 +640,7 @@ func fanoutInbox(core *txCore, row OutboxRow) error {
 			return fmt.Errorf("fanoutInbox: %w", serr)
 		}
 	}
-	// Item attribution: task.created names its creator; every other kind uses
-	// the resolved pusher where one exists, else the zero actor.
+
 	var itemActorID int64
 	var itemActorName string
 	recipients := map[int64]*inboxRecipient{}
@@ -700,8 +694,7 @@ func fanoutInbox(core *txCore, row OutboxRow) error {
 			subjectID = fmt.Sprintf("%d", parsed.repoID)
 		}
 		title = parsed.ref + " updated"
-		// Participants come from watches only; a body.pusher name (when present)
-		// excludes that user via the actor rule above.
+
 		parsed.title = title
 		parsed.snippet = title
 	case "repo.created", "repo.deleted":
@@ -716,9 +709,7 @@ func fanoutInbox(core *txCore, row OutboxRow) error {
 		parsed.title = title
 		parsed.snippet = title
 	}
-	// Watchers: level all always joins; custom joins on the matching bit;
-	// participate adds nothing beyond participants; ignore suppresses every row
-	// for that user, participants included.
+
 	wrows, err := tx.QueryContext(core.ctx,
 		`SELECT user_id, level, custom_bits FROM watches WHERE repo_id = ?`, parsed.repoID)
 	if err != nil {
@@ -848,19 +839,12 @@ AND (t.repo_scope = 'all' OR EXISTS
 	return false
 }
 
-// inboxFanoutItem carries one new event's item content: identity (the outbox
-// row id, so distinct emissions append distinct items), presentation, and
-// attribution. Only a same-row double fan-out dedupes.
 type inboxFanoutItem struct {
 	eventID, title, snippet, eventType, actorName string
 	reasons                                       []string
 	actorID                                       int64
 }
 
-// upsertInboxThread appends one item and bumps (or silently extends) its thread.
-// Muted threads gain an unbumped item only. Snoozed threads keep their state and
-// bumped_at while still counting the item. All other states bump; read and done
-// threads reopen as unread.
 func upsertInboxThread(core *txCore, tx *sql.Tx, userID, repoID int64, subjectKind, subjectID string,
 	item inboxFanoutItem, eventMillis int64) error {
 	var threadID, state string
@@ -890,8 +874,7 @@ VALUES (?, ?, ?, ?, ?, 'unread', 0, ?, ?, 0, 0, ?, 0, ?)`,
 		state = "unread"
 		muted = 0
 	}
-	// Insert-first: a replayed event hits the (event_id, user_id) ignore and
-	// changes nothing. Counters move only when the item row is new.
+
 	inserted, ierr := insertInboxItem(core, tx, threadID, userID, item, state != "snoozed" && muted == 0, eventMillis)
 	if ierr != nil {
 		return ierr
@@ -907,8 +890,7 @@ total_items = total_items + 1, updated_at = ? WHERE id = ?`, eventMillis, thread
 		return nil
 	}
 	if state == "snoozed" {
-		// Snoozed threads stay snoozed: count the item, refresh the snippet,
-		// but never move bumped_at or state.
+
 		if _, uerr := tx.ExecContext(core.ctx, `UPDATE inbox_threads SET
 unread_items = unread_items + 1, total_items = total_items + 1, snippet = ?,
 reasons = ?, updated_at = ? WHERE id = ?`, item.snippet, encodeWebhookStrings(unionReasons(

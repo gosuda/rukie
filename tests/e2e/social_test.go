@@ -18,13 +18,6 @@ import (
 	"github.com/gosuda/rukie/internal/forks"
 )
 
-// The social and explore surface is bound through these helpers only. Each
-// helper names one route or one JSON field so a schema change stays a single
-// edit, and the tests below assert behavior rather than shape.
-
-// JSON operation paths, per the settled usage surface. The HTML forms at
-// /{owner}/{repo}/star, /unstar, /fork, /forks, /stargazers, and
-// /-/explore/repos are page surfaces and are exercised by the page tests.
 func forksPath(owner, repo string) string {
 	return "/api/repos/" + owner + "/" + repo + "/forks"
 }
@@ -39,9 +32,6 @@ func starsQuery(owner, repo string) string {
 
 const exploreReposPath = "/api/explore/repos"
 
-// socialDo issues one request and returns the status, the response headers,
-// and the raw body. Mutation ops answer 204 with no body, so apiCall cannot
-// read them, and fork creation is asserted through its Location header.
 func socialDo(t *testing.T, h *apiHarness, method, target, auth, body string) (int, http.Header, string) {
 	t.Helper()
 	var reader io.Reader
@@ -78,7 +68,6 @@ func socialDo(t *testing.T, h *apiHarness, method, target, auth, body string) (i
 	return resp.StatusCode, resp.Header, raw.String()
 }
 
-// socialJSON decodes a body the caller already knows is JSON.
 func socialJSON(t *testing.T, raw string) map[string]any {
 	t.Helper()
 	var decoded map[string]any
@@ -88,8 +77,6 @@ func socialJSON(t *testing.T, raw string) map[string]any {
 	return decoded
 }
 
-// createFork posts one repo.fork.create and requires the accepted reply: 202,
-// a Location header naming the new repo, and a forking repo object.
 func createFork(t *testing.T, h *apiHarness, owner, repo, auth, body string) map[string]any {
 	t.Helper()
 	status, header, raw := socialDo(t, h, "POST", forksPath(owner, repo), auth, body)
@@ -126,8 +113,6 @@ func repoState(t *testing.T, repo map[string]any) string {
 	return state
 }
 
-// starCount reads the star counter that repo.get carries beside the repo
-// object. The field is omitzero, so an unstarred repo reports it as absent.
 func starCount(t *testing.T, decoded map[string]any) int {
 	t.Helper()
 	raw, ok := decoded["stars"].(float64)
@@ -170,16 +155,10 @@ func repoNames(t *testing.T, rows []any) map[string]bool {
 	return out
 }
 
-// forkWorker is the production repo_fork worker, built the way cmd/rukie wires
-// it. Driving it here exercises the real queue and the real state transition;
-// the harness runs no background workers of its own.
 func forkWorker(s *stack, h *apiHarness) forks.Worker {
 	return forks.Worker{Store: s.st, Queue: h.queue, Clock: time.Now}
 }
 
-// waitRepoActive drives the fork worker and polls repo.get until the fork
-// reports state active. Both the worker ticks and the reads are bounded, with
-// exponential backoff and jitter, so a stuck fork fails fast.
 func waitRepoActive(t *testing.T, s *stack, h *apiHarness, owner, repo, auth string) map[string]any {
 	t.Helper()
 	const (
@@ -194,8 +173,7 @@ func waitRepoActive(t *testing.T, s *stack, h *apiHarness, owner, repo, auth str
 	wait := startWait
 	worker := forkWorker(s, h)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// One tick gets its own deadline, so a blocked queue call cannot
-		// outlive the readiness budget.
+
 		tickCtx, cancel := context.WithTimeout(t.Context(), min(time.Until(deadline), 10*time.Second))
 		_, werr := worker.DriveOnce(tickCtx, "e2e-fork")
 		cancel()
@@ -224,14 +202,11 @@ func waitRepoActive(t *testing.T, s *stack, h *apiHarness, owner, repo, auth str
 	return nil
 }
 
-// seedSocialRepo creates a metadata row and an empty Ruk store for one owner.
 func seedSocialRepo(t *testing.T, s *stack, owner, name, visibility string) int64 {
 	t.Helper()
 	return seedF1Repo(t, s, owner, name, visibility)
 }
 
-// pushSocialContent fills a repo through Smart HTTP with two branches and one
-// annotated tag, so a fork has heads and tags to copy.
 func pushSocialContent(t *testing.T, s *stack, owner, repo, user, token string) map[string]string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
@@ -288,16 +263,12 @@ func TestForkAndStarE2E(t *testing.T) {
 		t.Fatalf("fork owner = %v, want bob", got)
 	}
 
-	// The fork is not ready until the repo_fork job completes, so repo.get must
-	// still report it as forking before the worker runs.
 	if status, decoded := apiCall(t, h, "GET", "/bob/hello-fork", bobSession, ""); status != http.StatusOK {
 		t.Fatalf("repo.get of the new fork = %d: %v", status, decoded)
 	} else if got := repoState(t, repoOf(t, decoded)); got != "forking" {
 		t.Fatalf("fork state before the worker ran = %q, want forking", got)
 	}
 
-	// A fork of the still-forking parent is a timing conflict, not a server
-	// failure: the metadata fork gate refuses the inactive source.
 	if status, _, body := socialDo(t, h, "POST", forksPath("bob", "hello-fork"), bobSession, `{"name":"hello-fork-of-fork"}`); status != http.StatusConflict {
 		t.Fatalf("fork of a forking parent = %d, want 409: %s", status, body)
 	} else if !strings.Contains(body, "conflict") {
@@ -466,9 +437,7 @@ func TestForkVisibilityCap(t *testing.T) {
 		{"secret", "secret-internal", "internal", "a private source must not fork internal"},
 	}
 	for _, tc := range refusals {
-		// The owner forks into her own namespace, so the only possible refusal
-		// is the visibility cap: she holds the destination create right and can
-		// read every source here.
+
 		body := `{"name":"` + tc.name + `","visibility":"` + tc.visibility + `"}`
 		status, _, raw := socialDo(t, h, "POST", forksPath("ada", tc.source), adaSession, body)
 		if status != http.StatusForbidden {

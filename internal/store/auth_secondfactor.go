@@ -272,8 +272,7 @@ func (s *Store) clearTOTP(ctx context.Context, userID int64, now int64, revokeSe
 			now, userID); uerr != nil {
 			return fmt.Errorf("ClearTOTP: %w", mapErr(uerr))
 		}
-		// Pending second-factor sessions must not survive the reset: with
-		// totp_enabled cleared they would resolve as full sessions.
+
 		del := `DELETE FROM sessions WHERE user_id = ? AND auth_level IN ('password-pending', 'oidc-pending')`
 		if revokeSessions {
 			del = `DELETE FROM sessions WHERE user_id = ?`

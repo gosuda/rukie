@@ -145,7 +145,6 @@ func TestWebhookEndpointCRUD(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	// Scope violations: both set, neither set, wrong scope for the id.
 	badScopes := []WebhookEndpointInsert{
 		{Scope: "repo", RepoID: repo, OwnerID: ada.ID, URL: "https://x.example.test/", SecretEnc: []byte("s"), EventTypes: []string{"task.created"}, CreatedBy: ada.ID},
 		{Scope: "repo", URL: "https://x.example.test/", SecretEnc: []byte("s"), EventTypes: []string{"task.created"}, CreatedBy: ada.ID},
@@ -164,7 +163,6 @@ func TestWebhookEndpointCRUD(t *testing.T) {
 		}
 	}
 
-	// Bad event type and ref_globs without ref.updated.
 	for i, in := range []WebhookEndpointInsert{
 		{Scope: "repo", RepoID: repo, URL: "https://x.example.test/", SecretEnc: []byte("s"), EventTypes: []string{"nope.event"}, CreatedBy: ada.ID},
 		{Scope: "repo", RepoID: repo, URL: "https://x.example.test/", SecretEnc: []byte("s"), EventTypes: []string{"task.created"}, RefGlobs: []string{"refs/heads/*"}, CreatedBy: ada.ID},
@@ -180,7 +178,6 @@ func TestWebhookEndpointCRUD(t *testing.T) {
 		}
 	}
 
-	// Update + rotate + counts + delete.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		timeout := int64(30)
 		active := false
@@ -338,7 +335,7 @@ func TestWebhookMessageDedupe(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	// Oversize payload rejected.
+
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		return tx.InsertWebhookMessages([]WebhookMessageInsert{{ID: "msg_big", EndpointID: ep.ID,
 			EventType: "task.created", OutboxSeq: 9, EventTime: 8000, NextAttemptAt: 8000,
@@ -369,7 +366,6 @@ func TestClaimLeaseSweep(t *testing.T) {
 	insertMsg("msg_c1", 11)
 	insertMsg("msg_c2", 12)
 
-	// Per-endpoint cap of 1 admits a single row.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		if _, cerr := tx.ClaimWebhookMessages(9500, 10, 1, ""); !errors.Is(cerr, ErrInvalid) {
 			t.Fatalf("empty owner claim = %v, want ErrInvalid", cerr)
@@ -395,7 +391,6 @@ func TestClaimLeaseSweep(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 
-	// Full claim takes the second row; sweep before expiry is a no-op (N-1).
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		claimed, cerr := tx.ClaimWebhookMessages(9500, 10, 0, "inst-a")
 		if cerr != nil || len(claimed) != 1 {
@@ -410,8 +405,6 @@ func TestClaimLeaseSweep(t *testing.T) {
 		t.Fatalf("claim2/sweep: %v", err)
 	}
 
-	// Sweep after expiry returns both rows to pending with the same ids,
-	// spending one attempt each and clearing the lease fields.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		n, serr := tx.SweepWebhookLeases(9500+5*60*1000, 10)
 		if serr != nil || n != 2 {
@@ -449,9 +442,7 @@ func TestSweepSpendsBudgetToDead(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// Crash loop: claim, expire the lease, sweep — ten times. Each sweep
-	// spends one attempt; the tenth exhausts the budget and dead-letters the
-	// same row without a single delivery.
+
 	for i := 0; i < 10; i++ {
 		if err := s.Write(ctx, func(tx *WriteTx) error {
 			claimed, cerr := tx.ClaimWebhookMessages(20000, 10, 0, "inst-loop")
@@ -511,16 +502,16 @@ func TestStaleCompletionNoOp(t *testing.T) {
 		if _, cerr := tx.ClaimWebhookMessages(30000, 10, 0, "owner-a"); cerr != nil {
 			return cerr
 		}
-		// Owner A crashes; the sweep spends one attempt and frees the lease.
+
 		if n, serr := tx.SweepWebhookLeases(30000+5*60*1000, 10); serr != nil || n != 1 {
 			t.Fatalf("sweep = %d, %v; want 1", n, serr)
 		}
-		// Owner B claims the freed row.
+
 		claimed, cerr := tx.ClaimWebhookMessages(30000+5*60*1000, 10, 0, "owner-b")
 		if cerr != nil || len(claimed) != 1 || claimed[0].ID != "msg_stale" {
 			t.Fatalf("reclaim = %+v, %v", claimed, cerr)
 		}
-		// Owner A's late completion is stale and changes nothing.
+
 		if derr := tx.MarkWebhookDelivered("msg_stale", 30000+5*60*1000, 200, "owner-a"); !errors.Is(derr, ErrStale) {
 			t.Fatalf("late deliver = %v, want ErrStale", derr)
 		}
@@ -534,7 +525,7 @@ func TestStaleCompletionNoOp(t *testing.T) {
 		if m.State != "inflight" || m.LeaseOwner != "owner-b" || m.AttemptCount != 1 {
 			t.Fatalf("stolen row = %+v, want inflight owned by B", m)
 		}
-		// Owner B completes normally.
+
 		if derr := tx.MarkWebhookDelivered("msg_stale", 30000+5*60*1000, 200, "owner-b"); derr != nil {
 			return derr
 		}
@@ -696,14 +687,14 @@ func TestRedeliverWalk(t *testing.T) {
 		if red.LeaseOwner != "" {
 			t.Fatalf("redelivered keeps lease owner %q", red.LeaseOwner)
 		}
-		// Requeue needs a fresh claim; a foreign owner goes stale.
+
 		if _, cerr := tx.ClaimWebhookMessages(14003, 10, 0, "inst-a"); cerr != nil {
 			return cerr
 		}
 		if _, rerr = tx.RequeueWebhookMessage("msg_dead", "x", 503, 15000, 14003, "inst-b"); !errors.Is(rerr, ErrStale) {
 			t.Fatalf("foreign-owner requeue = %v, want ErrStale", rerr)
 		}
-		// Requeue bumps the attempt count and reschedules.
+
 		rq, rerr := tx.RequeueWebhookMessage("msg_dead", "again", 503, 15000, 14003, "inst-a")
 		if rerr != nil || rq.AttemptCount != 1 || rq.NextAttemptAt != 15000 || rq.LastStatusCode != 503 {
 			t.Fatalf("requeued = %+v, %v", rq, rerr)
@@ -790,7 +781,7 @@ func TestFanoutPayloadShape(t *testing.T) {
 		if _, eerr := tx.Outbox().Emit(Event{OccurredAt: now, Kind: "ref.updated", Body: jsontext.Value(refBody)}); eerr != nil {
 			return eerr
 		}
-		// Internal keys (purge_after) must not leak into the envelope.
+
 		delBody := `{"owner":"shapeda","name":"shapes","repo_id":` + itoa(repo) + `,"visibility":"private","purge_after":999}`
 		_, eerr := tx.Outbox().Emit(Event{OccurredAt: now, Kind: "repo.deleted", Body: jsontext.Value(delBody)})
 		return eerr
@@ -912,7 +903,6 @@ func TestInboxFanOutSameTx(t *testing.T) {
 		return outbox, msgs, threads, items
 	}
 
-	// (a) A rolled-back mutation removes its fan-out rows too.
 	boom := errors.New("planned rollback")
 	refBody := jsontext.Value(`{"repo":` + itoa(repo) + `,"name":"refs/heads/main","old":"000","new":"abc","source":"t"}`)
 	o0, m0, th0, it0 := counts()
@@ -929,9 +919,6 @@ func TestInboxFanOutSameTx(t *testing.T) {
 			o0, o1, m0, m1, th0, th1, it0, it1)
 	}
 
-	// Inserting a task fans out in the same commit: two endpoint messages
-	// (repo + owner scope; the task.closed endpoint stays silent) and threads
-	// for reporter, assignee and the all-watcher.
 	var publicID string
 	var taskNum int64
 	taskTime := time.UnixMilli(20100)
@@ -1007,8 +994,6 @@ func TestInboxFanOutSameTx(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	// (b)+(c): committing a ref.updated emit adds a message+thread+item in the
-	// same read; replaying the identical event adds a message but no items.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		_, eerr := tx.Outbox().Emit(Event{OccurredAt: now, Kind: "ref.updated", Body: refBody})
 		return eerr
@@ -1030,8 +1015,7 @@ func TestInboxFanOutSameTx(t *testing.T) {
 		if lerr != nil || len(items) != 1 {
 			t.Fatalf("branch items = %d, %v", len(items), lerr)
 		}
-		// The reporter has no watch row (participate default) and the ref
-		// body names no pusher, so only watchers get ref threads.
+
 		mine, _, lerr := tx.ListInboxThreads(reporter.ID, "", "branch_view", 0, "", 10)
 		if lerr != nil || len(mine) != 0 {
 			t.Fatalf("reporter branch threads = %d", len(mine))
@@ -1047,8 +1031,7 @@ func TestInboxFanOutSameTx(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("replay emit: %v", err)
 	}
-	// A second emission is a DISTINCT event row: new message and new item on
-	// the same thread (only same-row double fan-out dedupes).
+
 	if _, mAfter, _, itAfter := counts(); mAfter != mBefore+1 || itAfter != itBefore+1 {
 		t.Fatalf("replay: messages %d->%d (want +1), items %d->%d (want +1)",
 			mBefore, mAfter, itBefore, itAfter)
@@ -1072,7 +1055,7 @@ func TestInboxFanOutSameTx(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	// Unknown kinds fan out to nothing and never fail the mutation.
+
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		_, eerr := tx.Outbox().Emit(Event{OccurredAt: now, Kind: "push.received", Body: jsontext.Value(`{"x":1}`)})
 		return eerr

@@ -1193,9 +1193,6 @@ func matchRefGlob(glob, ref string) bool {
 	return ref == glob
 }
 
-// fanoutEvent materializes webhook deliveries and inbox rows for one committed
-// outbox row. Unknown event kinds return nil. Any error rolls back the caller's
-// mutation; fan-out rows never outlive the mutation they describe.
 func fanoutEvent(core *txCore, row OutboxRow) error {
 	if err := fanoutWebhooks(core, row); err != nil {
 		return err
@@ -1214,9 +1211,7 @@ type fanoutEventData struct {
 
 func parseFanoutBody(row OutboxRow) (fanoutEventData, error) {
 	var out fanoutEventData
-	// Unknown kinds fan out nowhere: skip the parse entirely so the hot
-	// probe/queue emit paths pay only a map lookup. (Emit already rejects
-	// non-object bodies, so the unmarshal below cannot fail.)
+
 	switch row.Kind {
 	case "task.created", "task.claimed", "task.closed",
 		"ref.updated", "repo.created", "repo.deleted":
@@ -1276,8 +1271,6 @@ func parseFanoutBody(row OutboxRow) (fanoutEventData, error) {
 	return out, nil
 }
 
-// buildWebhookPayload serializes the canonical envelope ONCE. The stored bytes are
-// signed and transmitted verbatim; never re-serialize before signing.
 func buildWebhookPayload(msgID, eventType string, eventTime int64, data map[string]any) ([]byte, error) {
 	env := map[string]any{
 		"id":        msgID,
@@ -1298,11 +1291,6 @@ func buildWebhookPayload(msgID, eventType string, eventTime int64, data map[stri
 	return raw, nil
 }
 
-// webhookDataSchema freezes the whitelisted envelope data keys per event type.
-// It is the store-side twin of internal/webhook.Catalogue (which the store
-// cannot import: webhook imports store). Fan-out builds data objects with
-// exactly these keys; internal body keys (purge_after, invocation ids, ...)
-// never cross the boundary.
 var webhookDataSchema = map[string][]string{
 	"task.created": {"task_id", "task_number", "title", "state", "assignee", "created_by", "repo", "task_url", "event_id"},
 	"task.claimed": {"task_id", "task_number", "title", "state", "assignee", "created_by", "repo", "task_url", "event_id"},
@@ -1312,7 +1300,6 @@ var webhookDataSchema = map[string][]string{
 	"repo.deleted": {"repo_id", "full_name", "visibility", "default_branch", "fork_of", "deleted_by", "last_default_tip", "repo_url", "event_id"},
 }
 
-// userLink is a small id+name identity embedded in webhook data.
 type userLink struct {
 	Name string `json:"name"`
 	ID   int64  `json:"id"`
@@ -1384,7 +1371,7 @@ func refChangeKind(oldOID, newOID string) string {
 	case !zeroOID(oldOID) && zeroOID(newOID):
 		return "deleted"
 	default:
-		// Force-updates surface as updated: the body carries no ancestry flag.
+
 		return "updated"
 	}
 }
@@ -1400,12 +1387,6 @@ func refKindOf(ref string) string {
 	}
 }
 
-// fanoutWebhookData builds the whitelisted envelope data object for one outbox
-// row from in-transaction store reads. Internal body keys never pass through.
-//
-// URL deviation: the store transaction has no instance absolute base, so every
-// URL is a RELATIVE path (/owner/repo, /owner/repo/tasks/<public-id>); the
-// webhook worker (or API) prefixes the instance base before delivery docs.
 func fanoutWebhookData(core *txCore, tx *sql.Tx, row OutboxRow, parsed fanoutEventData) (map[string]any, error) {
 	repo, ownerUser, _, _, derr := fanoutRepoLink(core, tx, parsed.repoID)
 	if derr != nil {
@@ -1503,7 +1484,7 @@ reporter_id, assignee_id FROM intents WHERE repo_id = ? AND public_id = ?`,
 		}
 		byName := ""
 		byID := int64(0)
-		// The tombstone body names no actor; attribute to the owning identity.
+
 		if ownerUser != 0 {
 			byID = ownerUser
 			uname, uerr := fanoutUserName(core, tx, ownerUser)
@@ -1615,8 +1596,7 @@ OR (scope = 'owner' AND owner_kind = 'org' AND owner_id = ?))`,
 				continue
 			}
 		}
-		// Each delivery gets its own message id (the primary key) stamped in
-		// both the row and its envelope; payloads are otherwise identical.
+
 		msgID := "msg_" + string(NewID(row.OccurredAt))
 		perPayload, berr := buildWebhookPayload(msgID, row.Kind, eventMillis, data)
 		if berr != nil {

@@ -520,7 +520,6 @@ func FullProbe(cfg Config, env ProbeEnv) (ProbeReport, *Failure) {
 	return report, nil
 }
 
-// probeP12 passes unconfigured egress and checks pasta availability otherwise.
 func probeP12(c *probeCtx) *Failure {
 	if !c.cfg.Egress {
 		c.pass("P12")

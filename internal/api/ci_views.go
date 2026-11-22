@@ -13,8 +13,6 @@ import (
 	"github.com/gosuda/rukie/internal/web/secheaders"
 )
 
-// latestRun picks the badge run: the highest creation time, breaking ties
-// toward the highest run id to match the ci.run.list ordering.
 func latestRun(runs []ci.Run) *ci.Run {
 	if len(runs) == 0 {
 		return nil
@@ -29,9 +27,6 @@ func latestRun(runs []ci.Run) *ci.Run {
 	return latest
 }
 
-// ciContentSecurityPolicy is the shared policy with scripts fully off:
-// CI pages are zero-JS surfaces, so they agree with htmlcheck instead of
-// inheriting the application script allowance.
 var ciContentSecurityPolicy = strings.Replace(secheaders.CSP, "script-src 'self'", "script-src 'none'", 1)
 
 func setCIPageHeaders(w http.ResponseWriter) {

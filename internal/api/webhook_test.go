@@ -40,9 +40,6 @@ func buildF8Env(t *testing.T) *f8Env {
 	return buildF8EnvWithPolicy(t, webhook.Policy{AllowInsecureHTTP: true, AllowPrivateTargets: true})
 }
 
-// f8EnvSeq spaces fake clocks across environments so the process-global inbox
-// rate buckets refill between tests; business logic stays consistent because
-// every handler reads the same env clock.
 var f8EnvSeq atomic.Int64
 
 func buildF8EnvWithPolicy(t *testing.T, policy webhook.Policy) *f8Env {
@@ -311,7 +308,7 @@ func TestWebhookEndpointCreateValidation(t *testing.T) {
 	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("http userinfo: status = %d, want 400 or 422: %s", rec.Code, rec.Body.String())
 	}
-	// An instance without the insecure allowance refuses plain http.
+
 	strict := buildF8EnvWithPolicy(t, webhook.Policy{})
 	f8bootstrap(t, strict, "ada")
 	sada, _ := strict.svc.GetUser(t.Context(), "ada")
@@ -339,7 +336,7 @@ func TestWebhookEndpointSecretShownOnce(t *testing.T) {
 	if !strings.HasPrefix(secret, "whsec_") {
 		t.Fatalf("secret %q misses the whsec_ prefix", secret)
 	}
-	// Fresh endpoints carry no previous secret.
+
 	var fresh store.WebhookEndpointRow
 	if err := e.st.Read(t.Context(), func(tx *store.ReadTx) error {
 		var gerr error
@@ -438,7 +435,7 @@ func TestWebhookEndpointTestOp(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("test op stored %d messages, want none", count)
 	}
-	// An unreachable target reports failure without a status code.
+
 	_, created = f8createEndpoint(t, e, token, "/ada/hooks/settings/hooks",
 		`{"scope":"repo","url":"http://127.0.0.1:1/none","event_types":["task.created"]}`)
 	dead := f8endpointID(t, created)
@@ -515,7 +512,7 @@ func TestWebhookMessageRedeliver(t *testing.T) {
 	_, created := f8createEndpoint(t, e, token, "/ada/hooks/settings/hooks",
 		`{"scope":"repo","url":"https://hooks.example.test/redeliver","event_types":["task.created"]}`)
 	id := f8endpointID(t, created)
-	// Seed one pending message straight through the store contract.
+
 	seededID := "msg_" + string(store.NewID(e.now))
 	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
 		return tx.InsertWebhookMessages([]store.WebhookMessageInsert{{
@@ -526,10 +523,9 @@ func TestWebhookMessageRedeliver(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed message: %v", err)
 	}
-	// Pending messages refuse redelivery.
+
 	f8problem(t, f8do(t, e, "POST", "/ada/hooks/settings/hooks/"+id+"/messages/"+seededID+"/redeliver", token, ""), http.StatusBadRequest, "invalid")
-	// Dead messages return to pending under the same id. Production kills
-	// claimed rows, so claim (as the worker would) before marking dead.
+
 	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
 		claimed, cerr := tx.ClaimWebhookMessages(e.now.UnixMilli(), 64, 0, "f8test-owner")
 		if cerr != nil {
@@ -695,7 +691,7 @@ func TestWebhookDeliveryFlow(t *testing.T) {
 	if state != "delivered" {
 		t.Fatalf("message state = %q, want delivered", state)
 	}
-	// The reporter gets an author thread for the task.
+
 	ids := f8threadIDs(t, e, f8login(t, e, "ada"), "?state=unread")
 	if len(ids) != 1 {
 		t.Fatalf("unread threads = %d, want 1", len(ids))
@@ -708,8 +704,7 @@ func TestWebhookRepoEndpointCap(t *testing.T) {
 	ada, _ := e.svc.GetUser(t.Context(), "ada")
 	token := f8token(t, e, ada, "repo:create", "repo:read", "repo:write", "webhooks:read", "webhooks:write")
 	repoID := f8seedRepo(t, e, ada.ID, "hooks")
-	// Seed 31 endpoints straight through the store contract; the API proves
-	// the 32nd lands and the 33rd trips the limit.
+
 	if err := e.st.Write(t.Context(), func(tx *store.WriteTx) error {
 		for i := range 31 {
 			if _, ierr := tx.InsertWebhookEndpoint(e.now, store.WebhookEndpointInsert{
@@ -741,11 +736,11 @@ func TestWebhookOwnerScopeEndpoint(t *testing.T) {
 	atoken := f8token(t, e, ada, "repo:create", "repo:read", "repo:write", "webhooks:read", "webhooks:write")
 	btoken := f8token(t, e, bob, "repo:read", "repo:write", "webhooks:read", "webhooks:write")
 	_ = f8makeOrg(t, e, "acme", ada)
-	// Non-members cannot manage owner endpoints.
+
 	rec := f8do(t, e, "POST", "/acme/whatever/settings/hooks", btoken,
 		`{"scope":"owner","url":"https://hooks.example.test/acme","event_types":["repo.created"]}`)
 	f8problem(t, rec, http.StatusForbidden, "forbidden")
-	// The path repo is ignored for owner scope; the owner comes from the path.
+
 	code, created := f8createEndpoint(t, e, atoken, "/acme/whatever/settings/hooks",
 		`{"scope":"owner","owner_name":"acme","url":"https://hooks.example.test/acme","event_types":["repo.created"]}`)
 	if code != http.StatusCreated {
@@ -755,22 +750,21 @@ func TestWebhookOwnerScopeEndpoint(t *testing.T) {
 	if got := created["endpoint"].(map[string]any); got["owner"] != "acme" || got["scope"] != "owner" {
 		t.Fatalf("owner endpoint = %v", got)
 	}
-	// Absent owner_name is equally valid for owner scope.
+
 	if code, _ := f8createEndpoint(t, e, atoken, "/acme/whatever/settings/hooks",
 		`{"scope":"owner","url":"https://hooks.example.test/acme2","event_types":["repo.created"]}`); code != http.StatusCreated {
 		t.Fatalf("owner create without name = %d", code)
 	}
-	// The dash placeholder routes the same op for owner scope: the owner page
-	// posts here, and the path repo is ignored.
+
 	if code, dash := f8createEndpoint(t, e, atoken, "/acme/-/settings/hooks",
 		`{"scope":"owner","url":"https://hooks.example.test/acme3","event_types":["repo.created"]}`); code != http.StatusCreated {
 		t.Fatalf("owner create via dash = %d: %v", code, dash)
 	}
-	// The endpoint loads by id under a disagreeing path repo for its owner admin.
+
 	if rec := f8do(t, e, "GET", "/acme/other/settings/hooks/"+id, atoken, ""); rec.Code != http.StatusOK {
 		t.Fatalf("owner get = %d: %s", rec.Code, rec.Body.String())
 	}
-	// And stays invisible to outsiders under any path.
+
 	f8problem(t, f8do(t, e, "GET", "/acme/other/settings/hooks/"+id, btoken, ""), http.StatusForbidden, "forbidden")
 }
 

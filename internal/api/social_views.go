@@ -78,10 +78,6 @@ func forkPageOutFromPath(path string) ForkPageOut {
 	return ForkPageOut{}
 }
 
-// socialList renders one page of entries with its zero-state copy and its
-// continuation, so every social listing shares one layout. nextHref is the
-// already-signed in-page link supplied by the handler; next is the raw store
-// cursor, which only the framework can sign into the Link header.
 func socialList(empty string, items []string, next, nextHref string) string {
 	var b strings.Builder
 	b.WriteString("<ul>\n")
@@ -152,8 +148,6 @@ func writeForkPage(w io.Writer, c op.ViewCtx, out ForkPageOut) error {
 	return err
 }
 
-// exploreSortNav renders the sort options as GET links, bold for the active
-// one. The default (first) sort is active when the query names none.
 func exploreSortNav(c op.ViewCtx, sorts []string) string {
 	active := cmp.Or(c.Input.Get("sort"), sorts[0])
 	items := make([]string, 0, len(sorts))
@@ -218,9 +212,6 @@ func writeExploreOrgs(w io.Writer, c op.ViewCtx, out ExploreOrgsOut) error {
 	return err
 }
 
-// writeStarRerender renders the 422 re-render for the star.add and
-// star.remove forms: neither mutation carries a page of its own, so the
-// re-render reports the field errors with a way back to the repository.
 func writeStarRerender(w io.Writer, c op.ViewCtx) error {
 	base := repoBase(c.Path)
 	body := heading("Star") + errorList(c.Errors) + "<p>" + link(base, "Back to repository") + "</p>\n"
@@ -228,7 +219,6 @@ func writeStarRerender(w io.Writer, c op.ViewCtx) error {
 	return err
 }
 
-// repoSocialForm renders one social mutation form for the repository header.
 func repoSocialForm(base, csrf, action, label string) string {
 	return formOpen(base+action, csrf) + submitField(label)
 }
@@ -252,8 +242,6 @@ func RepoSocialNavUnstar(base, csrf string) string {
 	return RepoSocialNavAnonymous(base) + repoSocialForm(base, csrf, "/unstar", "Unstar")
 }
 
-// writeUserTabs renders the profile tab row for /{user} and /{user}?tab=stars.
-// The requested tab is bold text; the other tab links to its own query.
 func writeUserTabs(name, tab string) string {
 	profile, stars := link("/"+name, "Profile"), link("/"+name+"?tab=stars", "Stars")
 	if tab == "stars" {
@@ -264,9 +252,6 @@ func writeUserTabs(name, tab string) string {
 	return "<p>" + profile + " — " + stars + "</p>\n"
 }
 
-// writeUserStars renders the starred-repository section of the profile
-// Stars tab. entry.User is the starring user; the link targets the starred
-// repository at entry.Owner/entry.Repo.
 func writeUserStars(user string, stars []StarEntry, next, nextHref string) string {
 	items := make([]string, 0, len(stars))
 	for _, entry := range stars {
@@ -275,9 +260,6 @@ func writeUserStars(user string, stars []StarEntry, next, nextHref string) strin
 	return heading("Stars of "+user) + socialList(user+" has not starred any repositories.", items, next, nextHref)
 }
 
-// socialHref signs next into an in-page continuation for the given path and
-// filters. The mount decodes every cursor query with the server key, so a
-// raw store cursor in an href would fail the next request.
 func socialHref(ctx context.Context, path string, filters url.Values, next string) string {
 	if next == "" {
 		return ""
@@ -294,10 +276,6 @@ func socialHref(ctx context.Context, path string, filters url.Values, next strin
 	return path + "?" + query.Encode()
 }
 
-// listUserStars loads one keyset page of the target user's starred
-// repositories. The viewer comes from the resolved requester: anonymous and
-// public-only principals pass zero, so the store query filters visibility
-// before the limit and private stars never reach another viewer.
 func listUserStars(ctx context.Context, d Deps, p op.Principal, target int64, cursor string) ([]StarEntry, string, error) {
 	if d.Store == nil {
 		return nil, "", op.Errorf(op.CodeUnavailable, "metadata store is not configured")
@@ -335,9 +313,6 @@ func listUserStars(ctx context.Context, d Deps, p op.Principal, target int64, cu
 	return entries, next, nil
 }
 
-// fillRepoSocial fills the viewer-dependent social fields of a repository
-// page output from the landed row counts plus a store starred check for
-// signed-in viewers. Anonymous readers keep the zero Starred value.
 func fillRepoSocial(ctx context.Context, d Deps, rq requester, row store.RepoRow, out *RepoGetOut) error {
 	out.Stars, out.Forks = row.StarCount, row.ForksCount
 	if !rq.authed || rq.userID == 0 || d.Store == nil {
@@ -356,8 +331,6 @@ func fillRepoSocial(ctx context.Context, d Deps, rq requester, row store.RepoRow
 	return nil
 }
 
-// repoSocialRow renders the social row for the repository header from the
-// viewer principal and the starred state carried by the page output.
 func repoSocialRow(c op.ViewCtx, base string, out RepoGetOut) string {
 	if c.Principal.Kind == op.PrincipalAnonymous || c.Principal.UserID == 0 {
 		return RepoSocialNavAnonymous(base)
@@ -368,9 +341,6 @@ func repoSocialRow(c op.ViewCtx, base string, out RepoGetOut) string {
 	return RepoSocialNavStar(base, c.CSRF)
 }
 
-// userStarsETagSuffix keys the profile entity tag on the tab representation,
-// so the profile page and a Stars tab page never share a validator and a
-// changing star list invalidates the cached tab.
 func userStarsETagSuffix(out UserGetOut) string {
 	if out.Tab == "" {
 		return ""

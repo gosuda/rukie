@@ -1012,8 +1012,7 @@ func renameRepoHandler(d Deps) func(context.Context, op.Principal, RepoRenameIn)
 					map[string]any{"repo": oldPath, "new_path": newPath}, &map[string]any{}); rerr != nil {
 					return rerr
 				}
-				// The daemon has already moved; put it back unless the
-				// metadata commit below succeeds.
+
 				renamed = true
 			}
 			if destOrgID != 0 {
@@ -1119,8 +1118,7 @@ func deleteRepoHandler(d Deps) func(context.Context, op.Principal, RepoDeleteIn)
 				return jerr
 			}
 			if !fresh {
-				// A row left over from an earlier delete/restore cycle must
-				// pick up this horizon instead of the old payload.
+
 				return tx.ResetJob(spec, now)
 			}
 			return nil
@@ -1211,8 +1209,7 @@ func restoreRepoHandler(d Deps) func(context.Context, op.Principal, RepoRestoreI
 			if merr := matchRepoETag(in.IfMatch, rc.owner, current); merr != nil {
 				return merr
 			}
-			// The purge job is keyed on a fixed id and survives its own run,
-			// so a stale row would still delete the repository after restore.
+
 			if current.PurgeAfter.Valid && current.PurgeAfter.Int64 <= now.UnixMilli() {
 				return op.Errorf(op.CodeConflict, "purge horizon has passed")
 			}

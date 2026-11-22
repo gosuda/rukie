@@ -69,7 +69,6 @@ func NewLimiter() *Limiter {
 	return NewLimiterWithConfig(DefaultLimiterConfig())
 }
 
-// NewLimiterWithConfig creates a limiter from explicit rate-limit settings.
 func cooldownDuration(minutes uint) time.Duration {
 	duration, err := time.ParseDuration(strconv.FormatUint(uint64(minutes), 10) + "m")
 	if err != nil {
@@ -78,6 +77,7 @@ func cooldownDuration(minutes uint) time.Duration {
 	return duration
 }
 
+// NewLimiterWithConfig creates a limiter from explicit rate-limit settings.
 func NewLimiterWithConfig(cfg LimiterConfig) *Limiter {
 	return &Limiter{
 		now:         time.Now,

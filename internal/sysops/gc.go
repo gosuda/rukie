@@ -14,8 +14,6 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 )
 
-// terminalJobRetention bounds the jobs table: done and dead rows older
-// than this are pure history because retries re-enqueue under the same id.
 const terminalJobRetention = 30 * 24 * time.Hour
 
 // GCPending names one repo the collector could not finish and why.
@@ -62,8 +60,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 	if repoFilter != "" {
 		due = filterGCRepos(ctx, st, due, repoFilter)
 	}
-	// Every daemon hop below is bounded: an unreachable daemon parks the
-	// repo as pending instead of stalling the pass.
+
 	var daemon *ruk.Client
 	if !dryRun {
 		if socket := cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath); socket != "" {
@@ -91,8 +88,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 				rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon unreachable; metadata kept"})
 				continue
 			}
-			// Bound below the dial timeout: a slow daemon parks the repo
-			// as failed instead of stalling the pass.
+
 			dctx, cancel := context.WithTimeoutCause(ctx, 30*time.Second, fmt.Errorf("sysops: gc repo %s timed out", full))
 			repo, oerr := openGCDaemonRepo(dctx, daemon, cfg.Ruk.RepoRoot, row)
 			if oerr == nil {
@@ -159,7 +155,6 @@ func splitOwnerRepo(full string) (string, string, bool) {
 	return "", "", false
 }
 
-// gcRepoFullName resolves owner/name for a repo row without auth context.
 func gcRepoFullName(ctx context.Context, st *store.Store, row store.RepoRow) (string, error) {
 	if row.OwnerUserID.Valid && row.OwnerUserID.Int64 != 0 {
 		meta, err := st.LookupUserByID(ctx, row.OwnerUserID.Int64)
@@ -182,7 +177,6 @@ func gcRepoFullName(ctx context.Context, st *store.Store, row store.RepoRow) (st
 	return name + "/" + row.Name, nil
 }
 
-// openGCDaemonRepo opens the daemon handle for a repo row like the server does.
 func openGCDaemonRepo(ctx context.Context, client *ruk.Client, repoRoot string, row store.RepoRow) (ruk.Repo, error) {
 	abs := row.RukPath
 	if repoRoot != "" && !filepath.IsAbs(abs) {
@@ -194,7 +188,6 @@ func openGCDaemonRepo(ctx context.Context, client *ruk.Client, repoRoot string, 
 	return client.OpenRepo(ctx, abs)
 }
 
-// callGCRepoDelete removes the daemon repository with an explicit confirmation.
 func callGCRepoDelete(ctx context.Context, client *ruk.Client, repo ruk.Repo, path string) error {
 	_, err := ruk.Call[map[string]any, map[string]any](ctx, client, repo, wire.MethodRepoDelete,
 		map[string]any{"repo": path, "confirm_path": path})

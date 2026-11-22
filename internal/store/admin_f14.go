@@ -154,7 +154,6 @@ type AdminJobFilter struct {
 	Limit  int
 }
 
-// adminJobState maps the admin vocabulary onto stored job states.
 func adminJobState(state string) (string, error) {
 	switch state {
 	case "", "all":
@@ -627,9 +626,7 @@ func (s *Store) SyncSearchIndex(ctx context.Context) (SearchSyncReport, error) {
 			return fmt.Errorf("SyncSearchIndex: %w", mapErr(cerr))
 		}
 		rep.UsersChecked = total
-		// The AFTER UPDATE triggers only refresh existing FTS rows, so
-		// missing rows are inserted directly with the same body expression
-		// the insert triggers use.
+
 		fixed, ferr := execAffected(tx.ctx, inner, `INSERT INTO repos_fts(rowid, body)
 SELECT r.id, lower(r.name || ' ' || coalesce(r.description, '') || ' ' || coalesce(r.topics, '') || ' ' || coalesce(r.website, ''))
 FROM repos r LEFT JOIN repos_fts f ON f.rowid = r.id WHERE f.rowid IS NULL`)
