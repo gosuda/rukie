@@ -20,11 +20,14 @@ test:
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
-check: web-assets vet lint test vuln
-	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)"
-	go run ./tools/commentcheck
-	go mod tidy -diff
-	go mod verify
+check: web-assets
+	@rc=0; \
+	$(MAKE) -k vet lint test vuln || rc=$$?; \
+	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)" || rc=$$?; \
+	go run ./tools/commentcheck || rc=$$?; \
+	go mod tidy -diff || rc=$$?; \
+	go mod verify || rc=$$?; \
+	exit $$rc
 
 web-assets:
 	@if [ -d web/node_modules ]; then \
