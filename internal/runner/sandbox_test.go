@@ -208,6 +208,9 @@ func TestSandboxP11LiveProbe(t *testing.T) {
 	}
 	cfg := DefaultConfig(t.TempDir())
 	report, rerr := FullProbe(cfg, LiveProbeEnv())
+	if rerr != nil && rerr.Code == "PODMAN_VERSION" && strings.Contains(rerr.Msg, " is below ") {
+		t.Skipf("host podman is below the supported floor: %s", rerr.Msg)
+	}
 	if rerr != nil {
 		t.Fatalf("live sandbox probe: %v", rerr)
 	}
