@@ -94,6 +94,7 @@ jobs:
           cache-bin: false
           save-if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519
+        id: nextest
         with:
           tool: cargo-nextest@0.9.148
           fallback: none
@@ -104,8 +105,10 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
         working-directory: ruk
       - run: |
-          cargo nextest run --workspace --locked
+          cargo nextest run --workspace --locked --no-fail-fast
         working-directory: ruk
+        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
       - run: |
-          cargo test --workspace --locked --doc
+          cargo test --workspace --locked --doc --no-fail-fast
         working-directory: ruk
+        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
