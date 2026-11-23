@@ -77,6 +77,15 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - run: |
           cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
+      - name: Export the pinned Ruk model
+        run: |
+          ruk/target/debug/ruk model --format json > "$RUNNER_TEMP/ruk-model.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ruk-model-${{ github.sha }}
+          path: ${{ runner.temp }}/ruk-model.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Test the daemon, SSH, and application startup
         run: |
           tools/passgate.sh \
