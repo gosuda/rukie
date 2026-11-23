@@ -92,7 +92,9 @@ func TestAlignmentLimitStopsUnchangedReviewRemap(t *testing.T) {
 	}()
 	defer func() {
 		cancel()
-		<-done
+		if err, ok := <-done; ok && !errors.Is(err, context.Canceled) {
+			t.Errorf("review worker shutdown: got %v, want context cancellation", err)
+		}
 	}()
 	var job store.Job
 	select {
