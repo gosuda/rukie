@@ -181,3 +181,52 @@ func TestSpansFromPatchDoesNotInventDeletedFileTail(t *testing.T) {
 		t.Fatalf("deleted file has spans: %v", spans)
 	}
 }
+
+func TestSpansFromPatchPreservesRawPathLabels(t *testing.T) {
+	for _, path := range []string{"odd\nname.txt", "odd\xffname.txt", "odd\n@@ -99 +99 @@\n+++ marker.txt"} {
+		header := "--- a/" + path + "\n+++ b/" + path + "\n"
+		spans, err := SpansFromPatch(map[string]string{path: header + "@@ -1 +1,2 @@\n+inserted\n kept\n"})
+		if err != nil {
+			t.Fatalf("path %q: %v", path, err)
+		}
+		if got, ok := RemapLine(1, spans[path]); !ok || got != 2 {
+			t.Fatalf("path %q line = (%d, %v), want (2, true)", path, got, ok)
+		}
+		spans, err = SpansFromPatch(map[string]string{path: header})
+		if err != nil {
+			t.Fatalf("unchanged path %q: %v", path, err)
+		}
+		if got, ok := RemapLine(math.MaxUint32, spans[path]); !ok || got != math.MaxUint32 {
+			t.Fatalf("unchanged path %q last line = (%d, %v)", path, got, ok)
+		}
+	}
+}
+
+func TestSpansFromPatchHandlesRawAddedAndDeletedPaths(t *testing.T) {
+	path := "odd\n\xffname.txt"
+	for _, patch := range []string{
+		"--- /dev/null\n+++ b/" + path + "\n@@ -0,0 +1 @@\n+new\n",
+		"--- a/" + path + "\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
+	} {
+		spans, err := SpansFromPatch(map[string]string{path: patch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(spans[path]) != 0 {
+			t.Fatalf("added or deleted file has spans: %v", spans)
+		}
+	}
+}
+
+func TestSpansFromPatchRejectsMismatchedRawPathLabels(t *testing.T) {
+	path := "odd\n\xffname.txt"
+	for _, patch := range []string{
+		"--- a/" + path + "\n+++ b/other.txt\n",
+		"--- a/" + path + "\n+++ b/" + path,
+		"--- a/odd\n\ufffdname.txt\n+++ b/odd\n\ufffdname.txt\n",
+	} {
+		if _, err := SpansFromPatch(map[string]string{path: patch}); err == nil {
+			t.Fatalf("mismatched file headers accepted: %q", patch)
+		}
+	}
+}
