@@ -149,11 +149,11 @@ func validateArchiveArgs(args ArchiveArgs) error {
 func (c *Client) archiveAttempt(ctx context.Context, repo Repo, entry *sessionEntry, requestID, argsText string, w io.Writer) (archiveOutcome, error) {
 	var out archiveOutcome
 	out.outcome = NotCommitted
-	pc, err := dialRawConn(ctx, c.pool.nextID(), c.socket, c.profile, c.timeouts, c.hooks)
+	pc, err := c.pool.openDedicated(ctx)
 	if err != nil {
 		return out, err
 	}
-	defer func() { _ = pc.nc.Close() }()
+	defer c.pool.releaseDedicated(pc)
 	open := wire.InvocationOpen{
 		Repo:      cmp.Or(repo.Handle, repo.Path),
 		Method:    string(wire.MethodArchive),

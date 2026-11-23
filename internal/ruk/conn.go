@@ -32,15 +32,6 @@ type conn struct {
 	broken     bool
 }
 
-func dialConn(ctx context.Context, id uint64, socketPath, profile string, timeouts Timeouts, hooks Hooks) (*conn, error) {
-	c, err := dialRawConn(ctx, id, socketPath, profile, timeouts, hooks)
-	if err != nil {
-		return nil, err
-	}
-	go c.readLoop()
-	return c, nil
-}
-
 func dialRawConn(ctx context.Context, id uint64, socketPath, profile string, timeouts Timeouts, hooks Hooks) (*conn, error) {
 	dialer := net.Dialer{Timeout: timeouts.Dial}
 	nc, err := dialer.DialContext(ctx, "unix", socketPath)
@@ -57,8 +48,14 @@ func dialRawConn(ctx context.Context, id uint64, socketPath, profile string, tim
 		readerDone: make(chan struct{}),
 		hooks:      hooks,
 	}
-	if err := c.handshake(ctx, profile, timeouts.Handshake); err != nil {
+	stop := context.AfterFunc(ctx, func() { _ = nc.Close() })
+	err = c.handshake(ctx, profile, timeouts.Handshake)
+	stopped := stop()
+	if err != nil || !stopped {
 		_ = nc.Close()
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("dialRawConn: %w", context.Cause(ctx))
+		}
 		return nil, err
 	}
 	return c, nil
@@ -185,6 +182,7 @@ func (c *conn) fail(err error) {
 	}
 	c.broken = true
 	c.firstErr = err
+	freed := c.onFree
 	live := make([]*stream, 0, len(c.streams))
 	for _, s := range c.streams {
 		live = append(live, s)
@@ -198,6 +196,9 @@ func (c *conn) fail(err error) {
 			close(s.done)
 		}
 		s.mu.Unlock()
+	}
+	if freed != nil {
+		freed()
 	}
 }
 
