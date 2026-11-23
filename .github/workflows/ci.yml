@@ -36,7 +36,7 @@ jobs:
 
   ruk-integration:
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -65,8 +65,24 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - run: |
           cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
-      - run: |
-          tools/passgate.sh '--- PASS: ' -- env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off go test -race -count=1 -v -tags integration ./internal/ruk/...
+      - name: Test the daemon, SSH, and application startup
+        run: |
+          tools/passgate.sh \
+            '--- PASS: TestDaemonLifecycle (' \
+            '--- PASS: TestModelCLIMatchesSnapshot (' \
+            '--- PASS: TestSSHStockGitCloneAndPush (' \
+            '--- PASS: TestDevLoopStarts (' -- \
+            env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
+            go test -race -count=1 -v -timeout 30m -tags integration \
+            ./internal/ruk/... ./internal/gitssh/... ./cmd/rukie/...
+      - name: Test Git and agent workflows against the daemon
+        run: |
+          tools/passgate.sh \
+            '--- PASS: TestGitPushFetchRoundTrip (' \
+            '--- PASS: TestConcurrentPushesSerialize (' \
+            '--- PASS: TestAgentFlow (' -- \
+            env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
+            go test -race -count=1 -v -timeout 30m -tags e2e ./tests/e2e/...
 
   ruk:
     runs-on: depot-ubuntu-24.04
