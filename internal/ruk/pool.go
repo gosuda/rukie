@@ -75,7 +75,7 @@ func (p *pool) dial(ctx context.Context) (*conn, error) {
 	pc, err := dialBackoff(ctx, p.client, p.client.timeouts)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("dial: %w", context.Cause(ctx))
+			return nil, fmt.Errorf("dial: %w: %w", ctx.Err(), context.Cause(ctx))
 		}
 		return nil, fmt.Errorf("dial: %w", err)
 	}

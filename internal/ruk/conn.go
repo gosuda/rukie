@@ -54,7 +54,7 @@ func dialRawConn(ctx context.Context, id uint64, socketPath, profile string, tim
 	if err != nil || !stopped {
 		_ = nc.Close()
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("dialRawConn: %w", context.Cause(ctx))
+			return nil, fmt.Errorf("dialRawConn: %w: %w", ctx.Err(), context.Cause(ctx))
 		}
 		return nil, err
 	}
@@ -165,13 +165,13 @@ func (c *conn) writeKind(kind Kind, stream uint64, payload []byte) error {
 	defer c.wmu.Unlock()
 	if err := c.nc.SetWriteDeadline(time.Now().Add(c.writeEvery)); err != nil {
 		c.fail(fmt.Errorf("writeKind: %w", err))
-		return c.cause()
+		return fmt.Errorf("writeKind: %w", c.cause())
 	}
 	err := writeFrame(c.nc, kind, stream, payload)
 	_ = c.nc.SetWriteDeadline(time.Time{})
 	if err != nil {
 		c.fail(fmt.Errorf("writeKind: %w", err))
-		return c.cause()
+		return fmt.Errorf("writeKind: %w", c.cause())
 	}
 	return nil
 }
@@ -180,7 +180,7 @@ func (c *conn) readFrame() (Frame, error) {
 	frame, err := readFrame(c.nc)
 	if err != nil {
 		c.fail(fmt.Errorf("readFrame: %w", err))
-		return Frame{}, c.cause()
+		return Frame{}, fmt.Errorf("readFrame: %w", c.cause())
 	}
 	return frame, nil
 }

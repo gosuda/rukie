@@ -192,7 +192,7 @@ func dialBackoff(ctx context.Context, c *Client, timeouts Timeouts) (*conn, erro
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return nil, fmt.Errorf("Dial: %w", ctx.Err())
+				return nil, fmt.Errorf("dialBackoff: %w: %w", ctx.Err(), context.Cause(ctx))
 			case <-timer.C:
 			}
 			backoff *= 2
@@ -205,7 +205,7 @@ func dialBackoff(ctx context.Context, c *Client, timeouts Timeouts) (*conn, erro
 			return pc, nil
 		}
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("Dial: %w", context.Cause(ctx))
+			return nil, fmt.Errorf("dialBackoff: %w: %w", ctx.Err(), context.Cause(ctx))
 		}
 		if errors.Is(err, ErrVersionMismatch) {
 			return nil, err
