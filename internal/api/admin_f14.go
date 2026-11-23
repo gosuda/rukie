@@ -566,10 +566,10 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 				}
 				var reply map[string]any
 				if cerr := deps.callRuk(ctx, daemon, wire.MethodRepoDelete,
-					map[string]any{"repo": row.RukPath, "confirm_path": row.RukPath}, &reply); cerr != nil {
+					map[string]any{"repo": daemon.Path, "confirm_path": daemon.Path}, &reply); cerr != nil {
 
 					if !wasDeleted || !adminDaemonGone(cerr) {
-						return AdminRepoPurgeOut{}, mapRukError(cerr)
+						return AdminRepoPurgeOut{}, fmt.Errorf("RegisterAdminF14: purge daemon repository: %w", cerr)
 					}
 				}
 			}

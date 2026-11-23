@@ -103,6 +103,7 @@ jobs:
           tools/passgate.sh \
             '--- PASS: TestGitPushFetchRoundTrip (' \
             '--- PASS: TestConcurrentPushesSerialize (' \
+            '--- PASS: TestRepositoryPurgeUsesOpenedPath (' \
             '--- PASS: TestAgentFlow (' \
             '--- PASS: TestAgentFlow/change (' -- \
             env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
