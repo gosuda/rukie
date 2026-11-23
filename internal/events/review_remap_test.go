@@ -184,12 +184,12 @@ func TestReconcileRevivesDeadReviewRemapWithoutDuplicatingLiveWork(t *testing.T)
 	st := openFeedStore(t)
 	ctx := feedCtx(t)
 	now := feedTime()
-	author, err := st.InsertAuthUser(ctx, store.AuthUserCreate{
+	author, authErr := st.InsertAuthUser(ctx, store.AuthUserCreate{
 		Name: "ada", Lower: "ada", Email: "ada@example.test",
 		Hash: "test-hash", Algo: "argon2id-v19", Now: now.UnixMilli(),
 	})
-	if err != nil {
-		t.Fatal(err)
+	if authErr != nil {
+		t.Fatal(authErr)
 	}
 	var initial store.ChangeRow
 	var target review.PublishedChange
@@ -208,12 +208,12 @@ func TestReconcileRevivesDeadReviewRemapWithoutDuplicatingLiveWork(t *testing.T)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.InsertComment(now, store.CommentRow{
+		if _, commentErr := tx.InsertComment(now, store.CommentRow{
 			ChangeID: initial.ID, AuthorUserID: author.ID, HeadOid: initial.HeadOid,
 			Body: "preserve this anchor", Path: sql.NullString{String: "main.go", Valid: true},
 			Line: sql.NullInt64{Int64: 1, Valid: true},
-		}); err != nil {
-			return err
+		}); commentErr != nil {
+			return commentErr
 		}
 		head := strings.Repeat("b", 40)
 		_, ref, err = review.IngressChange(tx, now, review.Ingress{
