@@ -882,13 +882,13 @@ func (tx *ReadTx) ListMirrors(repoID int64, after string, limit int) ([]MirrorRo
 // DueMirrors lists enabled mirrors needing a run after their scheduled time.
 // Dirty markers only make a mirror eligible when next_run_at is set and due;
 // queued work is already represented by the queue and must not be duplicated.
-func (tx *txCore) DueMirrors(nowMs int64, limit int) ([]MirrorRow, error) {
-	inner, err := tx.live()
+func (c *txCore) DueMirrors(nowMs int64, limit int) ([]MirrorRow, error) {
+	inner, err := c.live()
 	if err != nil {
 		return nil, fmt.Errorf("DueMirrors: %w", err)
 	}
 	limit = clampMirrorLimit(limit)
-	rows, qerr := inner.QueryContext(tx.ctx, `SELECT `+sqlMirrorColumns+` FROM mirrors
+	rows, qerr := inner.QueryContext(c.ctx, `SELECT `+sqlMirrorColumns+` FROM mirrors
 WHERE enabled = 1 AND next_run_at <> 0 AND next_run_at <= ? AND NOT EXISTS (
     SELECT 1 FROM mirror_runs r WHERE r.mirror_id = mirrors.id AND r.state = 'queued'
 )
@@ -940,12 +940,12 @@ func (tx *ReadTx) GetRunByPublicID(pub string) (MirrorRunRow, error) {
 }
 
 // LatestMirrorRun returns the newest run of one mirror, or ErrNotFound.
-func (tx *txCore) LatestMirrorRun(mirrorID int64) (MirrorRunRow, error) {
-	inner, err := tx.live()
+func (c *txCore) LatestMirrorRun(mirrorID int64) (MirrorRunRow, error) {
+	inner, err := c.live()
 	if err != nil {
 		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w", err)
 	}
-	row, serr := scanRunRow(inner.QueryRowContext(tx.ctx,
+	row, serr := scanRunRow(inner.QueryRowContext(c.ctx,
 		`SELECT `+sqlRunColumns+` FROM mirror_runs WHERE mirror_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, mirrorID).Scan)
 	if errors.Is(serr, sql.ErrNoRows) {
 		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w: mirror %d has no runs", ErrNotFound, mirrorID)
