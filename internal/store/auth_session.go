@@ -250,8 +250,13 @@ func (s *Store) RotateSession(ctx context.Context, oldHash string, next SessionC
 		if lerr != nil {
 			return lerr
 		}
-		if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM sessions WHERE id_hash = ?`, oldHash); derr != nil {
+		moved, derr := execAffected(tx.ctx, inner,
+			`DELETE FROM sessions WHERE id_hash = ? AND user_id = ?`, oldHash, next.UserID)
+		if derr != nil {
 			return fmt.Errorf("RotateSession: %w", derr)
+		}
+		if moved == 0 {
+			return fmt.Errorf("RotateSession: %w", ErrNotFound)
 		}
 		totp := boolToInt64(next.TOTPOk)
 		_, ierr := inner.ExecContext(tx.ctx, `INSERT INTO sessions

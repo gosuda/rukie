@@ -514,6 +514,9 @@ func (s *Service) stepUpSession(ctx context.Context, old Session, ip, userAgent 
 		TOTPOk:            true,
 	})
 	if serr != nil {
+		if errors.Is(serr, store.ErrNotFound) {
+			return "", Session{}, errInvalidCredentials
+		}
 		return "", Session{}, serr
 	}
 	s.recordAudit(ctx, AuditEvent{Actor: old.UserID, Action: "session.rotate", IP: ip, UserAgent: userAgent,
