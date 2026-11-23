@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	jsonv1 "encoding/json"
 
+	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
+	"github.com/gosuda/rukie/internal/store"
 )
 
 func blockedPush(plan string) error {
@@ -146,6 +149,99 @@ func TestPushRecoveryKeepsFailuresAndBoundsRetries(t *testing.T) {
 			}
 			if test.observeErr != nil && !errors.Is(err, test.observeErr) {
 				t.Fatalf("lost observation failure: %v", err)
+			}
+		})
+	}
+}
+
+func TestBlockedPlanFailureKeepsMirrorScheduled(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		detail    string
+		wantClass string
+		minDelay  time.Duration
+		blocked   bool
+	}{
+		{name: "foreign authentication", detail: `{"http":{"status":401}}`, wantClass: "uncertain", blocked: true},
+		{name: "current target authentication", detail: `{"http":{"status":401}}`, wantClass: "auth"},
+		{name: "foreign rate limit", detail: `{"http":{"status":429,"retry_after_seconds":120}}`, wantClass: "uncertain", minDelay: 120 * time.Second, blocked: true},
+		{name: "foreign rate-limited forbidden", detail: `{"http":{"status":403,"retry_after_seconds":120}}`, wantClass: "uncertain", minDelay: 120 * time.Second, blocked: true},
+		{name: "foreign moved repository", detail: `{"http":{"status":301,"location":"https://other.example/r.git"}}`, wantClass: "uncertain", blocked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			w, st, q, now := openWorker(t)
+			repoID := insertRepo(t, st, now, "blocked")
+			mirror := insertMirror(t, st, now, repoID, true)
+			pub := "run-blocked"
+			insertRun(t, st, now, mirror.ID, pub)
+			if err := st.Write(testCtx(t), func(tx *store.WriteTx) error {
+				_, err := tx.TouchMirrorDirty(now, repoID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			jobID := "mirror-run:" + pub
+			enqueueMirrorJob(t, q, jobID, repoID, mustMarshalPayload(t, map[string]any{"run": pub, "mirror": mirror.ID}))
+			claimed, err := q.ClaimKinds(testCtx(t), "owner", []queue.Kind{queue.KindMirrorRun}, mirrorClaimLease, 1)
+			if err != nil || len(claimed) != 1 {
+				t.Fatalf("claim = %v, %v", claimed, err)
+			}
+			e := &execution{worker: *w, owner: "owner", job: claimed[0], start: now}
+			if done, err := e.load(testCtx(t), pub); err != nil || done {
+				t.Fatalf("load = %v, %v", done, err)
+			}
+			refusal := &ruk.Error{Code: wire.CodeForbidden, Message: "remote refused", Detail: jsonv1.RawMessage(test.detail)}
+			sends := 0
+			send := func(context.Context, string, []ruk.PushUpdate) (ruk.PushReply, error) {
+				sends++
+				return ruk.PushReply{}, blockedPush("foreign-plan")
+			}
+			observe := func(context.Context, string) (map[string]string, error) {
+				if test.blocked {
+					return nil, &blockedPlanReconcileError{plan: "foreign-plan", err: refusal}
+				}
+				return nil, refusal
+			}
+			updates := []ruk.PushUpdate{{RemoteRef: "refs/heads/main", Source: ruk.CommitSource("wanted")}}
+			_, recoveryErr := e.pushWithReconciliation(testCtx(t), "request", updates, send, observe)
+			if !errors.Is(recoveryErr, refusal) || sends != 1 {
+				t.Fatalf("recovery error = %v, sends = %d", recoveryErr, sends)
+			}
+			if done, err := e.finishCall(testCtx(t), recoveryErr, nil, nil); err != nil || !done {
+				t.Fatalf("finishCall = %v, %v", done, err)
+			}
+			jobDone(t, q, jobID)
+			if err := st.Read(testCtx(t), func(tx *store.ReadTx) error {
+				run, err := tx.GetRunByPublicID(pub)
+				if err != nil {
+					return err
+				}
+				result, err := tx.GetMirror(mirror.ID)
+				if err != nil {
+					return err
+				}
+				if run.State != "failed" || run.OutcomeClass != test.wantClass || run.AttemptNo != 1 {
+					t.Fatalf("run = %+v", run)
+				}
+				if !test.blocked {
+					if result.State != "auth_failed" || result.NextRunAt != 0 || result.DirtySince != 0 {
+						t.Fatalf("current target refusal = %+v", result)
+					}
+					return nil
+				}
+				if result.State != "failing" || result.NextRunAt < now.Add(test.minDelay).UnixMilli() || result.DirtySince != now.UnixMilli() {
+					t.Fatalf("blocked mirror stopped retrying: %+v", result)
+				}
+				due, err := tx.DueMirrors(result.NextRunAt, 10)
+				if err != nil {
+					return err
+				}
+				if len(due) != 1 || due[0].ID != mirror.ID {
+					t.Fatalf("due mirrors = %+v", due)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

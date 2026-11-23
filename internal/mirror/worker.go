@@ -153,49 +153,54 @@ func (w Worker) drain(ctx context.Context, owner string) error {
 }
 
 func (w Worker) scheduleOnce(ctx context.Context) error {
-	now := w.now()
-	var due []store.MirrorRow
-	if rerr := w.Store.Read(ctx, func(tx *store.ReadTx) error {
+	if werr := w.Store.Write(ctx, func(tx *store.WriteTx) error {
+		now := w.now()
 		rows, derr := tx.DueMirrors(now.UnixMilli(), MaxMirrorWorkers*4)
 		if derr != nil {
 			return derr
 		}
-		due = rows
-		return nil
-	}); rerr != nil {
-		return fmt.Errorf("scheduleOnce: %w", rerr)
-	}
-	for _, row := range due {
-		if !row.Enabled {
-			continue
-		}
-		pub := string(store.NewID(now))
-		mirrorID := row.ID
-		if werr := w.Store.Write(ctx, func(tx *store.WriteTx) error {
+		for _, row := range rows {
+			confirmation := ""
+			if row.State == "failing" {
+				latest, lerr := tx.LatestMirrorRun(row.ID)
+				if lerr != nil && !errors.Is(lerr, store.ErrNotFound) {
+					return lerr
+				}
+				if lerr == nil && latest.State == "failed" {
+					confirmation = latest.ConfirmedDigest
+				}
+			}
+			pub := string(store.NewID(now))
+			mirrorID := row.ID
 			_, ierr := tx.InsertRun(now, store.MirrorRunRow{
-				PublicID: pub,
-				MirrorID: row.ID,
-				Kind:     "reconcile",
-				State:    "queued",
-				Trigger:  "schedule",
-				Counts:   "{}",
+				PublicID:        pub,
+				MirrorID:        row.ID,
+				Kind:            "reconcile",
+				State:           "queued",
+				Trigger:         "schedule",
+				Counts:          "{}",
+				ConfirmedDigest: confirmation,
 			})
-			return ierr
-		}); werr != nil {
-			return fmt.Errorf("scheduleOnce: %w", werr)
+			if ierr != nil {
+				return ierr
+			}
+			payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
+			if merr != nil {
+				return merr
+			}
+			if _, eerr := tx.EnqueueJob(store.JobSpec{
+				Payload: string(payload),
+				ID:      "mirror-run:" + pub,
+				Kind:    string(queue.KindMirrorRun),
+				RepoID:  row.RepoID,
+				At:      now,
+			}); eerr != nil {
+				return eerr
+			}
 		}
-		payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
-		if merr != nil {
-			return fmt.Errorf("scheduleOnce: %w", merr)
-		}
-		if _, eerr := w.Queue.Enqueue(ctx, queue.EnqueueSpec{
-			Payload: string(payload),
-			ID:      "mirror-run:" + pub,
-			Kind:    queue.KindMirrorRun,
-			RepoID:  row.RepoID,
-		}); eerr != nil {
-			return fmt.Errorf("scheduleOnce: %w", eerr)
-		}
+		return nil
+	}); werr != nil {
+		return fmt.Errorf("scheduleOnce: %w", werr)
 	}
 	return nil
 }
@@ -322,7 +327,6 @@ type runOutcome struct {
 	mirror   string
 	http     int64
 	delay    time.Duration
-	requeue  bool
 }
 
 func (e *execution) run(ctx context.Context, runPub string) error {
@@ -811,7 +815,7 @@ func (e *execution) transmitPush(ctx context.Context, requestID string, updates 
 	}
 	observe := func(ctx context.Context, plan string) (map[string]string, error) {
 		if _, err := ruk.PushReconcile(ctx, e.worker.Ruk, e.repo, ruk.PushReconcileArgs{Plan: plan}, e.auth); err != nil {
-			return nil, fmt.Errorf("transmitPush: %w", err)
+			return nil, &blockedPlanReconcileError{plan: plan, err: err}
 		}
 		remote, err := e.collectRemote(ctx)
 		if err != nil {
@@ -1100,6 +1104,16 @@ func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, r
 	}
 	code, detail, reason := describeCallError(callErr)
 	verdict := Classify(code, int(detail.Status), retryAfterString(detail), reason)
+	if _, blocked := errors.AsType[*blockedPlanReconcileError](callErr); blocked {
+		delay := BackoffDelay(int(e.loaded.mirror.ConsecutiveFailures)+1, BaseBackoff, MaxBackoff, jitterFraction())
+		if verdict.Class == ClassRateLimited {
+			delay = RateLimitDelay(retryAfterDuration(detail), retryAfterPresent(detail), jitterFraction())
+		}
+		return e.finish(ctx, runOutcome{
+			runState: "failed", class: string(ClassUncertain), summary: e.scrub(callErr.Error()),
+			mirror: "failing", http: int64(detail.Status), delay: delay,
+		}, plan, remoteCount)
+	}
 	if (detail.Status == 401 || detail.Status == 403) && verdict.Class != ClassRateLimited {
 		verdict = Verdict{Class: ClassAuth, Retry: false, State: "auth_failed"}
 	}
@@ -1114,8 +1128,8 @@ func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, r
 	case ClassRateLimited:
 		delay := RateLimitDelay(retryAfterDuration(detail), retryAfterPresent(detail), jitterFraction())
 		return e.finish(ctx, runOutcome{
-			runState: "failing", class: string(verdict.Class), summary: summary,
-			mirror: "failing", http: int64(detail.Status), delay: delay, requeue: true,
+			runState: "failed", class: string(verdict.Class), summary: summary,
+			mirror: "failing", http: int64(detail.Status), delay: delay,
 		}, plan, remoteCount)
 	case ClassRepoMissing, ClassServer, ClassNetwork, ClassUncertain, ClassRefHidden,
 		ClassRefProtected, ClassRefHook, ClassRefOther, ClassProtocol, ClassDiverged,
@@ -1141,6 +1155,17 @@ func protectedRepeat(row store.MirrorRow, verdict Verdict) int {
 	}
 	return 0
 }
+
+type blockedPlanReconcileError struct {
+	err  error
+	plan string
+}
+
+func (e *blockedPlanReconcileError) Error() string {
+	return fmt.Sprintf("transmitPush: reconcile blocking plan %s: %v", e.plan, e.err)
+}
+
+func (e *blockedPlanReconcileError) Unwrap() error { return e.err }
 
 type sendUncertainError struct{ err error }
 
@@ -1321,11 +1346,6 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	}); werr != nil {
 		return false, fmt.Errorf("finish: %w", werr)
 	}
-	if outcome.requeue {
-		if rerr := e.requeue(persist, now, run, attemptNo+1, outcome.delay); rerr != nil {
-			return false, rerr
-		}
-	}
 	return true, e.worker.complete(persist, e.owner, e.job)
 }
 
@@ -1334,36 +1354,6 @@ func (e *execution) scrub(s string) string {
 		return scrubSecrets(s, e.username, string(e.token))
 	}
 	return scrubSecrets(s, e.username)
-}
-
-func (e *execution) requeue(ctx context.Context, now time.Time, run store.MirrorRunRow, nextAttempt int64, delay time.Duration) error {
-	pub := run.PublicID
-	mirrorID := run.MirrorID
-	payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
-	if merr != nil {
-		return fmt.Errorf("requeue: %w", merr)
-	}
-	at := now.Add(delay)
-	if werr := e.worker.Store.Write(ctx, func(tx *store.WriteTx) error {
-		_, eerr := tx.EnqueueJob(store.JobSpec{
-			Payload: string(payload),
-			ID:      "mirror-run:" + pub + ":" + strconv.FormatInt(nextAttempt, 10),
-			Kind:    string(queue.KindMirrorRun),
-			RepoID:  e.loaded.mirror.RepoID,
-			At:      at,
-		})
-		return eerr
-	}); werr != nil {
-		return fmt.Errorf("requeue: %w", werr)
-	}
-	updated := run
-	updated.AttemptNo = nextAttempt
-	if werr := e.worker.Store.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.UpdateRun(now, run.ID, updated)
-	}); werr != nil {
-		return fmt.Errorf("requeue: %w", werr)
-	}
-	return nil
 }
 
 func refStatesOf(mirrorID, nowMs int64, tracked []*trackedRef) []store.RefStateRow {

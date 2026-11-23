@@ -880,10 +880,10 @@ func (tx *ReadTx) ListMirrors(repoID int64, after string, limit int) ([]MirrorRo
 // DueMirrors lists enabled mirrors needing a run after their scheduled time.
 // Dirty markers only make a mirror eligible when next_run_at is set and due;
 // queued work is already represented by the queue and must not be duplicated.
-func (tx *ReadTx) DueMirrors(nowMs int64, limit int) ([]MirrorRow, error) {
+func (tx *txCore) DueMirrors(nowMs int64, limit int) ([]MirrorRow, error) {
 	inner, err := tx.live()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("DueMirrors: %w", err)
 	}
 	limit = clampMirrorLimit(limit)
 	rows, qerr := inner.QueryContext(tx.ctx, `SELECT `+sqlMirrorColumns+` FROM mirrors
@@ -892,18 +892,21 @@ WHERE enabled = 1 AND next_run_at <> 0 AND next_run_at <= ? AND NOT EXISTS (
 )
 ORDER BY next_run_at, id LIMIT ?`, nowMs, limit)
 	if qerr != nil {
-		return nil, qerr
+		return nil, fmt.Errorf("DueMirrors: %w", qerr)
 	}
 	defer func() { _ = rows.Close() }()
 	var out []MirrorRow
 	for rows.Next() {
 		row, serr := scanMirrorRow(rows.Scan)
 		if serr != nil {
-			return nil, serr
+			return nil, fmt.Errorf("DueMirrors: %w", serr)
 		}
 		out = append(out, row)
 	}
-	return out, rows.Err()
+	if rerr := rows.Err(); rerr != nil {
+		return nil, fmt.Errorf("DueMirrors: %w", rerr)
+	}
+	return out, nil
 }
 
 // GetCredential loads one mirror's sealed credential for reads.
@@ -932,6 +935,23 @@ func (tx *ReadTx) GetRunByPublicID(pub string) (MirrorRunRow, error) {
 		return MirrorRunRow{}, fmt.Errorf("GetRunByPublicID: %w: %s", ErrNotFound, pub)
 	}
 	return row, serr
+}
+
+// LatestMirrorRun returns the newest run of one mirror, or ErrNotFound.
+func (tx *txCore) LatestMirrorRun(mirrorID int64) (MirrorRunRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w", err)
+	}
+	row, serr := scanRunRow(inner.QueryRowContext(tx.ctx,
+		`SELECT `+sqlRunColumns+` FROM mirror_runs WHERE mirror_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, mirrorID).Scan)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w: mirror %d has no runs", ErrNotFound, mirrorID)
+	}
+	if serr != nil {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w", serr)
+	}
+	return row, nil
 }
 
 // ListRuns lists one mirror's runs, oldest first, with a next cursor. A
