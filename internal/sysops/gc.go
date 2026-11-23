@@ -62,14 +62,12 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 	}
 
 	var daemon *ruk.Client
-	if !dryRun {
-		if socket := cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath); socket != "" {
-			dctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, fmt.Errorf("sysops: gc daemon dial timed out"))
-			defer cancel()
-			if client, derr := ruk.Dial(dctx, socket); derr == nil {
-				daemon = client
-				defer func() { _ = client.Close() }()
-			}
+	if socket := cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath); socket != "" {
+		dctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, fmt.Errorf("sysops: gc daemon dial timed out"))
+		defer cancel()
+		if client, derr := ruk.Dial(dctx, socket); derr == nil {
+			daemon = client
+			defer func() { _ = client.Close() }()
 		}
 	}
 	cutoff := now.Add(-terminalJobRetention).UnixMilli()
@@ -80,17 +78,16 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 			rep.ReposFailed = append(rep.ReposFailed, GCPending{Repo: fmt.Sprintf("id=%d", row.ID), Reason: ferr.Error()})
 			continue
 		}
+		if row.RukPath != "" && daemon == nil {
+			rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon unreachable; metadata kept"})
+			continue
+		}
 		if dryRun {
 			rep.ReposPurged = append(rep.ReposPurged, full)
 			forecastPurges = append(forecastPurges, row.ID)
 			continue
 		}
 		if row.RukPath != "" {
-			if daemon == nil {
-				rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon unreachable; metadata kept"})
-				continue
-			}
-
 			dctx, cancel := context.WithTimeoutCause(ctx, 30*time.Second, fmt.Errorf("sysops: gc repo %s timed out", full))
 			repo, oerr := openGCDaemonRepo(dctx, daemon, cfg.Ruk.RepoRoot, row)
 			if oerr == nil {
