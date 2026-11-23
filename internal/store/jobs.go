@@ -20,8 +20,15 @@ const (
 const jobMaxAttempts = 10
 
 const (
-	sqlJobInsert = `INSERT INTO jobs (id, kind, repo_id, payload, state, attempts, lease_owner, lease_expires_at, created_at, updated_at)
-VALUES (?1, ?2, ?3, ?4, 'queued', 0, '', 0, ?5, ?5) ON CONFLICT (id) DO NOTHING`
+	sqlJobInsertRow = `INSERT INTO jobs (id, kind, repo_id, payload, state, attempts, lease_owner, lease_expires_at, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, 'queued', 0, '', 0, ?5, ?5)`
+
+	sqlJobInsert = sqlJobInsertRow + ` ON CONFLICT (id) DO NOTHING`
+
+	sqlRecoverableJobInsert = sqlJobInsertRow + ` ON CONFLICT (id) DO UPDATE SET
+payload = excluded.payload, state = 'queued', attempts = 0, lease_owner = '',
+lease_token = '', lease_expires_at = 0, run_after = excluded.updated_at, updated_at = excluded.updated_at
+WHERE jobs.state = 'dead' AND jobs.kind = excluded.kind AND jobs.repo_id = excluded.repo_id`
 
 	sqlJobClaim = `UPDATE jobs SET state = 'leased', lease_owner = ?1, lease_token = ?6, lease_expires_at = ?2, updated_at = ?3
 WHERE id IN (SELECT id FROM jobs
@@ -90,6 +97,23 @@ func (tx *WriteTx) EnqueueJob(spec JobSpec) (bool, error) {
 	moved, err := execAffected(tx.ctx, inner, sqlJobInsert, spec.ID, spec.Kind, spec.RepoID, spec.Payload, at)
 	if err != nil {
 		return false, fmt.Errorf("EnqueueJob: %w", mapErr(err))
+	}
+	return moved == 1, nil
+}
+
+// EnqueueRecoverableJob inserts a new job or revives a dead job of the same
+// kind and repository. It leaves queued, leased, and completed jobs unchanged.
+func (tx *WriteTx) EnqueueRecoverableJob(spec JobSpec) (bool, error) {
+	if err := checkJobSpec(spec); err != nil {
+		return false, fmt.Errorf("EnqueueRecoverableJob: %w", err)
+	}
+	inner, err := tx.live()
+	if err != nil {
+		return false, fmt.Errorf("EnqueueRecoverableJob: %w", err)
+	}
+	moved, err := execAffected(tx.ctx, inner, sqlRecoverableJobInsert, spec.ID, spec.Kind, spec.RepoID, spec.Payload, msOf(spec.At))
+	if err != nil {
+		return false, fmt.Errorf("EnqueueRecoverableJob: %w", mapErr(err))
 	}
 	return moved == 1, nil
 }

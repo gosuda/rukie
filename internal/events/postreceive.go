@@ -200,7 +200,7 @@ func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
 	}
 	for _, ref := range rec.Landed {
 		if err := enqueueReviewRemap(tx, at, rec.RepoID, ref.Name, ref.New); err != nil {
-			return err
+			return fmt.Errorf("EnqueuePush: %w", err)
 		}
 	}
 	for _, spec := range jobs {

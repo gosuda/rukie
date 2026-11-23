@@ -165,7 +165,7 @@ func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent) error {
 			}
 			current := event.New.Hex()
 			if err := enqueueReviewRemap(tx, now, f.repoID, event.Name, current); err != nil {
-				return err
+				return fmt.Errorf("Ingest: %w", err)
 			}
 			if tips[event.Name] == current {
 				if int64(event.Seq) > front {
@@ -289,7 +289,7 @@ func (f *Follower) resnapshot(ctx context.Context) error {
 		}
 		for name, target := range tips {
 			if err := enqueueReviewRemap(tx, now, f.repoID, name, target); err != nil {
-				return err
+				return fmt.Errorf("resnapshot: %w", err)
 			}
 			if before[name] == target {
 				continue
