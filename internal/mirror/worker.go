@@ -816,17 +816,17 @@ func (e *execution) transmitPush(ctx context.Context, requestID string, updates 
 	send := func(ctx context.Context, id string, batch []ruk.PushUpdate) (ruk.PushReply, error) {
 		return ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, id, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: batch}, e.auth)
 	}
-	observe := func(ctx context.Context, plan string) (map[string]string, error) {
-		if _, err := ruk.PushReconcile(ctx, e.worker.Ruk, e.repo, ruk.PushReconcileArgs{Plan: plan}, e.auth); err != nil {
-			return nil, &blockedPlanReconcileError{plan: plan, err: err}
-		}
+	reconcile := func(ctx context.Context, plan string) (ruk.PushReconcileReply, error) {
+		return ruk.PushReconcile(ctx, e.worker.Ruk, e.repo, ruk.PushReconcileArgs{Plan: plan}, e.auth)
+	}
+	observe := func(ctx context.Context) (map[string]string, error) {
 		remote, err := e.collectRemote(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("transmitPush: %w", err)
 		}
 		return remote.refs, nil
 	}
-	reply, err := e.pushWithReconciliation(ctx, requestID, updates, send, observe)
+	reply, err := e.pushWithReconciliation(ctx, requestID, updates, send, reconcile, observe)
 	if err != nil {
 		return ruk.PushReply{}, fmt.Errorf("transmitPush: %w", err)
 	}
@@ -838,7 +838,8 @@ func (e *execution) pushWithReconciliation(
 	requestID string,
 	updates []ruk.PushUpdate,
 	send func(context.Context, string, []ruk.PushUpdate) (ruk.PushReply, error),
-	observe func(context.Context, string) (map[string]string, error),
+	reconcile func(context.Context, string) (ruk.PushReconcileReply, error),
+	observe func(context.Context) (map[string]string, error),
 ) (ruk.PushReply, error) {
 	pending := updates
 	var confirmed []ruk.PushRefOutcome
@@ -858,7 +859,11 @@ func (e *execution) pushWithReconciliation(
 			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", err)
 		}
 		reconciled[detail.Plan] = struct{}{}
-		remote, err := observe(ctx, detail.Plan)
+		observations, reconcileErr := reconcile(ctx, detail.Plan)
+		if checkErr := checkReconcilePlan(detail.Plan, observations, reconcileErr); checkErr != nil {
+			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", &blockedPlanReconcileError{plan: detail.Plan, err: checkErr})
+		}
+		remote, err := observe(ctx)
 		if err != nil {
 			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", err)
 		}
@@ -971,6 +976,20 @@ func (e *execution) pushDeletesFirst(ctx context.Context, send func(ctx context.
 }
 
 func (e *execution) resolveUncertain(ctx context.Context) error {
+	reconcile := func(ctx context.Context, plan string) (ruk.PushReconcileReply, error) {
+		return ruk.PushReconcile(ctx, e.worker.Ruk, e.repo, ruk.PushReconcileArgs{Plan: plan}, e.auth)
+	}
+	if err := e.resolveUncertainWith(ctx, reconcile, e.resendOnce); err != nil {
+		return fmt.Errorf("resolveUncertain: %w", err)
+	}
+	return nil
+}
+
+func (e *execution) resolveUncertainWith(
+	ctx context.Context,
+	reconcile func(context.Context, string) (ruk.PushReconcileReply, error),
+	sendRemaining func(context.Context, []*trackedRef) error,
+) error {
 	byPlan := map[string][]*trackedRef{}
 	for _, t := range e.tracked {
 		if t.status == "uncertain" {
@@ -978,9 +997,9 @@ func (e *execution) resolveUncertain(ctx context.Context) error {
 		}
 	}
 	for planID, refs := range byPlan {
-		reply, rerr := ruk.CallAuth[ruk.PushReconcileArgs, ruk.PushReconcileReply](ctx, e.worker.Ruk, e.repo, wire.MethodPushReconcile, ruk.PushReconcileArgs{Plan: planID}, e.auth)
-		if rerr != nil {
-			return rerr
+		reply, reconcileErr := reconcile(ctx, planID)
+		if err := checkReconcilePlan(planID, reply, reconcileErr); err != nil {
+			return fmt.Errorf("resolveUncertainWith: %w", err)
 		}
 		observed := make(map[string]ruk.ReconcileObservation, len(reply.Observations))
 		for _, ob := range reply.Observations {
@@ -1018,8 +1037,8 @@ func (e *execution) resolveUncertain(ctx context.Context) error {
 			}
 		}
 		if len(resend) > 0 {
-			if rerr := e.resendOnce(ctx, resend); rerr != nil {
-				return rerr
+			if rerr := sendRemaining(ctx, resend); rerr != nil {
+				return fmt.Errorf("resolveUncertainWith: %w", rerr)
 			}
 		}
 	}
@@ -1100,6 +1119,12 @@ func summarizeTracked(tracked []*trackedRef) runOutcome {
 }
 
 func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, remoteCount *int) (bool, error) {
+	if _, ok := errors.AsType[*reconcileNeedsAttentionError](callErr); ok {
+		return e.finish(ctx, runOutcome{
+			runState: "failed", class: "needs_attention", summary: e.scrub(callErr.Error()),
+			mirror: "needs_attention",
+		}, plan, remoteCount)
+	}
 	if outcome, ok := sendUncertainOutcome(callErr); ok {
 		outcome.summary = e.scrub(callErr.Error())
 		outcome.delay = BackoffDelay(int(e.loaded.mirror.ConsecutiveFailures)+1, BaseBackoff, MaxBackoff, jitterFraction())

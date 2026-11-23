@@ -1,6 +1,7 @@
 package ruk
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -317,7 +318,8 @@ func (r *PushReply) UnmarshalJSON(data []byte) error {
 
 // PushReconcileArgs observes one stored plan's remote refs.
 type PushReconcileArgs struct {
-	Plan string `json:"plan"`
+	OriginalRemote *string `json:"original_remote,omitempty"`
+	Plan           string  `json:"plan"`
 }
 
 // ReconcileObservation is what observation found for one ref; a nil
@@ -334,6 +336,7 @@ type PushReconcileReply struct {
 	Plan         string                 `json:"plan"`
 	State        string                 `json:"state"`
 	Observations []ReconcileObservation `json:"-"`
+	Rewritten    bool                   `json:"rewritten"`
 }
 
 // UnmarshalJSON reads a reconcile reply, flattening the observations
@@ -343,9 +346,18 @@ func (r *PushReconcileReply) UnmarshalJSON(data []byte) error {
 		Plan         string            `json:"plan"`
 		State        string            `json:"state"`
 		Observations jsonv1.RawMessage `json:"observations"`
+		Rewritten    jsonv1.RawMessage `json:"rewritten"`
 	}
 	if err := jsonv2.Unmarshal(data, &raw, jsonv1.DefaultOptionsV1()); err != nil {
 		return fmt.Errorf("PushReconcileReply: %w", err)
+	}
+	rewritten := false
+	switch string(bytes.TrimSpace(raw.Rewritten)) {
+	case "", "false":
+	case "true":
+		rewritten = true
+	default:
+		return fmt.Errorf("PushReconcileReply: rewritten must be a boolean")
 	}
 	if len(raw.Observations) == 0 {
 		return fmt.Errorf("PushReconcileReply: missing observations")
@@ -357,6 +369,7 @@ func (r *PushReconcileReply) UnmarshalJSON(data []byte) error {
 	r.Plan = raw.Plan
 	r.State = raw.State
 	r.Observations = list.Items
+	r.Rewritten = rewritten
 	return nil
 }
 
