@@ -606,6 +606,7 @@ func restartDaemonKeepClient(t *testing.T, s *stack) {
 		t.Fatalf("restart: %v\n%s", err, logs.String())
 	}
 	s.child = child
+	t.Cleanup(func() { _ = child.Kill() })
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, serr := os.Stat(s.socket); serr == nil {

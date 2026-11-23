@@ -92,7 +92,8 @@ jobs:
           tools/passgate.sh \
             '--- PASS: TestGitPushFetchRoundTrip (' \
             '--- PASS: TestConcurrentPushesSerialize (' \
-            '--- PASS: TestAgentFlow (' -- \
+            '--- PASS: TestAgentFlow (' \
+            '--- PASS: TestAgentFlow/change (' -- \
             env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
             go test -race -count=1 -v -timeout 30m -tags e2e ./tests/e2e/...
 
