@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -254,123 +255,118 @@ func (s *Service) matchSecondFactor(creds store.TOTPCredentials, code string, no
 }
 
 func (s *Service) applyTOTPMatch(ctx context.Context, m totpMatch) (VerifyTOTPResult, error) {
-	var out VerifyTOTPResult
+	for range 5 {
+		out := VerifyTOTPResult{Session: m.sess, RecoveryUsed: m.recovery}
+		var next store.SessionCreate
+		if !m.sess.TOTPOk {
+			secret, secretErr := newSecret()
+			if secretErr != nil {
+				return VerifyTOTPResult{}, fmt.Errorf("applyTOTPMatch: %w", secretErr)
+			}
+			csrf, csrfErr := newSecret()
+			if csrfErr != nil {
+				return VerifyTOTPResult{}, fmt.Errorf("applyTOTPMatch: %w", csrfErr)
+			}
+			out.Secret = secret
+			out.Session = Session{
+				IDHash:            hashBearer(secret),
+				UserID:            m.sess.UserID,
+				AuthLevel:         fullLevelFor(m.sess.AuthLevel),
+				AuthedAt:          m.nowMillis,
+				CreatedAt:         m.nowMillis,
+				LastSeenAt:        m.nowMillis,
+				AbsoluteExpiresAt: m.sess.AbsoluteExpiresAt,
+				TOTPOk:            true,
+			}
+			next = store.SessionCreate{
+				IDHash:            out.Session.IDHash,
+				AuthLevel:         out.Session.AuthLevel,
+				CSRF:              csrf,
+				IP:                m.ip,
+				UserAgent:         m.userAgent,
+				UserID:            out.Session.UserID,
+				AuthedAt:          m.nowMillis,
+				CreatedAt:         m.nowMillis,
+				LastSeenAt:        m.nowMillis,
+				AbsoluteExpiresAt: out.Session.AbsoluteExpiresAt,
+				TOTPOk:            true,
+			}
+		}
+		var digests []string
+		if !m.recovery && (m.promoted || !m.creds.HasVerified) {
+			displays, hashes, codesErr := newRecoveryCodes()
+			if codesErr != nil {
+				return VerifyTOTPResult{}, fmt.Errorf("applyTOTPMatch: %w", codesErr)
+			}
+			out.RecoveryCodes, digests = displays, hashes
+		}
+		err := s.store.Write(ctx, func(tx *store.WriteTx) error {
+			return commitTOTPMatch(tx, m, next, digests)
+		})
+		if errors.Is(err, store.ErrConflict) {
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				err = errInvalidCredentials
+			}
+			return VerifyTOTPResult{}, fmt.Errorf("applyTOTPMatch: %w", err)
+		}
+		if !m.sess.TOTPOk {
+			s.recordAudit(ctx, AuditEvent{Actor: m.user.ID, Action: "session.rotate", IP: m.ip, UserAgent: m.userAgent,
+				SessionHash: out.Session.IDHash, Result: "ok"})
+		}
+		action := "totp.verify"
+		if m.recovery {
+			action = "totp.recovery_used"
+		}
+		s.recordAudit(ctx, AuditEvent{Actor: m.user.ID, Action: action, Target: "user:" + m.user.Name,
+			IP: m.ip, UserAgent: m.userAgent, SessionHash: out.Session.IDHash, Result: "ok"})
+		return out, nil
+	}
+	return VerifyTOTPResult{}, fmt.Errorf("applyTOTPMatch: %w", errInvalidCredentials)
+}
+
+func commitTOTPMatch(tx *store.WriteTx, m totpMatch, next store.SessionCreate, digests []string) error {
+	current, err := tx.GetSessionByHash(m.sess.IDHash)
+	if err != nil {
+		return fmt.Errorf("commitTOTPMatch: %w", err)
+	}
+	if current.UserID != m.user.ID || m.nowMillis >= current.AbsoluteExpiresAt ||
+		m.nowMillis-current.LastSeenAt >= sessionIdleTTL.Milliseconds() {
+		return fmt.Errorf("commitTOTPMatch: %w", errInvalidCredentials)
+	}
+	creds, err := tx.GetTOTPCredentials(m.user.ID)
+	if err != nil {
+		return fmt.Errorf("commitTOTPMatch: %w", err)
+	}
+	if creds != m.creds {
+		return fmt.Errorf("commitTOTPMatch: %w", errInvalidCredentials)
+	}
+	var applied bool
 	switch {
 	case m.recovery:
 		digest := sha256.Sum256([]byte(m.code))
-		applied, rerr := s.store.VerifyRecoveryCode(ctx, m.user.ID, hex.EncodeToString(digest[:]), m.nowMillis, m.user.LowerName, m.ip)
-		if rerr != nil {
-			return VerifyTOTPResult{}, rerr
-		}
-		if !applied {
-			return VerifyTOTPResult{}, errInvalidCredentials
-		}
-		out.RecoveryUsed = true
+		applied, err = tx.VerifyRecoveryCode(m.user.ID, hex.EncodeToString(digest[:]), m.nowMillis, m.user.LowerName, m.ip)
 	case m.promoted:
-		displays, digests, gerr := newRecoveryCodes()
-		if gerr != nil {
-			return VerifyTOTPResult{}, gerr
-		}
-		applied, perr := s.store.PromoteTOTPSecret(ctx, m.user.ID, m.counter, m.nowMillis, m.user.LowerName, m.ip, digests)
-		if perr != nil {
-			if errors.Is(perr, store.ErrConflict) {
-				return s.applyTOTPMatchRetry(ctx, m)
-			}
-			return VerifyTOTPResult{}, perr
-		}
-		if !applied {
-			return VerifyTOTPResult{}, errInvalidCredentials
-		}
-		out.RecoveryCodes = displays
+		applied, err = tx.PromoteTOTPSecret(m.user.ID, m.counter, m.nowMillis, m.user.LowerName, m.ip, digests)
+	case !m.creds.HasVerified:
+		applied, err = tx.ConfirmTOTPSecret(m.user.ID, m.counter, m.nowMillis, m.user.LowerName, m.ip, digests)
 	default:
-		if !m.creds.HasVerified {
-			displays, digests, gerr := newRecoveryCodes()
-			if gerr != nil {
-				return VerifyTOTPResult{}, gerr
-			}
-			applied, cerr := s.store.ConfirmTOTPSecret(ctx, m.user.ID, m.counter, m.nowMillis, m.user.LowerName, m.ip, digests)
-			if cerr != nil {
-				if errors.Is(cerr, store.ErrConflict) {
-					return s.applyTOTPMatchRetry(ctx, m)
-				}
-				return VerifyTOTPResult{}, cerr
-			}
-			if !applied {
-				return VerifyTOTPResult{}, errInvalidCredentials
-			}
-			out.RecoveryCodes = displays
-		} else {
-			applied, aerr := s.store.AdvanceTOTPCounter(ctx, m.user.ID, m.counter, m.nowMillis, m.user.LowerName, m.ip)
-			if aerr != nil {
-				return VerifyTOTPResult{}, aerr
-			}
-			if !applied {
-				return VerifyTOTPResult{}, errInvalidCredentials
-			}
+		applied, err = tx.AdvanceTOTPCounter(m.user.ID, m.counter, m.nowMillis, m.user.LowerName, m.ip)
+	}
+	if err != nil {
+		return fmt.Errorf("commitTOTPMatch: %w", err)
+	}
+	if !applied {
+		return fmt.Errorf("commitTOTPMatch: %w", errInvalidCredentials)
+	}
+	if !m.sess.TOTPOk {
+		if rotateErr := tx.RotateSession(m.sess.IDHash, next); rotateErr != nil {
+			return fmt.Errorf("commitTOTPMatch: %w", rotateErr)
 		}
 	}
-	action := "totp.verify"
-	if m.recovery {
-		action = "totp.recovery_used"
-	}
-	if m.sess.TOTPOk {
-		out.Session = m.sess
-		s.recordAudit(ctx, AuditEvent{Actor: m.user.ID, Action: action, Target: "user:" + m.user.Name,
-			IP: m.ip, UserAgent: m.userAgent, SessionHash: m.sess.IDHash, Result: "ok"})
-		return out, nil
-	}
-	secret, stepped, serr := s.stepUpSession(ctx, m.sess, m.ip, m.userAgent)
-	if serr != nil {
-		return VerifyTOTPResult{}, serr
-	}
-	out.Secret = secret
-	out.Session = stepped
-	s.recordAudit(ctx, AuditEvent{Actor: m.user.ID, Action: action, Target: "user:" + m.user.Name,
-		IP: m.ip, UserAgent: m.userAgent, SessionHash: stepped.IDHash, Result: "ok"})
-	return out, nil
-}
-
-func (s *Service) applyTOTPMatchRetry(ctx context.Context, m totpMatch) (VerifyTOTPResult, error) {
-	for range 4 {
-		displays, digests, gerr := newRecoveryCodes()
-		if gerr != nil {
-			return VerifyTOTPResult{}, gerr
-		}
-		var applied bool
-		var err error
-		if m.promoted {
-			applied, err = s.store.PromoteTOTPSecret(ctx, m.user.ID, m.counter, m.nowMillis, m.user.LowerName, m.ip, digests)
-		} else {
-			applied, err = s.store.ConfirmTOTPSecret(ctx, m.user.ID, m.counter, m.nowMillis, m.user.LowerName, m.ip, digests)
-		}
-		if err != nil {
-			if errors.Is(err, store.ErrConflict) {
-				continue
-			}
-			return VerifyTOTPResult{}, err
-		}
-		if !applied {
-			return VerifyTOTPResult{}, errInvalidCredentials
-		}
-		var out VerifyTOTPResult
-		out.RecoveryCodes = displays
-		if m.sess.TOTPOk {
-			out.Session = m.sess
-			s.recordAudit(ctx, AuditEvent{Actor: m.user.ID, Action: "totp.verify", Target: "user:" + m.user.Name,
-				IP: m.ip, UserAgent: m.userAgent, SessionHash: m.sess.IDHash, Result: "ok"})
-			return out, nil
-		}
-		secret, stepped, serr := s.stepUpSession(ctx, m.sess, m.ip, m.userAgent)
-		if serr != nil {
-			return VerifyTOTPResult{}, serr
-		}
-		out.Secret = secret
-		out.Session = stepped
-		s.recordAudit(ctx, AuditEvent{Actor: m.user.ID, Action: "totp.verify", Target: "user:" + m.user.Name,
-			IP: m.ip, UserAgent: m.userAgent, SessionHash: stepped.IDHash, Result: "ok"})
-		return out, nil
-	}
-	return VerifyTOTPResult{}, errInvalidCredentials
+	return nil
 }
 
 func (s *Service) DisableTOTP(ctx context.Context, userID int64, ip string) error {
@@ -478,50 +474,6 @@ func fullLevelFor(pending string) string {
 		return fullOIDCLevel
 	}
 	return fullPasswordLevel
-}
-
-func (s *Service) stepUpSession(ctx context.Context, old Session, ip, userAgent string) (string, Session, error) {
-	secret, err := newSecret()
-	if err != nil {
-		return "", Session{}, err
-	}
-	csrf, err := newSecret()
-	if err != nil {
-		return "", Session{}, err
-	}
-	now := millis(s.clock())
-	next := Session{
-		IDHash:            hashBearer(secret),
-		UserID:            old.UserID,
-		AuthLevel:         fullLevelFor(old.AuthLevel),
-		AuthedAt:          now,
-		CreatedAt:         now,
-		LastSeenAt:        now,
-		AbsoluteExpiresAt: old.AbsoluteExpiresAt,
-		TOTPOk:            true,
-	}
-	serr := s.store.RotateSession(ctx, old.IDHash, store.SessionCreate{
-		IDHash:            next.IDHash,
-		AuthLevel:         next.AuthLevel,
-		CSRF:              csrf,
-		IP:                ip,
-		UserAgent:         userAgent,
-		UserID:            next.UserID,
-		AuthedAt:          now,
-		CreatedAt:         now,
-		LastSeenAt:        now,
-		AbsoluteExpiresAt: next.AbsoluteExpiresAt,
-		TOTPOk:            true,
-	})
-	if serr != nil {
-		if errors.Is(serr, store.ErrNotFound) {
-			return "", Session{}, errInvalidCredentials
-		}
-		return "", Session{}, serr
-	}
-	s.recordAudit(ctx, AuditEvent{Actor: old.UserID, Action: "session.rotate", IP: ip, UserAgent: userAgent,
-		SessionHash: next.IDHash, Result: "ok"})
-	return secret, next, nil
 }
 
 func (s *Service) totpFailBudget(ctx context.Context, u User, sess Session) (destroyed bool, err error) {
