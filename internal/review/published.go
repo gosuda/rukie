@@ -95,7 +95,7 @@ func RemapPublished(ctx context.Context, st *store.Store, target PublishedChange
 func remapComments(tx *store.WriteTx, changeID int64, oldHead, newHead string, spans map[string][]Span) error {
 	comments, err := tx.ListCommentsAtHeadIncludingUnmatched(changeID, oldHead)
 	if err != nil {
-		return err
+		return fmt.Errorf("remapComments: %w", err)
 	}
 	for _, comment := range comments {
 		if comment.Unmatched {
@@ -115,7 +115,7 @@ func remapComments(tx *store.WriteTx, changeID int64, oldHead, newHead string, s
 			}
 		}
 		if err := tx.RemapComment(changeID, comment.ID, oldHead, newHead, mapped, !matched); err != nil {
-			return err
+			return fmt.Errorf("remapComments: %w", err)
 		}
 	}
 	return nil

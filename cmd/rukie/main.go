@@ -612,14 +612,19 @@ type app struct {
 }
 
 func (a *app) handleRepoJob(ctx context.Context, job store.Job) error {
+	var err error
 	switch job.Kind {
 	case string(queue.KindRepoPurge):
-		return a.watcher.HandlePurge(ctx, job)
+		err = a.watcher.HandlePurge(ctx, job)
 	case string(queue.KindReviewRemap):
-		return a.git.HandleReviewRemap(ctx, job)
+		err = a.git.HandleReviewRemap(ctx, job)
 	default:
 		return fmt.Errorf("handleRepoJob: unexpected job kind %q", job.Kind)
 	}
+	if err != nil {
+		return fmt.Errorf("handleRepoJob: %w", err)
+	}
+	return nil
 }
 
 type gitFallback struct {
