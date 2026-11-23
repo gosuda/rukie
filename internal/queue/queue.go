@@ -19,6 +19,7 @@ const (
 	KindArchiveBuild Kind = "archive_build"
 	KindLand         Kind = "land"
 	KindCIPlan       Kind = "ci_plan"
+	KindReviewRemap  Kind = "review_remap"
 )
 
 var validKinds = map[Kind]struct{}{
@@ -29,6 +30,7 @@ var validKinds = map[Kind]struct{}{
 	KindArchiveBuild: {},
 	KindLand:         {},
 	KindCIPlan:       {},
+	KindReviewRemap:  {},
 }
 
 func ValidKind(kind Kind) bool {
@@ -45,6 +47,7 @@ func AllKinds() []Kind {
 		KindArchiveBuild,
 		KindLand,
 		KindCIPlan,
+		KindReviewRemap,
 	}
 }
 

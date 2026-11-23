@@ -328,7 +328,7 @@ func runServe(argv []string) int {
 		superviseWorker(workerCtx, time.Minute, func(err error) bool {
 			return errors.Is(err, store.ErrBackupInProgress)
 		}, func(ctx context.Context) error {
-			return app.jobs.RunKinds(ctx, repowatch.WorkerConfig("serve"), repowatch.PurgeKinds(), app.watcher.HandlePurge)
+			return app.jobs.RunKinds(ctx, repowatch.WorkerConfig("serve"), []queue.Kind{queue.KindRepoPurge, queue.KindReviewRemap}, app.handleRepoJob)
 		})
 	}()
 	go func() {
@@ -599,6 +599,7 @@ type app struct {
 	server   *op.Server
 	store    *store.Store
 	auth     *auth.Service
+	git      *githttp.Server
 	docs     *api.DocStore
 	spool    *events.Spool
 	watcher  *repowatch.Watcher
@@ -608,6 +609,17 @@ type app struct {
 	forks    forks.Worker
 	webhooks *webhook.Worker
 	mirror   mirror.Worker
+}
+
+func (a *app) handleRepoJob(ctx context.Context, job store.Job) error {
+	switch job.Kind {
+	case string(queue.KindRepoPurge):
+		return a.watcher.HandlePurge(ctx, job)
+	case string(queue.KindReviewRemap):
+		return a.git.HandleReviewRemap(ctx, job)
+	default:
+		return fmt.Errorf("handleRepoJob: unexpected job kind %q", job.Kind)
+	}
 }
 
 type gitFallback struct {
@@ -927,7 +939,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	if pushTimeoutMs > maxPushTimeoutMs {
 		pushTimeoutMs = maxPushTimeoutMs
 	}
-	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.InboxPages(repoDeps.WebhookPages(adminPaged)))), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes, PushTimeout: time.Duration(pushTimeoutMs) * time.Millisecond}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}, webhooks: webhookWorker}, cleanup, nil
+	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.InboxPages(repoDeps.WebhookPages(adminPaged)))), store: st, auth: authSvc, git: git, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes, PushTimeout: time.Duration(pushTimeoutMs) * time.Millisecond}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}, webhooks: webhookWorker}, cleanup, nil
 }
 
 func webhookRetention(days uint) time.Duration {

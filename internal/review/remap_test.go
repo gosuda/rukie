@@ -1,6 +1,7 @@
 package review
 
 import (
+	"math"
 	"testing"
 )
 
@@ -58,5 +59,18 @@ func TestRemapLineEmptySpanSkipped(t *testing.T) {
 func TestRemapLineNoSpans(t *testing.T) {
 	if _, ok := RemapLine(7, nil); ok {
 		t.Fatal("line maps with no spans")
+	}
+}
+
+func TestRemapLineRejectsDestinationOverflow(t *testing.T) {
+	spans := []Span{{OldStart: 1, NewStart: math.MaxUint32, Lines: 2}}
+	if got, ok := RemapLine(1, spans); !ok || got != math.MaxUint32 {
+		t.Fatalf("last representable line = (%d, %v)", got, ok)
+	}
+	if got, ok := RemapLine(2, spans); ok || got != 0 {
+		t.Fatalf("overflow mapped to (%d, %v)", got, ok)
+	}
+	if got, ok := RemapLine(1, []Span{{OldStart: 1, NewStart: 0, Lines: 1}}); ok || got != 0 {
+		t.Fatalf("zero destination mapped to (%d, %v)", got, ok)
 	}
 }
