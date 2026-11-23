@@ -806,7 +806,74 @@ func (e *execution) resolveDFGated(t *trackedRef, upserts *[]ruk.PushUpdate, ups
 }
 
 func (e *execution) transmitPush(ctx context.Context, requestID string, updates []ruk.PushUpdate) (ruk.PushReply, error) {
-	return ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, requestID, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: updates}, e.auth)
+	send := func(ctx context.Context, id string, batch []ruk.PushUpdate) (ruk.PushReply, error) {
+		return ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, id, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: batch}, e.auth)
+	}
+	observe := func(ctx context.Context, plan string) (map[string]string, error) {
+		if _, err := ruk.PushReconcile(ctx, e.worker.Ruk, e.repo, ruk.PushReconcileArgs{Plan: plan}, e.auth); err != nil {
+			return nil, fmt.Errorf("transmitPush: %w", err)
+		}
+		remote, err := e.collectRemote(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("transmitPush: %w", err)
+		}
+		return remote.refs, nil
+	}
+	reply, err := e.pushWithReconciliation(ctx, requestID, updates, send, observe)
+	if err != nil {
+		return ruk.PushReply{}, fmt.Errorf("transmitPush: %w", err)
+	}
+	return reply, nil
+}
+
+func (e *execution) pushWithReconciliation(
+	ctx context.Context,
+	requestID string,
+	updates []ruk.PushUpdate,
+	send func(context.Context, string, []ruk.PushUpdate) (ruk.PushReply, error),
+	observe func(context.Context, string) (map[string]string, error),
+) (ruk.PushReply, error) {
+	pending := updates
+	var confirmed []ruk.PushRefOutcome
+	reconciled := map[string]struct{}{}
+	for {
+		if err := ctx.Err(); err != nil {
+			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", err)
+		}
+		reply, err := send(ctx, requestID, pending)
+		if err == nil {
+			reply.Refs = append(reply.Refs, confirmed...)
+			return reply, nil
+		}
+		detail, ok := ruk.PushDetailOf(err)
+		_, seen := reconciled[detail.Plan]
+		if !errors.Is(err, &ruk.Error{Code: wire.CodePushUncertain}) || !ok || detail.State != "uncertain" || seen || len(reconciled) >= len(updates) {
+			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", err)
+		}
+		reconciled[detail.Plan] = struct{}{}
+		remote, err := observe(ctx, detail.Plan)
+		if err != nil {
+			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", err)
+		}
+		remaining := make([]ruk.PushUpdate, 0, len(pending))
+		for _, update := range pending {
+			actual, exists := remote[update.RemoteRef]
+			matches := !exists && update.Source.IsDelete()
+			if update.Source.Commit != nil {
+				matches = exists && actual == *update.Source.Commit
+			}
+			if matches {
+				confirmed = append(confirmed, ruk.PushRefOutcome{RemoteRef: update.RemoteRef, Status: ruk.ConfirmedStatus(update.Source.Commit)})
+			} else {
+				remaining = append(remaining, update)
+			}
+		}
+		if len(remaining) == 0 {
+			return ruk.PushReply{Plan: detail.Plan, State: "confirmed", Refs: confirmed}, nil
+		}
+		pending = remaining
+		requestID = e.nextRequestID()
+	}
 }
 
 func (e *execution) pushDeletesFirst(ctx context.Context, send func(ctx context.Context, requestID string, updates []ruk.PushUpdate) (ruk.PushReply, error)) error {

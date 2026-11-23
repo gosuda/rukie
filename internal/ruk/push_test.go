@@ -391,6 +391,32 @@ func TestRemoteRefsReplyDecode(t *testing.T) {
 	}
 }
 
+func TestPushDetailOf(t *testing.T) {
+	detail := jsonv1.RawMessage(`{"push":{"plan":"11111111-2222-3333-4444-555555555555","state":"uncertain","refs":{"total":1,"truncated":false,"items":[{"remote_ref":"refs/heads/main","status":"uncertain"}]}}}`)
+	err := fmt.Errorf("push: %w", &Error{Code: wire.CodePushUncertain, Detail: detail})
+	got, ok := PushDetailOf(err)
+	if !ok || got.Plan != "11111111-2222-3333-4444-555555555555" || got.State != "uncertain" || len(got.Refs) != 1 {
+		t.Fatalf("detail = %+v, %v", got, ok)
+	}
+	if got.Refs[0].RemoteRef != "refs/heads/main" || got.Refs[0].Status.Kind != "uncertain" {
+		t.Fatalf("ref = %+v", got.Refs[0])
+	}
+	for _, err := range []error{
+		nil,
+		errors.New("connection lost"),
+		&Error{},
+		&Error{Detail: jsonv1.RawMessage(`{"http":{"status":429}}`)},
+		&Error{Detail: jsonv1.RawMessage(`{"push":null}`)},
+		&Error{Detail: jsonv1.RawMessage(`{"push":{"plan":"p"}}`)},
+		&Error{Detail: jsonv1.RawMessage(`{"push":{"plan":"","state":"uncertain","refs":{"items":[]}}}`)},
+		&Error{Detail: jsonv1.RawMessage(`{"push":`)},
+	} {
+		if got, ok := PushDetailOf(err); ok {
+			t.Fatalf("PushDetailOf(%v) = %+v, want no detail", err, got)
+		}
+	}
+}
+
 func TestHTTPDetailOf(t *testing.T) {
 	detailOf := func(doc string) *Error {
 		return &Error{Detail: jsonv1.RawMessage(doc)}
