@@ -113,7 +113,30 @@ func TestDaemonPushReconcilePagination(t *testing.T) {
 		t.Fatalf("unreconciled push guard: %v", guardErr)
 	}
 	before := discoveries.Load()
-	reply, err := PushReconcile(ctx, client, repo, PushReconcileArgs{Plan: pushed.Plan}, wire.TransportAuth{})
+	reconcileArgs := PushReconcileArgs{Plan: pushed.Plan}
+	firstPage, err := CallAuth[PushReconcileArgs, PushReconcileReply](ctx, client, repo, wire.MethodPushReconcile,
+		reconcileArgs, wire.TransportAuth{})
+	if err != nil {
+		t.Fatalf("first actual daemon page: %v\n%s", err, d.logs.String())
+	}
+	if firstPage.Next == nil || firstPage.Next.Page != 1 {
+		t.Fatalf("first page lacks its continuation: %+v", firstPage.Next)
+	}
+	if _, guardErr := Push(ctx, client, repo, args, wire.TransportAuth{}); !errors.Is(guardErr, ErrPushUncertain) {
+		t.Fatalf("push guard between recovery pages: %v", guardErr)
+	}
+	lastPage, err := CallAuth[PushReconcileArgs, PushReconcileReply](ctx, client, repo, wire.MethodPushReconcile,
+		PushReconcileArgs{Plan: pushed.Plan, Cursor: firstPage.Next}, wire.TransportAuth{})
+	if err != nil {
+		t.Fatalf("last actual daemon page: %v\n%s", err, d.logs.String())
+	}
+	if lastPage.Next != nil || pageCalls.Load() != 2 || discoveries.Load()-before != 1 || sends.Load() != 1 {
+		t.Fatalf("individual pages returned next %+v, calls %d, discoveries %d, sends %d",
+			lastPage.Next, pageCalls.Load(), discoveries.Load()-before, sends.Load())
+	}
+	before = discoveries.Load()
+	beforePages := pageCalls.Load()
+	reply, err := PushReconcile(ctx, client, repo, reconcileArgs, wire.TransportAuth{})
 	if err != nil {
 		t.Fatalf("collect actual daemon pages: %v\n%s", err, d.logs.String())
 	}
@@ -124,9 +147,9 @@ func TestDaemonPushReconcilePagination(t *testing.T) {
 		t.Fatalf("collected %d original and %d reported rows, want %d and %d",
 			len(reply.Observations), len(reply.ReportedObservations), 2*count, count)
 	}
-	if pageCalls.Load() != 2 || discoveries.Load()-before != 1 || sends.Load() != 1 {
+	if pageCalls.Load()-beforePages != 2 || discoveries.Load()-before != 1 || sends.Load() != 1 {
 		t.Fatalf("recovery used %d pages, %d discoveries, %d sends",
-			pageCalls.Load(), discoveries.Load()-before, sends.Load())
+			pageCalls.Load()-beforePages, discoveries.Load()-before, sends.Load())
 	}
 	observed := make(map[string]ReconcileObservation, len(reply.Observations))
 	for _, observation := range reply.Observations {
@@ -148,5 +171,12 @@ func TestDaemonPushReconcilePagination(t *testing.T) {
 			comparison.New != nil || comparison.Observed != nil || comparison.Verdict != "equal_new" {
 			t.Fatalf("reported comparison %d: %+v", i, comparison)
 		}
+	}
+	retried, err := Push(ctx, client, repo, args, wire.TransportAuth{})
+	if err != nil {
+		t.Fatalf("push after complete recovery: %v\n%s", err, d.logs.String())
+	}
+	if retried.Plan == "" || retried.Plan == pushed.Plan || sends.Load() != 2 {
+		t.Fatalf("completed recovery kept the old guard: plan %q, sends %d", retried.Plan, sends.Load())
 	}
 }
