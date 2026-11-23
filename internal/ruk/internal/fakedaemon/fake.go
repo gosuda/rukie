@@ -91,6 +91,7 @@ func readFull(c net.Conn, buf []byte) (int, error) {
 
 // Config tunes one fake.
 type Config struct {
+	BeforeHandshake   func()
 	ValidRepo         func(repo string) (handle string, code string)
 	Refuse            map[string]string
 	RefuseAfterAccept map[string]string
@@ -180,6 +181,9 @@ func (s *Server) serveConn(nc *net.UnixConn) {
 	}
 	if hello.kind != kindOpen || hello.stream != 0 {
 		return
+	}
+	if s.cfg.BeforeHandshake != nil {
+		s.cfg.BeforeHandshake()
 	}
 	accept, _ := jsonv2.Marshal(map[string]any{
 		"protocol_major": 1,

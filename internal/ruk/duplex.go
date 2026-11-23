@@ -39,14 +39,14 @@ func RunCommandStream(ctx context.Context, c *Client, cmd StreamCommand) (wire.C
 	if err != nil {
 		return zero, nil, fmt.Errorf("RunCommandStream: %w", err)
 	}
-	pc, err := dialRawConn(ctx, c.pool.nextID(), c.socket, c.profile, c.timeouts, c.hooks)
+	pc, err := c.pool.openDedicated(ctx)
 	if err != nil {
 		return zero, nil, err
 	}
 	closed := make(chan struct{})
 	defer func() {
 		close(closed)
-		_ = pc.nc.Close()
+		c.pool.releaseDedicated(pc)
 	}()
 	s, ok := pc.reserve()
 	if !ok {

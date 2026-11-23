@@ -51,14 +51,14 @@ func RunCommand(ctx context.Context, c *Client, cmd Command) (wire.CommandExitRe
 	if err != nil {
 		return zero, nil, fmt.Errorf("RunCommand: %w", err)
 	}
-	pc, err := dialRawConn(ctx, c.pool.nextID(), c.socket, c.profile, c.timeouts, c.hooks)
+	pc, err := c.pool.openDedicated(ctx)
 	if err != nil {
 		return zero, nil, err
 	}
 	closed := make(chan struct{})
 	defer func() {
 		close(closed)
-		_ = pc.nc.Close()
+		c.pool.releaseDedicated(pc)
 	}()
 	s, ok := pc.reserve()
 	if !ok {
