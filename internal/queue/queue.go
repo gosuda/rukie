@@ -9,6 +9,9 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 )
 
+// ErrTerminal marks a handler failure that forbids automatic retry or revival.
+var ErrTerminal = errors.New("queue: terminal job failure")
+
 type Kind string
 
 const (
@@ -151,6 +154,21 @@ func (q *Queue) Fail(ctx context.Context, owner, id, token string) error {
 	})
 }
 
+func (q *Queue) fail(ctx context.Context, owner, id, token string, cause error) error {
+	var err error
+	if errors.Is(cause, ErrTerminal) {
+		err = q.store.Write(ctx, func(tx *store.WriteTx) error {
+			return tx.FailJobPermanently(owner, id, token, cause.Error(), q.clock())
+		})
+	} else {
+		err = q.Fail(ctx, owner, id, token)
+	}
+	if err != nil {
+		return fmt.Errorf("fail: %w", err)
+	}
+	return nil
+}
+
 func (q *Queue) Job(ctx context.Context, id string) (store.Job, error) {
 	var out store.Job
 	err := q.store.Read(ctx, func(tx *store.ReadTx) error {
@@ -273,7 +291,7 @@ func (q *Queue) runKinds(ctx context.Context, cfg WorkerConfig, kinds []string, 
 			}
 			if herr := handle(ctx, job); herr != nil {
 				failed++
-				if ferr := q.Fail(ctx, cfg.Owner, job.ID, job.LeaseToken); ferr != nil && !errors.Is(ferr, store.ErrStale) {
+				if ferr := q.fail(ctx, cfg.Owner, job.ID, job.LeaseToken, herr); ferr != nil && !errors.Is(ferr, store.ErrStale) {
 					return ferr
 				}
 				continue
