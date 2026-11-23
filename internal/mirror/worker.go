@@ -322,7 +322,6 @@ type runOutcome struct {
 	mirror   string
 	http     int64
 	delay    time.Duration
-	requeue  bool
 }
 
 func (e *execution) run(ctx context.Context, runPub string) error {
@@ -1114,8 +1113,8 @@ func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, r
 	case ClassRateLimited:
 		delay := RateLimitDelay(retryAfterDuration(detail), retryAfterPresent(detail), jitterFraction())
 		return e.finish(ctx, runOutcome{
-			runState: "failing", class: string(verdict.Class), summary: summary,
-			mirror: "failing", http: int64(detail.Status), delay: delay, requeue: true,
+			runState: "failed", class: string(verdict.Class), summary: summary,
+			mirror: "failing", http: int64(detail.Status), delay: delay,
 		}, plan, remoteCount)
 	case ClassRepoMissing, ClassServer, ClassNetwork, ClassUncertain, ClassRefHidden,
 		ClassRefProtected, ClassRefHook, ClassRefOther, ClassProtocol, ClassDiverged,
@@ -1321,11 +1320,6 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	}); werr != nil {
 		return false, fmt.Errorf("finish: %w", werr)
 	}
-	if outcome.requeue {
-		if rerr := e.requeue(persist, now, run, attemptNo+1, outcome.delay); rerr != nil {
-			return false, rerr
-		}
-	}
 	return true, e.worker.complete(persist, e.owner, e.job)
 }
 
@@ -1334,36 +1328,6 @@ func (e *execution) scrub(s string) string {
 		return scrubSecrets(s, e.username, string(e.token))
 	}
 	return scrubSecrets(s, e.username)
-}
-
-func (e *execution) requeue(ctx context.Context, now time.Time, run store.MirrorRunRow, nextAttempt int64, delay time.Duration) error {
-	pub := run.PublicID
-	mirrorID := run.MirrorID
-	payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
-	if merr != nil {
-		return fmt.Errorf("requeue: %w", merr)
-	}
-	at := now.Add(delay)
-	if werr := e.worker.Store.Write(ctx, func(tx *store.WriteTx) error {
-		_, eerr := tx.EnqueueJob(store.JobSpec{
-			Payload: string(payload),
-			ID:      "mirror-run:" + pub + ":" + strconv.FormatInt(nextAttempt, 10),
-			Kind:    string(queue.KindMirrorRun),
-			RepoID:  e.loaded.mirror.RepoID,
-			At:      at,
-		})
-		return eerr
-	}); werr != nil {
-		return fmt.Errorf("requeue: %w", werr)
-	}
-	updated := run
-	updated.AttemptNo = nextAttempt
-	if werr := e.worker.Store.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.UpdateRun(now, run.ID, updated)
-	}); werr != nil {
-		return fmt.Errorf("requeue: %w", werr)
-	}
-	return nil
 }
 
 func refStatesOf(mirrorID, nowMs int64, tracked []*trackedRef) []store.RefStateRow {
