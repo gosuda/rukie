@@ -153,41 +153,25 @@ func (w Worker) drain(ctx context.Context, owner string) error {
 }
 
 func (w Worker) scheduleOnce(ctx context.Context) error {
-	now := w.now()
-	var due []store.MirrorRow
-	confirmations := map[int64]string{}
-	if rerr := w.Store.Read(ctx, func(tx *store.ReadTx) error {
+	if werr := w.Store.Write(ctx, func(tx *store.WriteTx) error {
+		now := w.now()
 		rows, derr := tx.DueMirrors(now.UnixMilli(), MaxMirrorWorkers*4)
 		if derr != nil {
 			return derr
 		}
-		due = rows
 		for _, row := range rows {
-			if row.State != "failing" {
-				continue
+			confirmation := ""
+			if row.State == "failing" {
+				latest, lerr := tx.LatestMirrorRun(row.ID)
+				if lerr != nil && !errors.Is(lerr, store.ErrNotFound) {
+					return lerr
+				}
+				if lerr == nil && latest.State == "failed" {
+					confirmation = latest.ConfirmedDigest
+				}
 			}
-			latest, lerr := tx.LatestMirrorRun(row.ID)
-			if errors.Is(lerr, store.ErrNotFound) {
-				continue
-			}
-			if lerr != nil {
-				return lerr
-			}
-			if latest.State == "failed" {
-				confirmations[row.ID] = latest.ConfirmedDigest
-			}
-		}
-		return nil
-	}); rerr != nil {
-		return fmt.Errorf("scheduleOnce: %w", rerr)
-	}
-	for _, row := range due {
-		if !row.Enabled {
-			continue
-		}
-		pub := string(store.NewID(now))
-		mirrorID := row.ID
-		if werr := w.Store.Write(ctx, func(tx *store.WriteTx) error {
+			pub := string(store.NewID(now))
+			mirrorID := row.ID
 			_, ierr := tx.InsertRun(now, store.MirrorRunRow{
 				PublicID:        pub,
 				MirrorID:        row.ID,
@@ -195,24 +179,28 @@ func (w Worker) scheduleOnce(ctx context.Context) error {
 				State:           "queued",
 				Trigger:         "schedule",
 				Counts:          "{}",
-				ConfirmedDigest: confirmations[row.ID],
+				ConfirmedDigest: confirmation,
 			})
-			return ierr
-		}); werr != nil {
-			return fmt.Errorf("scheduleOnce: %w", werr)
+			if ierr != nil {
+				return ierr
+			}
+			payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
+			if merr != nil {
+				return merr
+			}
+			if _, eerr := tx.EnqueueJob(store.JobSpec{
+				Payload: string(payload),
+				ID:      "mirror-run:" + pub,
+				Kind:    string(queue.KindMirrorRun),
+				RepoID:  row.RepoID,
+				At:      now,
+			}); eerr != nil {
+				return eerr
+			}
 		}
-		payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
-		if merr != nil {
-			return fmt.Errorf("scheduleOnce: %w", merr)
-		}
-		if _, eerr := w.Queue.Enqueue(ctx, queue.EnqueueSpec{
-			Payload: string(payload),
-			ID:      "mirror-run:" + pub,
-			Kind:    queue.KindMirrorRun,
-			RepoID:  row.RepoID,
-		}); eerr != nil {
-			return fmt.Errorf("scheduleOnce: %w", eerr)
-		}
+		return nil
+	}); werr != nil {
+		return fmt.Errorf("scheduleOnce: %w", werr)
 	}
 	return nil
 }
