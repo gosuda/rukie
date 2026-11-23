@@ -2,10 +2,14 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
 func TestRotateSessionConsumesMatchingSession(t *testing.T) {
+	oldHash := strings.Repeat("a", 64)
+	nextHash := strings.Repeat("b", 64)
+	firstHash := strings.Repeat("c", 64)
 	for _, scenario := range []string{"live", "revoked", "rotated", "wrong_owner", "conflict"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := t.Context()
@@ -18,7 +22,7 @@ func TestRotateSessionConsumesMatchingSession(t *testing.T) {
 				t.Fatalf("insert user: %v", err)
 			}
 			old := SessionCreate{
-				IDHash:            "old",
+				IDHash:            oldHash,
 				UserID:            u.ID,
 				AuthLevel:         "password-pending",
 				CSRF:              "old-csrf",
@@ -32,7 +36,7 @@ func TestRotateSessionConsumesMatchingSession(t *testing.T) {
 				t.Fatalf("create session: %v", createErr)
 			}
 			next := old
-			next.IDHash, next.CSRF, next.AuthLevel, next.TOTPOk = "next", "next-csrf", "password", true
+			next.IDHash, next.CSRF, next.AuthLevel, next.TOTPOk = nextHash, "next-csrf", "password", true
 			var wantErr error
 			switch scenario {
 			case "revoked":
@@ -42,7 +46,7 @@ func TestRotateSessionConsumesMatchingSession(t *testing.T) {
 				wantErr = ErrNotFound
 			case "rotated":
 				first := next
-				first.IDHash = "first"
+				first.IDHash = firstHash
 				if rotateErr := s.RotateSession(ctx, old.IDHash, first); rotateErr != nil {
 					t.Fatalf("first rotation: %v", rotateErr)
 				}
@@ -86,7 +90,7 @@ func TestRotateSessionConsumesMatchingSession(t *testing.T) {
 				t.Fatalf("rejected replacement exists: %+v, error = %v", got, nextErr)
 			}
 			if scenario == "rotated" {
-				if _, firstErr := s.GetSessionByHash(ctx, "first"); firstErr != nil {
+				if _, firstErr := s.GetSessionByHash(ctx, firstHash); firstErr != nil {
 					t.Fatalf("repeated rotation removed the first replacement: %v", firstErr)
 				}
 			}
