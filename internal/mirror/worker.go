@@ -810,7 +810,7 @@ func (e *execution) transmitPush(ctx context.Context, requestID string, updates 
 	}
 	observe := func(ctx context.Context, plan string) (map[string]string, error) {
 		if _, err := ruk.PushReconcile(ctx, e.worker.Ruk, e.repo, ruk.PushReconcileArgs{Plan: plan}, e.auth); err != nil {
-			return nil, fmt.Errorf("transmitPush: %w", err)
+			return nil, &blockedPlanReconcileError{plan: plan, err: err}
 		}
 		remote, err := e.collectRemote(ctx)
 		if err != nil {
@@ -1099,6 +1099,16 @@ func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, r
 	}
 	code, detail, reason := describeCallError(callErr)
 	verdict := Classify(code, int(detail.Status), retryAfterString(detail), reason)
+	if _, blocked := errors.AsType[*blockedPlanReconcileError](callErr); blocked {
+		delay := BackoffDelay(int(e.loaded.mirror.ConsecutiveFailures)+1, BaseBackoff, MaxBackoff, jitterFraction())
+		if verdict.Class == ClassRateLimited {
+			delay = RateLimitDelay(retryAfterDuration(detail), retryAfterPresent(detail), jitterFraction())
+		}
+		return e.finish(ctx, runOutcome{
+			runState: "failed", class: string(ClassUncertain), summary: e.scrub(callErr.Error()),
+			mirror: "failing", http: int64(detail.Status), delay: delay,
+		}, plan, remoteCount)
+	}
 	if (detail.Status == 401 || detail.Status == 403) && verdict.Class != ClassRateLimited {
 		verdict = Verdict{Class: ClassAuth, Retry: false, State: "auth_failed"}
 	}
@@ -1140,6 +1150,17 @@ func protectedRepeat(row store.MirrorRow, verdict Verdict) int {
 	}
 	return 0
 }
+
+type blockedPlanReconcileError struct {
+	err  error
+	plan string
+}
+
+func (e *blockedPlanReconcileError) Error() string {
+	return fmt.Sprintf("transmitPush: reconcile blocking plan %s: %v", e.plan, e.err)
+}
+
+func (e *blockedPlanReconcileError) Unwrap() error { return e.err }
 
 type sendUncertainError struct{ err error }
 
