@@ -14,7 +14,7 @@ import (
 	"time"
 
 	jsonv1 "encoding/json"
-	jsonv2 "encoding/json/v2"
+	"encoding/json/jsontext"
 
 	"github.com/gosuda/rukie/internal/ruk/wire"
 	"github.com/gosuda/rukie/internal/rukproc"
@@ -279,61 +279,19 @@ func TestModelCLIMatchesSnapshot(t *testing.T) {
 	if cmdErr != nil {
 		t.Fatalf("ruk model: %v", cmdErr)
 	}
-	var live struct {
-		Methods []struct {
-			Kind   string `json:"kind"`
-			Method string `json:"method"`
-		} `json:"methods"`
-		ErrorCodes []struct {
-			Code       string `json:"code"`
-			ExitStatus int    `json:"exit_status"`
-		} `json:"error_codes"`
-		SchemaVersion struct {
-			Major uint32 `json:"major"`
-			Minor uint32 `json:"minor"`
-		} `json:"schema_version"`
-	}
-	if err := jsonv2.Unmarshal(out, &live, jsonv1.DefaultOptionsV1()); err != nil {
+	live := jsontext.Value(out)
+	if err := live.Canonicalize(jsontext.CanonicalizeRawInts(false)); err != nil {
 		t.Fatalf("decode live model: %v", err)
 	}
 	raw, err := os.ReadFile("testdata/ruk-model.json")
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
-	var snap struct {
-		Methods []struct {
-			Kind   string `json:"kind"`
-			Method string `json:"method"`
-		} `json:"methods"`
-		ErrorCodes []struct {
-			Code       string `json:"code"`
-			ExitStatus int    `json:"exit_status"`
-		} `json:"error_codes"`
-		SchemaVersion struct {
-			Major uint32 `json:"major"`
-			Minor uint32 `json:"minor"`
-		} `json:"schema_version"`
-	}
-	if err := jsonv2.Unmarshal(raw, &snap, jsonv1.DefaultOptionsV1()); err != nil {
+	snapshot := jsontext.Value(raw)
+	if err := snapshot.Canonicalize(jsontext.CanonicalizeRawInts(false)); err != nil {
 		t.Fatalf("decode snapshot: %v", err)
 	}
-	if len(live.Methods) != len(snap.Methods) {
-		t.Fatalf("live methods = %d, snapshot has %d", len(live.Methods), len(snap.Methods))
-	}
-	for i := range live.Methods {
-		if live.Methods[i] != snap.Methods[i] {
-			t.Fatalf("method %d differs: %+v vs %+v", i, live.Methods[i], snap.Methods[i])
-		}
-	}
-	if len(live.ErrorCodes) != len(snap.ErrorCodes) {
-		t.Fatalf("live codes = %d, snapshot has %d", len(live.ErrorCodes), len(snap.ErrorCodes))
-	}
-	for i := range live.ErrorCodes {
-		if live.ErrorCodes[i] != snap.ErrorCodes[i] {
-			t.Fatalf("code %d differs", i)
-		}
-	}
-	if live.SchemaVersion != snap.SchemaVersion {
-		t.Fatalf("version differs: %+v vs %+v", live.SchemaVersion, snap.SchemaVersion)
+	if !bytes.Equal(live, snapshot) {
+		t.Fatal("live model differs from snapshot: regenerate internal/ruk/testdata/ruk-model.json from the pinned Ruk binary")
 	}
 }
