@@ -100,6 +100,8 @@ func TestProbeTripleBoundaries(t *testing.T) {
 		{"5.9.9", false},
 		{"bogus", false},
 		{"6.1", false},
+		{"6.1.4+build1", true},
+		{"5.0.0-dev", false},
 	} {
 		major, minor, patch, ok := parseTriple("podman version " + row.text)
 		got := ok && atLeast(major, minor, patch, minPodmanMajor, minPodmanMinor, minPodmanPatch)

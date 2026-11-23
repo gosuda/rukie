@@ -137,10 +137,10 @@ func parseTriple(text string) (int, int, int, bool) {
 	if len(fields) < 3 {
 		return 0, 0, 0, false
 	}
-	tail := fields[len(fields)-3:]
-	major, err1 := strconv.Atoi(tail[0])
-	minor, err2 := strconv.Atoi(tail[1])
-	patch, err3 := strconv.Atoi(tail[2])
+	head := fields[:3]
+	major, err1 := strconv.Atoi(head[0])
+	minor, err2 := strconv.Atoi(head[1])
+	patch, err3 := strconv.Atoi(head[2])
 	if err1 != nil || err2 != nil || err3 != nil {
 		return 0, 0, 0, false
 	}

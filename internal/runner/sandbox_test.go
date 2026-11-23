@@ -62,6 +62,8 @@ func TestSandboxP02VersionFloor(t *testing.T) {
 	}{
 		{`{"Client":{"Version":"6.1.3"}}`, false},
 		{`{"Client":{"Version":"6.1.4"}}`, true},
+		{`{"Client":{"Version":"6.1.4+build1"}}`, true},
+		{`{"Client":{"Version":"5.0.0-dev"}}`, false},
 		{`{"Client":{"Version":"8.0.1"}}`, true},
 	} {
 		env := versionEnv(row.version)
