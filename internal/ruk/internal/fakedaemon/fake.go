@@ -93,6 +93,7 @@ func readFull(c net.Conn, buf []byte) (int, error) {
 type Config struct {
 	BeforeHandshake   func()
 	ValidRepo         func(repo string) (handle string, code string)
+	ValidSession      func(session string) string
 	Refuse            map[string]string
 	RefuseAfterAccept map[string]string
 	Directions        *[]string
@@ -311,6 +312,12 @@ func (s *Server) runStream(c *connection, open frame) {
 	if code != "" {
 		s.refuse(c, open.stream, code, "repository refused")
 		return
+	}
+	if invocation.SessionID != nil && s.cfg.ValidSession != nil {
+		if code := s.cfg.ValidSession(*invocation.SessionID); code != "" {
+			s.refuse(c, open.stream, code, "session refused")
+			return
+		}
 	}
 	accepted, _ := jsonv2.Marshal(map[string]any{
 		"stream_id":   open.stream,

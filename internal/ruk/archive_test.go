@@ -10,7 +10,7 @@ import (
 	"github.com/gosuda/rukie/internal/ruk/internal/fakedaemon"
 )
 
-func TestArchiveReopensStaleRepoHandle(t *testing.T) {
+func TestArchiveReopensStaleRepoAndSession(t *testing.T) {
 	const path = "/repo"
 	const oldHandle = "handle-old"
 	const newHandle = "handle-new"
@@ -37,6 +37,14 @@ func TestArchiveReopensStaleRepoHandle(t *testing.T) {
 			return "", "E_NOT_FOUND"
 		}
 	}}
+	cfg.RequireAuth = true
+	cfg.Refuse = map[string]string{"session.resume": "E_NOT_FOUND"}
+	cfg.ValidSession = func(session string) string {
+		if session != "session-test" {
+			return "E_NOT_FOUND"
+		}
+		return ""
+	}
 	socket, _ := startFake(t, cfg)
 	client := dialTest(t, socket)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
@@ -45,6 +53,11 @@ func TestArchiveReopensStaleRepoHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open repository: %v", err)
 	}
+	entry, err := client.ensureReplaySession(ctx, repo)
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	client.sessions.put(path, &sessionEntry{id: "session-old", secret: entry.secret, active: true})
 	replaced.Store(true)
 	var body bytes.Buffer
 	result, err := Archive(ctx, client, repo, ArchiveArgs{Rev: ArchiveRefRev("refs/heads/main")}, &body)
