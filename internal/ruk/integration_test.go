@@ -34,7 +34,7 @@ type daemon struct {
 	socket string
 }
 
-func spawnDaemon(t *testing.T, allowedUID int) *daemon {
+func spawnDaemon(t *testing.T, allowedUID int, egressAllow ...string) *daemon {
 	t.Helper()
 	bin := rukBin(t)
 	if _, err := os.Stat(bin); err != nil {
@@ -48,6 +48,13 @@ func spawnDaemon(t *testing.T, allowedUID int) *daemon {
 	socket := filepath.Join(dir, "ruk.sock")
 	config := fmt.Sprintf("socket_path = %q\nrepo_roots = [%q]\nallowed_uids = [%s]\nframe_timeout_ms = 5000\nretention_interval_ms = 0\n",
 		socket, roots, strconv.Itoa(allowedUID))
+	if len(egressAllow) != 0 {
+		config += "egress_allow = ["
+		for _, address := range egressAllow {
+			config += strconv.Quote(address) + ","
+		}
+		config += "]\n"
+	}
 	configPath := filepath.Join(dir, "daemon.toml")
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("config: %v", err)

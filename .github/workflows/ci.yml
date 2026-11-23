@@ -91,6 +91,7 @@ jobs:
           tools/passgate.sh \
             '--- PASS: TestDaemonLifecycle (' \
             '--- PASS: TestModelCLIMatchesSnapshot (' \
+            '--- PASS: TestDaemonPushReconcilePagination (' \
             '--- PASS: TestSSHStockGitCloneAndPush (' \
             '--- PASS: TestDevLoopStarts (' -- \
             env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
