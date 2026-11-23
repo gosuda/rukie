@@ -29,15 +29,15 @@ func (s *Store) GetTOTPCredentials(ctx context.Context, userID int64) (TOTPCrede
 	return out, nil
 }
 
-func (tx *txCore) GetTOTPCredentials(userID int64) (TOTPCredentials, error) {
+func (c *txCore) GetTOTPCredentials(userID int64) (TOTPCredentials, error) {
 	var out TOTPCredentials
-	inner, lerr := tx.live()
+	inner, lerr := c.live()
 	if lerr != nil {
 		return TOTPCredentials{}, fmt.Errorf("GetTOTPCredentials: %w", lerr)
 	}
 	var pending sql.NullString
 	var verified sql.NullInt64
-	if serr := inner.QueryRowContext(tx.ctx, `SELECT secret_sealed, pending_secret_sealed, last_counter, verified_at
+	if serr := inner.QueryRowContext(c.ctx, `SELECT secret_sealed, pending_secret_sealed, last_counter, verified_at
 		FROM user_totp WHERE user_id = ?`, userID).Scan(
 		&out.Secret, &pending, &out.LastCounter, &verified); serr != nil {
 		if errors.Is(serr, sql.ErrNoRows) {

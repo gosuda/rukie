@@ -82,13 +82,13 @@ func (s *Store) GetSessionByHash(ctx context.Context, hash string) (SessionRecor
 	return out, nil
 }
 
-func (tx *txCore) GetSessionByHash(hash string) (SessionRecord, error) {
+func (c *txCore) GetSessionByHash(hash string) (SessionRecord, error) {
 	var out SessionRecord
-	inner, lerr := tx.live()
+	inner, lerr := c.live()
 	if lerr != nil {
 		return SessionRecord{}, fmt.Errorf("GetSessionByHash: %w", lerr)
 	}
-	if serr := scanSessionRecord(inner.QueryRowContext(tx.ctx,
+	if serr := scanSessionRecord(inner.QueryRowContext(c.ctx,
 		`SELECT `+sqlSessionColumns+` FROM sessions WHERE id_hash = ?`, hash), &out); serr != nil {
 		if errors.Is(serr, sql.ErrNoRows) {
 			return SessionRecord{}, fmt.Errorf("GetSessionByHash: %w", ErrNotFound)
