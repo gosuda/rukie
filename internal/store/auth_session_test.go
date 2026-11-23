@@ -28,40 +28,40 @@ func TestRotateSessionConsumesMatchingSession(t *testing.T) {
 				LastSeenAt:        1,
 				AbsoluteExpiresAt: 1000,
 			}
-			if err := s.CreateSession(ctx, old); err != nil {
-				t.Fatalf("create session: %v", err)
+			if createErr := s.CreateSession(ctx, old); createErr != nil {
+				t.Fatalf("create session: %v", createErr)
 			}
 			next := old
 			next.IDHash, next.CSRF, next.AuthLevel, next.TOTPOk = "next", "next-csrf", "password", true
 			var wantErr error
 			switch scenario {
 			case "revoked":
-				if _, err := s.DeleteSessionByHash(ctx, old.IDHash); err != nil {
-					t.Fatalf("revoke session: %v", err)
+				if _, revokeErr := s.DeleteSessionByHash(ctx, old.IDHash); revokeErr != nil {
+					t.Fatalf("revoke session: %v", revokeErr)
 				}
 				wantErr = ErrNotFound
 			case "rotated":
 				first := next
 				first.IDHash = "first"
-				if err := s.RotateSession(ctx, old.IDHash, first); err != nil {
-					t.Fatalf("first rotation: %v", err)
+				if rotateErr := s.RotateSession(ctx, old.IDHash, first); rotateErr != nil {
+					t.Fatalf("first rotation: %v", rotateErr)
 				}
 				wantErr = ErrNotFound
 			case "wrong_owner":
-				other, err := s.InsertAuthUser(ctx, AuthUserCreate{
+				other, otherErr := s.InsertAuthUser(ctx, AuthUserCreate{
 					Name: "grace", Lower: "grace", Email: "grace@example.test",
 					Hash: "test-hash", Algo: "argon2id-v19", Now: 1,
 				})
-				if err != nil {
-					t.Fatalf("insert other user: %v", err)
+				if otherErr != nil {
+					t.Fatalf("insert other user: %v", otherErr)
 				}
 				next.UserID = other.ID
 				wantErr = ErrNotFound
 			case "conflict":
 				existing := next
 				existing.UserAgent = "other-browser"
-				if err := s.CreateSession(ctx, existing); err != nil {
-					t.Fatalf("create conflicting session: %v", err)
+				if conflictErr := s.CreateSession(ctx, existing); conflictErr != nil {
+					t.Fatalf("create conflicting session: %v", conflictErr)
 				}
 				wantErr = ErrConflict
 			}
@@ -86,8 +86,8 @@ func TestRotateSessionConsumesMatchingSession(t *testing.T) {
 				t.Fatalf("rejected replacement exists: %+v, error = %v", got, nextErr)
 			}
 			if scenario == "rotated" {
-				if _, err := s.GetSessionByHash(ctx, "first"); err != nil {
-					t.Fatalf("repeated rotation removed the first replacement: %v", err)
+				if _, firstErr := s.GetSessionByHash(ctx, "first"); firstErr != nil {
+					t.Fatalf("repeated rotation removed the first replacement: %v", firstErr)
 				}
 			}
 		})

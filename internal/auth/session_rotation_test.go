@@ -13,8 +13,8 @@ func TestStepUpSessionRejectsRevokedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint session: %v", err)
 	}
-	if err := svc.RevokeSession(ctx, secret, "127.0.0.1", "browser"); err != nil {
-		t.Fatalf("revoke session: %v", err)
+	if revokeErr := svc.RevokeSession(ctx, secret, "127.0.0.1", "browser"); revokeErr != nil {
+		t.Fatalf("revoke session: %v", revokeErr)
 	}
 	next, _, err := svc.stepUpSession(ctx, old, "127.0.0.1", "browser")
 	if !errors.Is(err, errInvalidCredentials) || next != "" {
