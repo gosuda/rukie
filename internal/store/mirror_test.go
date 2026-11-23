@@ -739,8 +739,8 @@ func TestLatestMirrorRunOrdersAndScopesResults(t *testing.T) {
 			return err
 		}
 		expected = latest
-		if _, err := tx.InsertRun(now.Add(-time.Second), MirrorRunRow{MirrorID: mirror.ID, PublicID: "backdated", Kind: "sync", State: "failed", Trigger: "manual"}); err != nil {
-			return err
+		if _, insertErr := tx.InsertRun(now.Add(-time.Second), MirrorRunRow{MirrorID: mirror.ID, PublicID: "backdated", Kind: "sync", State: "failed", Trigger: "manual"}); insertErr != nil {
+			return insertErr
 		}
 		_, err = tx.InsertRun(now.Add(time.Hour), MirrorRunRow{MirrorID: other.ID, PublicID: "another-mirror", Kind: "sync", State: "failed", Trigger: "manual"})
 		return err
@@ -803,15 +803,15 @@ WHEN NEW.kind = 'mirror_run' BEGIN SELECT RAISE(ABORT, 'mirror enqueue rejected'
 		if err != nil {
 			return err
 		}
-		if _, err := tx.InsertRun(now, MirrorRunRow{
+		if _, insertErr := tx.InsertRun(now, MirrorRunRow{
 			PublicID:        runID,
 			MirrorID:        mirror.ID,
 			Kind:            "reconcile",
 			State:           "queued",
 			Trigger:         "schedule",
 			ConfirmedDigest: latest.ConfirmedDigest,
-		}); err != nil {
-			return err
+		}); insertErr != nil {
+			return insertErr
 		}
 		_, err = tx.EnqueueJob(JobSpec{
 			ID:      jobID,
