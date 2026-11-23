@@ -119,3 +119,34 @@ func TestCollectChangeSpansRejectsMissingFileList(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectChangeSpansKeepsRenamedPathsUnmatched(t *testing.T) {
+	first := diffPage(t, `{"files":{"items":[{"path":"new.txt","old_path":"old.txt","body":{"unified":{"patch":{"inline":{"data":""}}}}}],"next":{"position":"next"}}}`)
+	last := diffPage(t, `{"files":{"items":[{"path":"old.txt","body":{"unified":{"patch":{"inline":{"data":""}}}}}],"next":null}}`)
+	pages := 0
+	spans, err := collectChangeSpans(t.Context(), func(context.Context, jsonv1.RawMessage) (diffReplyJSON, error) {
+		pages++
+		if pages == 1 {
+			return first, nil
+		}
+		return last, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"old.txt", "new.txt"} {
+		if got, changed := spans[path]; !changed || len(got) != 0 {
+			t.Fatalf("renamed path %q = (%v, %v), want explicit unmatched", path, got, changed)
+		}
+	}
+}
+
+func TestCollectChangeSpansPreservesAnchorsForTruncatedPatch(t *testing.T) {
+	page := diffPage(t, `{"files":{"items":[{"path":"changed.txt","body":{"unified":{"patch":{"inline":{"data":"@@ -1,2 +1,2 @@\n one\n"}}}}}],"next":null}}`)
+	spans, err := collectChangeSpans(t.Context(), func(context.Context, jsonv1.RawMessage) (diffReplyJSON, error) {
+		return page, nil
+	})
+	if err == nil || spans != nil {
+		t.Fatalf("truncated patch = (%v, %v), want no mappings", spans, err)
+	}
+}

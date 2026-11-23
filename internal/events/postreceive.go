@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"encoding/json/jsontext"
@@ -200,12 +199,8 @@ func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
 		{Payload: string(mustScanPayload(rec.InvocationID, rec.RepoID)), ID: "ci-plan:" + rec.InvocationID, Kind: "ci_plan", RepoID: rec.RepoID, At: at},
 	}
 	for _, ref := range rec.Landed {
-		if strings.HasPrefix(ref.Name, "refs/changes/") {
-			jobs = append(jobs, store.JobSpec{
-				Payload: string(payload), ID: "review-remap:" + rec.InvocationID,
-				Kind: "review_remap", RepoID: rec.RepoID, At: at,
-			})
-			break
+		if err := enqueueReviewRemap(tx, at, rec.RepoID, ref.Name, ref.New); err != nil {
+			return err
 		}
 	}
 	for _, spec := range jobs {

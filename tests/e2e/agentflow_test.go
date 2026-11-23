@@ -381,8 +381,9 @@ func TestAgentFlow(t *testing.T) {
 		ada := s.addAdmin(t, "ada", "repo:read", "repo:write")
 		session := apiLogin(t, h, "ada", "long-test-password-01")
 		token := apiToken(t, h, session, "repo:read repo:write intents:read")
-		f2SeedRepoDirect(t, s, ada, "ada", "hello", map[string]string{"README.md": "hello\n", "stable.md": "stable\n"})
-		work, _ := s.localRepo(t, map[string]string{"README.md": "hello\n", "stable.md": "stable\n"})
+		readme := "hello\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n"
+		f2SeedRepoDirect(t, s, ada, "ada", "hello", map[string]string{"README.md": readme, "stable.md": "stable\n"})
+		work, _ := s.localRepo(t, map[string]string{"README.md": readme, "stable.md": "stable\n"})
 		pushURL := s.repoURL("ada", "hello", "ada", ada.token)
 		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 		defer cancel()
@@ -399,7 +400,10 @@ func TestAgentFlow(t *testing.T) {
 		if status, _ := apiCall(t, h, "POST", "/ada/hello/changes/"+key+"/comments", token, `{"path":"stable.md","line":1,"body":"unchanged file"}`); status != http.StatusCreated {
 			t.Fatalf("unchanged comment.create = %d", status)
 		}
-		second, _ := s.localRepo(t, map[string]string{"README.md": "hello\nsecond\n", "stable.md": "stable\n"})
+		if status, _ := apiCall(t, h, "POST", "/ada/hello/changes/"+key+"/comments", token, `{"path":"README.md","line":12,"body":"tail"}`); status != http.StatusCreated {
+			t.Fatalf("tail comment.create = %d", status)
+		}
+		second, _ := s.localRepo(t, map[string]string{"README.md": strings.Replace(readme, "hello\n", "hello\nsecond\n", 1), "stable.md": "stable\n"})
 		if out, err := gitRun(ctx, t, second, "push", pushURL, "HEAD:refs/for/main"); err != nil {
 			t.Fatalf("rewrite push: %v\n%s", err, out)
 		}
@@ -408,16 +412,20 @@ func TestAgentFlow(t *testing.T) {
 			t.Fatalf("comment.list = %d: %v", status, listed)
 		}
 		raw, _ := listed["comments"].([]any)
-		if len(raw) != 2 {
-			t.Fatalf("comments = %v, want both remapped rows", listed)
+		if len(raw) != 3 {
+			t.Fatalf("comments = %v, want all remapped rows", listed)
 		}
 		for _, item := range raw {
 			row, _ := item.(map[string]any)
 			if row["unmatched"] == true {
 				t.Fatalf("comment fell to the fallback bucket: %v", row)
 			}
-			if row["line"] != float64(1) {
-				t.Fatalf("comment line = %v, want 1", row["line"])
+			wantLine := float64(1)
+			if row["body"] == "tail" {
+				wantLine = 13
+			}
+			if row["line"] != wantLine {
+				t.Fatalf("comment line = %v, want %v", row["line"], wantLine)
 			}
 		}
 	})
