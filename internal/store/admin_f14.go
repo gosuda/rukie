@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	jsonv2 "encoding/json/v2"
 )
 
 // AuditEventRow is one row of the audit_events table for admin listing.
@@ -264,8 +266,9 @@ func (s *Store) ListJobsAdmin(ctx context.Context, filter AdminJobFilter) ([]Job
 	return out, next, nil
 }
 
-const sqlPrunableTerminalJobs = `jobs.state IN ('done','dead') AND jobs.updated_at < ?
-AND NOT (jobs.state = 'dead' AND jobs.kind = 'review_remap' AND jobs.terminal_error != ''
+const sqlTerminalJobCutoff = `jobs.state IN ('done','dead') AND jobs.updated_at < ?`
+
+const sqlRetainedTerminalReviewRemap = `(jobs.state = 'dead' AND jobs.kind = 'review_remap' AND jobs.terminal_error != ''
   AND EXISTS (
     SELECT 1 FROM changes
     WHERE changes.id = CAST(substr(json_extract(jobs.payload, '$.landed[0].name'), 14) AS INTEGER)
@@ -275,16 +278,33 @@ AND NOT (jobs.state = 'dead' AND jobs.kind = 'review_remap' AND jobs.terminal_er
       AND changes.head_oid = json_extract(jobs.payload, '$.landed[0].new')
   ))`
 
+const sqlPrunableTerminalJobs = sqlTerminalJobCutoff + ` AND NOT ` + sqlRetainedTerminalReviewRemap
+
 // CountTerminalJobs counts prunable done and dead jobs settled before the
 // cutoff. Terminal failures for the current review patchset are retained.
-func (s *Store) CountTerminalJobs(ctx context.Context, beforeMillis int64) (int64, error) {
+// The optional IDs must identify repositories selected for prior removal.
+// The forecast accounts for their removed changes and purge jobs.
+func (s *Store) CountTerminalJobs(ctx context.Context, beforeMillis int64, purgedRepoIDs ...int64) (int64, error) {
+	query := `SELECT COUNT(*) FROM jobs WHERE ` + sqlPrunableTerminalJobs
+	args := []any{beforeMillis}
+	if len(purgedRepoIDs) != 0 {
+		encoded, err := jsonv2.Marshal(purgedRepoIDs)
+		if err != nil {
+			return 0, fmt.Errorf("CountTerminalJobs: %w", err)
+		}
+		query = `WITH purged_repos AS (SELECT value AS id FROM json_each(?))
+SELECT COUNT(*) FROM jobs WHERE ` + sqlTerminalJobCutoff + `
+AND (NOT ` + sqlRetainedTerminalReviewRemap + ` OR jobs.repo_id IN (SELECT id FROM purged_repos))
+AND jobs.id NOT IN (SELECT 'repo-purge:' || id FROM purged_repos)`
+		args = []any{string(encoded), beforeMillis}
+	}
 	var n int64
 	err := s.Read(ctx, func(tx *ReadTx) error {
 		inner, lerr := tx.live()
 		if lerr != nil {
 			return lerr
 		}
-		if qerr := inner.QueryRowContext(tx.ctx, `SELECT COUNT(*) FROM jobs WHERE `+sqlPrunableTerminalJobs, beforeMillis).Scan(&n); qerr != nil {
+		if qerr := inner.QueryRowContext(tx.ctx, query, args...).Scan(&n); qerr != nil {
 			return fmt.Errorf("CountTerminalJobs: %w", mapErr(qerr))
 		}
 		return nil

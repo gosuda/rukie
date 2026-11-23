@@ -73,6 +73,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 		}
 	}
 	cutoff := now.Add(-terminalJobRetention).UnixMilli()
+	var forecastPurges []int64
 	for _, row := range due {
 		full, ferr := gcRepoFullName(ctx, st, row)
 		if ferr != nil {
@@ -81,6 +82,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 		}
 		if dryRun {
 			rep.ReposPurged = append(rep.ReposPurged, full)
+			forecastPurges = append(forecastPurges, row.ID)
 			continue
 		}
 		if row.RukPath != "" {
@@ -114,7 +116,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 		rep.ReposPurged = append(rep.ReposPurged, full)
 	}
 	if dryRun {
-		n, cerr := st.CountTerminalJobs(ctx, cutoff)
+		n, cerr := st.CountTerminalJobs(ctx, cutoff, forecastPurges...)
 		if cerr != nil {
 			return GCReport{}, fmt.Errorf("sysops: gc: %w", cerr)
 		}
