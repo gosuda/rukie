@@ -84,6 +84,7 @@ jobs:
         working-directory: ruk
       - run: |
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        if: ${{ !cancelled() }}
         working-directory: ruk
       - run: |
           cargo nextest run --workspace --locked --no-fail-fast
