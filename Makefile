@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test vuln check goals build-web web-assets
+.PHONY: fmt vet lint test vuln check goals build-web web-assets check-fmt check-comment check-tidy check-verify
 
 build-web:
 	cd web && pnpm install --frozen-lockfile
@@ -21,13 +21,19 @@ vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
 check: web-assets
-	@rc=0; \
-	$(MAKE) -k vet lint test vuln || rc=$$?; \
-	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)" || rc=$$?; \
-	go run ./tools/commentcheck || rc=$$?; \
-	go mod tidy -diff || rc=$$?; \
-	go mod verify || rc=$$?; \
-	exit $$rc
+	$(MAKE) -k vet lint test vuln check-fmt check-comment check-tidy check-verify
+
+check-fmt:
+	test -z "$$(git ls-files '*.go' | xargs -r gofmt -l)"
+
+check-comment:
+	go run ./tools/commentcheck
+
+check-tidy:
+	go mod tidy -diff
+
+check-verify:
+	go mod verify
 
 web-assets:
 	@if [ -d web/node_modules ]; then \
