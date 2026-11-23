@@ -24,9 +24,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Read the Go toolchain
+        id: go_toolchain
+        run: |
+          go_version=$(sed -n 's/^toolchain go//p' go.mod)
+          [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
           cache-dependency-path: |
             go.sum
@@ -41,9 +47,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Read the Go toolchain
+        id: go_toolchain
+        run: |
+          go_version=$(sed -n 's/^toolchain go//p' go.mod)
+          [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - name: Check out pinned Ruk
         run: |
