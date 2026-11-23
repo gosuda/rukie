@@ -35,15 +35,17 @@ func TestVerifyTOTPChecksExpiryWhenWriterExecutes(t *testing.T) {
 				t.Fatal(beforeErr)
 			}
 			session := store.SessionCreate{
-				IDHash: strings.Repeat("a", 64), UserID: u.ID, CSRF: "csrf",
-				AuthLevel: pendingPasswordLevel, AuthedAt: millis(now),
-				CreatedAt: millis(now), LastSeenAt: millis(now),
+				IDHash:            strings.Repeat("a", 64), UserID: u.ID, CSRF: "csrf",
+				AuthLevel:         pendingPasswordLevel, AuthedAt: millis(now),
+				CreatedAt:         millis(now), LastSeenAt: millis(now),
 				AbsoluteExpiresAt: millis(now.Add(sessionAbsoluteTTL)),
 			}
 			if boundary == "absolute" {
 				session.AbsoluteExpiresAt = millis(now) + 1
 			} else {
 				session.LastSeenAt = millis(now) - sessionIdleTTL.Milliseconds() + 1
+				session.CreatedAt = session.LastSeenAt
+				session.AuthedAt = session.LastSeenAt
 			}
 			if createErr := svc.store.CreateSession(ctx, session); createErr != nil {
 				t.Fatal(createErr)
