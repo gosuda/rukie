@@ -168,6 +168,9 @@ func (w Worker) scheduleOnce(ctx context.Context) error {
 				}
 				if lerr == nil && latest.State == "failed" {
 					confirmation = latest.ConfirmedDigest
+					if latest.RetryDigest != "" {
+						confirmation = latest.RetryDigest
+					}
 				}
 			}
 			pub := string(store.NewID(now))
@@ -1252,8 +1255,12 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	run.AttemptNo = attemptNo
 	run.StartedAt = e.start.UnixMilli()
 	run.FinishedAt = endMs
+	run.RetryDigest = ""
 	if plan != nil {
 		run.PlanDigest = plan.Digest
+		if outcome.runState == "failed" && outcome.mirror == "failing" {
+			run.RetryDigest = e.remainingApprovedDigest(*plan)
+		}
 	}
 	if len(e.plans) > 0 {
 		run.RukPlan = strings.Join(e.plans, ",")

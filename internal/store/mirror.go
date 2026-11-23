@@ -115,6 +115,7 @@ type MirrorRunRow struct {
 	Trigger         string
 	PlanDigest      string
 	ConfirmedDigest string
+	RetryDigest     string
 	RukPlan         string
 	OutcomeClass    string
 	OutcomeSummary  string
@@ -181,7 +182,7 @@ event_cursor, created_at, updated_at`
 
 const sqlRunColumns = `id, public_id, mirror_id, kind, state, trigger, dry_run, plan_digest,
 confirmed_digest, attempt_no, ruk_plan, outcome_class, outcome_summary, counts_json,
-started_at, finished_at, created_at, updated_at`
+started_at, finished_at, created_at, updated_at, retry_digest`
 
 const sqlRefStateColumns = `mirror_id, ref, local_oid, remote_oid, status, reason, reason_class,
 first_failed_at, last_attempt_at, last_success_at, consecutive_failures`
@@ -255,6 +256,7 @@ func scanRunRow(scan func(dest ...any) error) (MirrorRunRow, error) {
 		&dryRun, &row.PlanDigest, &row.ConfirmedDigest, &row.AttemptNo, &row.RukPlan,
 		&row.OutcomeClass, &row.OutcomeSummary, &row.Counts,
 		&row.StartedAt, &row.FinishedAt, &row.CreatedAt, &row.UpdatedAt,
+		&row.RetryDigest,
 	)
 	if err != nil {
 		return MirrorRunRow{}, err
@@ -663,12 +665,12 @@ func (tx *WriteTx) InsertRun(now time.Time, r MirrorRunRow) (MirrorRunRow, error
 	res, ierr := inner.ExecContext(tx.ctx, `INSERT INTO mirror_runs
 (public_id, mirror_id, kind, state, trigger, dry_run, plan_digest, confirmed_digest,
 attempt_no, ruk_plan, outcome_class, outcome_summary, counts_json,
-started_at, finished_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+started_at, finished_at, created_at, updated_at, retry_digest)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.PublicID, r.MirrorID, r.Kind, r.State, r.Trigger, boolInt(r.DryRun),
 		r.PlanDigest, r.ConfirmedDigest, r.AttemptNo, r.RukPlan,
 		r.OutcomeClass, r.OutcomeSummary, counts,
-		r.StartedAt, r.FinishedAt, at, at)
+		r.StartedAt, r.FinishedAt, at, at, r.RetryDigest)
 	if ierr != nil {
 		return MirrorRunRow{}, fmt.Errorf("InsertRun: %w", mapErr(ierr))
 	}
@@ -701,10 +703,10 @@ func (tx *WriteTx) UpdateRun(now time.Time, id int64, r MirrorRunRow) error {
 	moved, merr := execAffected(tx.ctx, inner, `UPDATE mirror_runs SET
 kind = ?, state = ?, trigger = ?, dry_run = ?, plan_digest = ?, confirmed_digest = ?,
 attempt_no = ?, ruk_plan = ?, outcome_class = ?, outcome_summary = ?, counts_json = ?,
-started_at = ?, finished_at = ?, updated_at = ? WHERE id = ?`,
+started_at = ?, finished_at = ?, updated_at = ?, retry_digest = ? WHERE id = ?`,
 		r.Kind, r.State, r.Trigger, boolInt(r.DryRun), r.PlanDigest, r.ConfirmedDigest,
 		r.AttemptNo, r.RukPlan, r.OutcomeClass, r.OutcomeSummary, r.Counts,
-		r.StartedAt, r.FinishedAt, msOf(now), id)
+		r.StartedAt, r.FinishedAt, msOf(now), r.RetryDigest, id)
 	if merr != nil {
 		return fmt.Errorf("UpdateRun: %w", mapErr(merr))
 	}
