@@ -40,12 +40,12 @@ func TestGCForecastsTerminalReviewJobsAfterSelectedPurges(t *testing.T) {
 			ctx := t.Context()
 			now := time.Now()
 			old := now.Add(-3 * terminalJobRetention)
-			owner, err := st.InsertAuthUser(ctx, store.AuthUserCreate{
+			owner, ownerErr := st.InsertAuthUser(ctx, store.AuthUserCreate{
 				Name: "ada", Lower: "ada", Email: "ada@example.test",
 				Hash: "test-hash", Algo: "argon2id-v19", Now: old.UnixMilli(),
 			})
-			if err != nil {
-				t.Fatal(err)
+			if ownerErr != nil {
+				t.Fatal(ownerErr)
 			}
 			jobsByRepo := make(map[string]string)
 			if err := st.Write(ctx, func(tx *store.WriteTx) error {
@@ -124,9 +124,9 @@ func TestGCForecastsTerminalReviewJobsAfterSelectedPurges(t *testing.T) {
 			if err := st.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
-			dry, err := GC(ctx, cfg, true, tc.filter)
-			if err != nil {
-				t.Fatal(err)
+			dry, dryErr := GC(ctx, cfg, true, tc.filter)
+			if dryErr != nil {
+				t.Fatal(dryErr)
 			}
 			wantJobs := int64(len(tc.purged)) + 2
 			if slices.Contains(tc.purged, "ada/first") {
@@ -168,9 +168,9 @@ func TestGCForecastsTerminalReviewJobsAfterSelectedPurges(t *testing.T) {
 			if err := st.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
-			live, err := GC(ctx, cfg, false, tc.filter)
-			if err != nil {
-				t.Fatal(err)
+			live, liveErr := GC(ctx, cfg, false, tc.filter)
+			if liveErr != nil {
+				t.Fatal(liveErr)
 			}
 			if !slices.Equal(live.ReposPurged, tc.purged) || !slices.Equal(live.ReposPending, wantPending) ||
 				len(live.ReposFailed) != 0 || live.JobsDeleted != dry.JobsWouldDrop {
