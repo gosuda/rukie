@@ -301,7 +301,7 @@ func (s *Service) applyTOTPMatch(ctx context.Context, m totpMatch) (VerifyTOTPRe
 			out.RecoveryCodes, digests = displays, hashes
 		}
 		err := s.store.Write(ctx, func(tx *store.WriteTx) error {
-			return commitTOTPMatch(tx, m, next, digests)
+			return commitTOTPMatch(tx, m, next, digests, millis(s.clock()))
 		})
 		if errors.Is(err, store.ErrConflict) {
 			continue
@@ -327,13 +327,13 @@ func (s *Service) applyTOTPMatch(ctx context.Context, m totpMatch) (VerifyTOTPRe
 	return VerifyTOTPResult{}, fmt.Errorf("applyTOTPMatch: %w", errInvalidCredentials)
 }
 
-func commitTOTPMatch(tx *store.WriteTx, m totpMatch, next store.SessionCreate, digests []string) error {
+func commitTOTPMatch(tx *store.WriteTx, m totpMatch, next store.SessionCreate, digests []string, nowMillis int64) error {
 	current, err := tx.GetSessionByHash(m.sess.IDHash)
 	if err != nil {
 		return fmt.Errorf("commitTOTPMatch: %w", err)
 	}
-	if current.UserID != m.user.ID || m.nowMillis >= current.AbsoluteExpiresAt ||
-		m.nowMillis-current.LastSeenAt >= sessionIdleTTL.Milliseconds() {
+	if current.UserID != m.user.ID || nowMillis >= current.AbsoluteExpiresAt ||
+		nowMillis-current.LastSeenAt >= sessionIdleTTL.Milliseconds() {
 		return fmt.Errorf("commitTOTPMatch: %w", errInvalidCredentials)
 	}
 	creds, err := tx.GetTOTPCredentials(m.user.ID)
