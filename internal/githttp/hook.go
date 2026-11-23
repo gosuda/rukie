@@ -3,15 +3,15 @@ package githttp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 
-	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
 
 	"github.com/gosuda/rukie/internal/access"
 	"github.com/gosuda/rukie/internal/events"
+	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/review"
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
@@ -61,21 +61,63 @@ func (s *Server) hookHandler(caller access.Caller, repoID int64, invocationID st
 }
 
 func (s *Server) answerPostReceive(ctx context.Context, caller access.Caller, repoID int64, invocationID string, call wire.HookCall) wire.HookReply {
-	if s.feed == nil {
-		verdicts := make([]wire.HookRefVerdict, 0, len(call.Commands))
-		for _, cmd := range call.Commands {
-			verdicts = append(verdicts, wire.HookRefVerdict{
-				Name:    cmd.Name,
-				Verdict: wire.AcceptVerdict(),
-			})
-		}
-		return wire.HookReply{Verdicts: verdicts}
+	verdicts := make([]wire.HookRefVerdict, 0, len(call.Commands))
+	for _, cmd := range call.Commands {
+		verdicts = append(verdicts, wire.HookRefVerdict{
+			Name:    cmd.Name,
+			Verdict: wire.AcceptVerdict(),
+		})
 	}
-	return s.feed.Handle(ctx, events.PushMeta{
-		InvocationID: invocationID,
-		RepoID:       repoID,
-		ActorID:      caller.UserID,
-	}, call)
+	reply := wire.HookReply{Verdicts: verdicts}
+	if s.feed != nil {
+		reply = s.feed.Handle(ctx, events.PushMeta{
+			InvocationID: invocationID,
+			RepoID:       repoID,
+			ActorID:      caller.UserID,
+		}, call)
+	}
+	for _, cmd := range call.Commands {
+		if err := s.remapPublishedChange(ctx, repoID, cmd.Name, cmd.New); err != nil {
+			return wire.RejectAllHookReply(truncateReason("comment remap is pending: " + firstChangeLine(err)))
+		}
+	}
+	return reply
+}
+
+// HandleReviewRemap retries comment remaps from a durable landed-push job.
+func (s *Server) HandleReviewRemap(ctx context.Context, job store.Job) error {
+	if job.Kind != string(queue.KindReviewRemap) {
+		return fmt.Errorf("HandleReviewRemap: unexpected job kind %q", job.Kind)
+	}
+	var payload struct {
+		Landed []events.LandedRef `json:"landed"`
+		Repo   int64              `json:"repo"`
+	}
+	if err := jsonv2.Unmarshal([]byte(job.Payload), &payload); err != nil {
+		return fmt.Errorf("HandleReviewRemap: %w", err)
+	}
+	if payload.Repo != job.RepoID {
+		return fmt.Errorf("HandleReviewRemap: repository mismatch")
+	}
+	for _, ref := range payload.Landed {
+		if err := s.remapPublishedChange(ctx, job.RepoID, ref.Name, ref.New); err != nil {
+			return fmt.Errorf("HandleReviewRemap: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Server) remapPublishedChange(ctx context.Context, repoID int64, name, head string) error {
+	target, ok := review.PublishedTarget(repoID, name, head)
+	if !ok {
+		return nil
+	}
+	if s.store == nil {
+		return fmt.Errorf("remapPublishedChange: %s", changeReviewUnavailable)
+	}
+	return review.RemapPublished(ctx, s.store, target, func(ctx context.Context, oldHead, newHead string) (map[string][]review.Span, error) {
+		return s.changeSpans(ctx, repoID, oldHead, newHead)
+	})
 }
 
 func (s *Server) recordPushAttempt(ctx context.Context, caller access.Caller, repoID int64, invocationID string, call wire.HookCall, verdicts []wire.HookRefVerdict) {
@@ -165,12 +207,11 @@ func (s *Server) divertChange(ctx context.Context, caller access.Caller, repoID 
 	})
 	hookCtx, cancel := context.WithTimeout(ctx, s.hookTimeout)
 	defer cancel()
-	spans := s.changeSpans(hookCtx, repoID, caller.UserID, branch, topic, cmd.New)
 	var reviewRef string
 	werr := s.store.Write(hookCtx, func(tx *store.WriteTx) error {
 		_, ref, ierr := review.IngressChange(tx, s.clock(), review.Ingress{
 			RepoID: repoID, AuthorID: caller.UserID, Branch: branch,
-			Topic: topic, HeadOid: cmd.New, Spans: spans, MayEdit: edit.Allow,
+			Topic: topic, HeadOid: cmd.New, MayEdit: edit.Allow,
 		})
 		if ierr != nil {
 			return ierr
@@ -211,60 +252,17 @@ func firstChangeLine(err error) string {
 	return line
 }
 
-func (s *Server) changeSpans(ctx context.Context, repoID, authorID int64, branch, topic, newHead string) map[string][]review.Span {
-	key := branch + "~" + topic
-	if topic == "" {
-		key = branch + "~" + strconv.FormatInt(authorID, 10)
-	}
-	var oldHead string
-	_ = s.store.Read(ctx, func(tx *store.ReadTx) error {
-		row, gerr := tx.ReadChangeByKey(repoID, key)
-		if gerr != nil {
-			return gerr
-		}
-		if row.State == "open" {
-			oldHead = row.HeadOid
-		}
-		return nil
-	})
-	if oldHead == "" || oldHead == newHead {
-		return nil
-	}
-	path, ok := s.repoDaemonPath(repoID)
-	if !ok {
-		return nil
-	}
-	client, cerr := s.clientFor(ctx)
-	if cerr != nil {
-		return nil
-	}
-	repo, oerr := client.OpenRepo(ctx, path)
-	if oerr != nil {
-		return nil
-	}
-	raw, rerr := ruk.Call[map[string]any, jsonv1.RawMessage](ctx, client, repo, wire.MethodDiff, map[string]any{
-		"left":  map[string]any{"head": map[string]any{"head": map[string]any{"oid": oldHead, "type": "git"}}},
-		"right": map[string]any{"head": map[string]any{"head": map[string]any{"oid": newHead, "type": "git"}}},
-		"paths": "all",
-		"page":  map[string]any{"limit": 1000},
-	})
-	if rerr != nil {
-		return nil
-	}
-	return spansFromDiffReply(raw)
-}
-
-func (s *Server) repoDaemonPath(repoID int64) (string, bool) {
+func (s *Server) repoDaemonPath(ctx context.Context, repoID int64) (string, error) {
 	var row store.RepoRow
-	if err := s.store.Read(context.Background(), func(tx *store.ReadTx) error {
+	if err := s.store.Read(ctx, func(tx *store.ReadTx) error {
 		var gerr error
 		row, gerr = tx.GetRepo(repoID)
 		return gerr
 	}); err != nil {
-		return "", false
+		return "", fmt.Errorf("repoDaemonPath: %w", err)
 	}
 	if row.RukPath == "" {
-		return "", false
+		return "", fmt.Errorf("repoDaemonPath: repository path is unavailable")
 	}
 	abs := row.RukPath
 	if !filepath.IsAbs(abs) {
@@ -273,75 +271,5 @@ func (s *Server) repoDaemonPath(repoID int64) (string, bool) {
 	if !strings.HasSuffix(abs, ".ruk") {
 		abs = filepath.Join(abs, ".ruk")
 	}
-	return abs, true
-}
-
-type diffFileItem struct {
-	Body map[string]any `json:"body"`
-	Path string         `json:"path"`
-}
-
-type diffFilesPage struct {
-	Items []diffFileItem `json:"items"`
-}
-
-type diffReplyJSON struct {
-	Files diffFilesPage `json:"files"`
-}
-
-func spansFromDiffReply(raw jsonv1.RawMessage) map[string][]review.Span {
-	var reply diffReplyJSON
-	if uerr := jsonv2.Unmarshal([]byte(raw), &reply, jsonv1.DefaultOptionsV1()); uerr != nil {
-		return nil
-	}
-	patches := make(map[string]string, len(reply.Files.Items))
-	for _, file := range reply.Files.Items {
-		patch, ok := unifiedPatchBytes(file.Body)
-		if !ok || file.Path == "" {
-			continue
-		}
-		patches[file.Path] = patch
-	}
-	return review.SpansFromPatch(patches)
-}
-
-func unifiedPatchBytes(body map[string]any) (string, bool) {
-	unified, ok := body["unified"].(map[string]any)
-	if !ok {
-		return "", false
-	}
-	patch, ok := unified["patch"]
-	if !ok {
-		return "", false
-	}
-	switch holder := patch.(type) {
-	case string:
-		return holder, true
-	case map[string]any:
-		rawInline, ok := holder["inline"]
-		if !ok {
-			rawHex, ok := holder["hex"].(string)
-			if !ok {
-				return "", false
-			}
-			return rawHex, true
-		}
-		switch inline := rawInline.(type) {
-		case string:
-			return inline, true
-		case map[string]any:
-			hexRaw, ok := inline["hex"].(string)
-			if !ok {
-				if data, ok := inline["data"].(string); ok {
-					return data, true
-				}
-				return "", false
-			}
-			return hexRaw, true
-		default:
-			return "", false
-		}
-	default:
-		return "", false
-	}
+	return abs, nil
 }

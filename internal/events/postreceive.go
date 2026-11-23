@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"encoding/json/jsontext"
@@ -197,6 +198,15 @@ func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
 		{Payload: string(payload), ID: "hook-delivery:" + rec.InvocationID, Kind: "hook_delivery", RepoID: rec.RepoID, At: at},
 		{Payload: string(mustScanPayload(rec.InvocationID, rec.RepoID)), ID: "mirror-run:" + rec.InvocationID, Kind: "mirror_run", RepoID: rec.RepoID, At: at},
 		{Payload: string(mustScanPayload(rec.InvocationID, rec.RepoID)), ID: "ci-plan:" + rec.InvocationID, Kind: "ci_plan", RepoID: rec.RepoID, At: at},
+	}
+	for _, ref := range rec.Landed {
+		if strings.HasPrefix(ref.Name, "refs/changes/") {
+			jobs = append(jobs, store.JobSpec{
+				Payload: string(payload), ID: "review-remap:" + rec.InvocationID,
+				Kind: "review_remap", RepoID: rec.RepoID, At: at,
+			})
+			break
+		}
 	}
 	for _, spec := range jobs {
 		if _, jerr = tx.EnqueueJob(spec); jerr != nil {

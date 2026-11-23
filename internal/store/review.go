@@ -214,6 +214,44 @@ func (tx *ReadTx) ReadChangeByKey(repoID int64, key string) (ChangeRow, error) {
 	return row, serr
 }
 
+// ReadChange loads one review change by its internal ID.
+func (tx *ReadTx) ReadChange(id int64) (ChangeRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return ChangeRow{}, err
+	}
+	row, serr := scanChangeRow(inner.QueryRowContext(tx.ctx,
+		`SELECT `+sqlChangeColumns+` FROM changes WHERE id = ?`, id).Scan)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return ChangeRow{}, fmt.Errorf("ReadChange: %w: change %d", ErrNotFound, id)
+	}
+	return row, serr
+}
+
+// PendingCommentHeads lists matched comment anchors behind the target head.
+func (tx *ReadTx) PendingCommentHeads(changeID int64, target string) ([]string, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return nil, err
+	}
+	rows, qerr := inner.QueryContext(tx.ctx, `SELECT DISTINCT head_oid
+FROM change_comments WHERE change_id = ? AND head_oid != ? AND unmatched = 0
+ORDER BY head_oid`, changeID, target)
+	if qerr != nil {
+		return nil, fmt.Errorf("PendingCommentHeads: %w", qerr)
+	}
+	defer func() { _ = rows.Close() }()
+	var heads []string
+	for rows.Next() {
+		var head string
+		if serr := rows.Scan(&head); serr != nil {
+			return nil, fmt.Errorf("PendingCommentHeads: %w", serr)
+		}
+		heads = append(heads, head)
+	}
+	return heads, rows.Err()
+}
+
 // ListChanges lists changes of one repository, newest first.
 func (tx *ReadTx) ListChanges(repoID int64, state string, limit int) ([]ChangeRow, error) {
 	inner, err := tx.live()
