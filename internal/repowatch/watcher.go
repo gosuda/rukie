@@ -370,7 +370,7 @@ func (w *Watcher) HandlePurge(ctx context.Context, job store.Job) error {
 	if oerr != nil {
 		return mapDaemonError(oerr)
 	}
-	if derr := w.deleteDaemonRepo(ctx, repo, path); derr != nil && !isDaemonNotFound(derr) {
+	if derr := w.deleteDaemonRepo(ctx, repo); derr != nil && !isDaemonNotFound(derr) {
 		return derr
 	}
 	return w.store.Write(ctx, func(tx *store.WriteTx) error {
@@ -389,9 +389,9 @@ type repoDeleteReply struct {
 	DeletedPath string `json:"deleted_path"`
 }
 
-func (w *Watcher) deleteDaemonRepo(ctx context.Context, repo ruk.Repo, path string) error {
+func (w *Watcher) deleteDaemonRepo(ctx context.Context, repo ruk.Repo) error {
 	_, rerr := ruk.Call[map[string]any, repoDeleteReply](ctx, w.client, repo, wire.MethodRepoDelete,
-		map[string]any{"repo": path, "confirm_path": path})
+		map[string]any{"repo": repo.Path, "confirm_path": repo.Path})
 	if rerr != nil {
 		return mapDaemonError(rerr)
 	}

@@ -78,6 +78,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 		func() error { return api.RegisterAuth(table, deps) },
 		func() error { return api.RegisterUser(table, deps) },
 		func() error { return api.RegisterAdmin(table, deps) },
+		func() error { return api.RegisterAdminF14(table, deps) },
 		func() error { return api.RegisterRepos(table, deps) },
 		func() error { return api.RegisterCode(table, deps) },
 		func() error { return api.RegisterRefs(table, deps) },
@@ -102,6 +103,7 @@ func mountAPI(t *testing.T, s *stack) *apiHarness {
 	api.RegisterAuthViews(views)
 	api.RegisterUserViews(views)
 	api.RegisterAdminViews(views)
+	api.RegisterAdminF14Views(views)
 	api.RegisterReposViews(views)
 	api.RegisterCodeViews(views)
 	api.RegisterRefsViews(views)
