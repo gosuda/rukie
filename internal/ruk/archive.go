@@ -107,13 +107,14 @@ func Archive(ctx context.Context, c *Client, repo Repo, args ArchiveArgs, w io.W
 	start := time.Now()
 	out, err := c.archiveAttempt(ctx, repo, entry, newRequestID(), string(rawArgs), w)
 	if err != nil && out.retry && out.written == 0 {
-		if next, rerr := c.recoverSession(ctx, repo, wire.Code(out.code)); rerr == nil {
-			_ = next
-			out, err = c.archiveAttempt(ctx, repo, next, newRequestID(), string(rawArgs), w)
-		} else if out.code == string(wire.CodeNotFound) && repo.Handle != "" {
+		if !out.accepted && out.code == string(wire.CodeNotFound) && repo.Handle != "" {
 			c.handles.drop(repo.Path)
-			if _, oerr := c.OpenRepo(ctx, repo.Path); oerr == nil {
-				out, err = c.archiveAttempt(ctx, repo, entry, newRequestID(), string(rawArgs), w)
+			if reopened, oerr := c.OpenRepo(ctx, repo.Path); oerr == nil {
+				out, err = c.archiveAttempt(ctx, reopened, entry, newRequestID(), string(rawArgs), w)
+			}
+		} else if next, rerr := c.recoverSession(ctx, repo, wire.Code(out.code)); rerr == nil {
+			if reopened, oerr := c.OpenRepo(ctx, repo.Path); oerr == nil {
+				out, err = c.archiveAttempt(ctx, reopened, next, newRequestID(), string(rawArgs), w)
 			}
 		}
 	}
