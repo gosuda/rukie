@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -299,22 +300,23 @@ type trackedRef struct {
 }
 
 type execution struct {
-	start         time.Time
-	priorDiverged map[string]string
-	auth          wire.TransportAuth
-	repo          ruk.Repo
-	remoteDefault string
-	username      string
-	owner         string
-	plans         []string
-	token         []byte
-	tracked       []*trackedRef
-	worker        Worker
-	cfg           Mirror
-	job           store.Job
-	loaded        loadedRun
-	reqSeq        int
-	observed      bool
+	start             time.Time
+	priorDiverged     map[string]string
+	auth              wire.TransportAuth
+	repo              ruk.Repo
+	remoteDefault     string
+	recoveredApproval string
+	username          string
+	owner             string
+	plans             []string
+	token             []byte
+	tracked           []*trackedRef
+	worker            Worker
+	cfg               Mirror
+	job               store.Job
+	loaded            loadedRun
+	reqSeq            int
+	observed          bool
 }
 
 type loadedRun struct {
@@ -501,10 +503,11 @@ func (e *execution) sync(ctx context.Context) (bool, error) {
 		return e.finishCall(ctx, rerr, nil, nil)
 	}
 	e.remoteDefault = remote.defaultBranch
-	if rerr := e.reconcilePriorUncertain(ctx, remote.refs); rerr != nil {
+	prior, rerr := e.reconcilePriorUncertain(ctx, remote.refs)
+	if rerr != nil {
 		return e.finishCall(ctx, rerr, nil, &remote.count)
 	}
-	plan, perr := ComputePlan(local, remote.refs, e.cfg, e.loaded.repo.DefaultBranch, remote.defaultBranch, e.loaded.run.ConfirmedDigest)
+	plan, perr := e.computeApprovedPlan(local, remote, prior)
 	if perr != nil {
 		if errors.Is(perr, ErrNeedsConfirmation) {
 			count := remote.count
@@ -670,7 +673,7 @@ func dfBlockerFor(rp RefPlan, deletes []RefPlan) string {
 	return ""
 }
 
-func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[string]string) error {
+func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[string]string) (map[string]string, error) {
 	var rows []store.RefStateRow
 	if rerr := e.worker.Store.Read(ctx, func(tx *store.ReadTx) error {
 		after := ""
@@ -686,24 +689,38 @@ func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[stri
 			after = next
 		}
 	}); rerr != nil {
-		return fmt.Errorf("reconcilePriorUncertain: %w", rerr)
+		return nil, fmt.Errorf("reconcilePriorUncertain: %w", rerr)
 	}
 	e.priorDiverged = map[string]string{}
+	var prior map[string]string
 	for _, row := range rows {
-		if row.Status != "uncertain" {
+		if row.Status != "uncertain" && row.Status != "" {
 			continue
 		}
 		observed, ok := remote[row.Ref]
 		want := row.LocalOid
 		switch {
-		case !ok && want == "":
-		case ok && want != "" && observed == want:
+		case !ok && want == "", ok && want != "" && observed == want:
+			if row.RemoteOid == want {
+				continue
+			}
+			if prior == nil {
+				prior = make(map[string]string, len(remote))
+				maps.Copy(prior, remote)
+			}
+			if row.RemoteOid == "" {
+				delete(prior, row.Ref)
+			} else {
+				prior[row.Ref] = row.RemoteOid
+			}
 		case (ok && observed == row.RemoteOid) || (!ok && want != ""):
 		default:
-			e.priorDiverged[row.Ref] = "remote moved since the uncertain push"
+			if row.Status == "uncertain" {
+				e.priorDiverged[row.Ref] = "remote moved since the uncertain push"
+			}
 		}
 	}
-	return nil
+	return prior, nil
 }
 
 func orDefault(value, fallback string) string {
@@ -1291,7 +1308,7 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	if remoteCount != nil {
 		eventCursor = int64(*remoteCount)
 	}
-	confirmed := plan != nil && e.loaded.run.ConfirmedDigest != "" && e.loaded.run.ConfirmedDigest == plan.Digest
+	confirmed := plan != nil && e.approvedDigest() != "" && e.approvedDigest() == plan.Digest
 	if plan != nil && plan.TargetNonEmpty && (e.cfg.AdoptExistingRefs || confirmed) {
 		adopted = true
 	}

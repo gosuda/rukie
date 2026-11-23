@@ -758,7 +758,7 @@ func TestReconcilePriorUncertain(t *testing.T) {
 		"refs/heads/moved":   "third-party",
 	}
 	e := &execution{worker: *w, loaded: loadedRun{mirror: m}}
-	if err := e.reconcilePriorUncertain(testCtx(t), remote); err != nil {
+	if _, err := e.reconcilePriorUncertain(testCtx(t), remote); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(e.priorDiverged) != 1 {
