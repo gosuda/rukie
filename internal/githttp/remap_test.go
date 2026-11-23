@@ -150,3 +150,23 @@ func TestCollectChangeSpansPreservesAnchorsForTruncatedPatch(t *testing.T) {
 		t.Fatalf("truncated patch = (%v, %v), want no mappings", spans, err)
 	}
 }
+
+func TestCollectChangeSpansPreservesHexPathAndPatchBytes(t *testing.T) {
+	path := "odd\n\xffname.txt"
+	patch := "--- a/" + path + "\n+++ b/" + path + "\n@@ -1 +1,2 @@\n+inserted\n kept\n"
+	page := diffPage(t, fmt.Sprintf(
+		`{"files":{"items":[{"path":{"hex":"%s"},"body":{"unified":{"patch":{"inline":{"data":{"hex":"%s"}}}}}},{"path":"normal.txt","body":{"unified":{"patch":{"inline":{"data":"@@ -1 +1,2 @@\n+inserted\n kept\n"}}}}}],"next":null}}`,
+		hex.EncodeToString([]byte(path)), hex.EncodeToString([]byte(patch)),
+	))
+	spans, err := collectChangeSpans(t.Context(), func(context.Context, jsonv1.RawMessage) (diffReplyJSON, error) {
+		return page, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{path, "normal.txt"} {
+		if got, ok := review.RemapLine(1, spans[name]); !ok || got != 2 {
+			t.Fatalf("path %q line = (%d, %v), want (2, true)", name, got, ok)
+		}
+	}
+}

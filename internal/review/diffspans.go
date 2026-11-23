@@ -23,11 +23,27 @@ func SpansFromPatch(patches map[string]string) (map[string][]Span, error) {
 }
 
 func spansFromUnified(path, patch string) ([]Span, error) {
+	oldHeader := "--- a/" + path + "\n"
+	newHeader := "+++ b/" + path + "\n"
+	var added, deleted bool
+	switch {
+	case strings.HasPrefix(patch, oldHeader+newHeader):
+		patch = patch[len(oldHeader)+len(newHeader):]
+	case strings.HasPrefix(patch, "--- /dev/null\n"+newHeader):
+		patch = patch[len("--- /dev/null\n")+len(newHeader):]
+		added = true
+	case strings.HasPrefix(patch, oldHeader+"+++ /dev/null\n"):
+		patch = patch[len(oldHeader)+len("+++ /dev/null\n"):]
+		deleted = true
+	case patch == "" || strings.HasPrefix(patch, "@@ -"):
+	default:
+		return nil, fmt.Errorf("spansFromUnified: invalid file headers")
+	}
 	var spans []Span
 	var oldCursor, newCursor int64 = 1, 1
 	var oldRemaining, newRemaining int64
 	var spanOld, spanNew int64
-	var oldHeader, newHeader, added, deleted, sawHunk, open bool
+	var sawHunk, open bool
 	closeSpan := func() {
 		if open && oldCursor > spanOld {
 			oldStart, okOld := toUint32(spanOld)
@@ -41,7 +57,7 @@ func spansFromUnified(path, patch string) ([]Span, error) {
 	}
 	for line := range strings.SplitSeq(patch, "\n") {
 		if rest, ok := strings.CutPrefix(line, "@@ -"); ok {
-			if oldRemaining != 0 || newRemaining != 0 || oldHeader != newHeader {
+			if oldRemaining != 0 || newRemaining != 0 {
 				return nil, fmt.Errorf("spansFromUnified: incomplete hunk")
 			}
 			oldPart, newPart, separated := strings.Cut(rest, " +")
@@ -75,25 +91,6 @@ func spansFromUnified(path, patch string) ([]Span, error) {
 			continue
 		}
 		if !sawHunk {
-			if label, ok := strings.CutPrefix(line, "--- "); ok && !oldHeader {
-				if label != "/dev/null" && label != "a/"+path {
-					return nil, fmt.Errorf("spansFromUnified: invalid old file header")
-				}
-				oldHeader = true
-				added = label == "/dev/null"
-				continue
-			}
-			if label, ok := strings.CutPrefix(line, "+++ "); ok && oldHeader && !newHeader {
-				if label != "/dev/null" && label != "b/"+path {
-					return nil, fmt.Errorf("spansFromUnified: invalid new file header")
-				}
-				newHeader = true
-				deleted = label == "/dev/null"
-				if added && deleted {
-					return nil, fmt.Errorf("spansFromUnified: inconsistent file headers")
-				}
-				continue
-			}
 			return nil, fmt.Errorf("spansFromUnified: unexpected patch header")
 		}
 		switch line[0] {
@@ -129,7 +126,7 @@ func spansFromUnified(path, patch string) ([]Span, error) {
 			}
 		}
 	}
-	if oldRemaining != 0 || newRemaining != 0 || !sawHunk && patch != "" && (!oldHeader || !newHeader) {
+	if oldRemaining != 0 || newRemaining != 0 {
 		return nil, fmt.Errorf("spansFromUnified: incomplete patch")
 	}
 	closeSpan()
