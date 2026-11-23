@@ -138,7 +138,7 @@ func ComputePlan(local, remote map[string]string, m Mirror, sourceDefaultBranch,
 	sortPlans(p.Deletes)
 	sortPlans(p.Diverged)
 	sortPlans(p.Ignored)
-	p.Digest = planDigest(p)
+	p.Digest = planDigest(p, m.TargetURL)
 	planNonEmpty := len(p.Updates)+len(p.Deletes)+len(p.Diverged) > 0
 	needConfirm := m.Mode == ModeExact && planNonEmpty && (len(p.Deletes) > 0 || p.TargetNonEmpty)
 	if needConfirm && confirmedDigest != p.Digest && (!m.AdoptExistingRefs || len(p.Deletes) > 0) {
@@ -168,8 +168,9 @@ func hidden(ref string) bool {
 func sortPlans(p []RefPlan) {
 	slices.SortFunc(p, func(a, b RefPlan) int { return cmp.Compare(a.Ref, b.Ref) })
 }
-func planDigest(p Plan) string {
+func planDigest(p Plan, targetURL string) string {
 	var b strings.Builder
+	fmt.Fprintf(&b, "mirror-plan-v2\n%q\n", targetURL)
 	for _, list := range [][]RefPlan{p.Updates, p.Deletes, p.Diverged, p.Ignored} {
 		for _, r := range list {
 			fmt.Fprintf(&b, "%s\x00%s\x00%s\x00%s\x00%s\n", r.Ref, r.Old, r.New, r.Action, r.Reason)

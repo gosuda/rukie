@@ -155,12 +155,28 @@ func (w Worker) drain(ctx context.Context, owner string) error {
 func (w Worker) scheduleOnce(ctx context.Context) error {
 	now := w.now()
 	var due []store.MirrorRow
+	confirmations := map[int64]string{}
 	if rerr := w.Store.Read(ctx, func(tx *store.ReadTx) error {
 		rows, derr := tx.DueMirrors(now.UnixMilli(), MaxMirrorWorkers*4)
 		if derr != nil {
 			return derr
 		}
 		due = rows
+		for _, row := range rows {
+			if row.State != "failing" {
+				continue
+			}
+			latest, lerr := tx.LatestMirrorRun(row.ID)
+			if errors.Is(lerr, store.ErrNotFound) {
+				continue
+			}
+			if lerr != nil {
+				return lerr
+			}
+			if latest.State == "failed" {
+				confirmations[row.ID] = latest.ConfirmedDigest
+			}
+		}
 		return nil
 	}); rerr != nil {
 		return fmt.Errorf("scheduleOnce: %w", rerr)
@@ -173,12 +189,13 @@ func (w Worker) scheduleOnce(ctx context.Context) error {
 		mirrorID := row.ID
 		if werr := w.Store.Write(ctx, func(tx *store.WriteTx) error {
 			_, ierr := tx.InsertRun(now, store.MirrorRunRow{
-				PublicID: pub,
-				MirrorID: row.ID,
-				Kind:     "reconcile",
-				State:    "queued",
-				Trigger:  "schedule",
-				Counts:   "{}",
+				PublicID:        pub,
+				MirrorID:        row.ID,
+				Kind:            "reconcile",
+				State:           "queued",
+				Trigger:         "schedule",
+				Counts:          "{}",
+				ConfirmedDigest: confirmations[row.ID],
 			})
 			return ierr
 		}); werr != nil {

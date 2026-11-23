@@ -712,3 +712,49 @@ func TestMirrorListPagination(t *testing.T) {
 		t.Fatalf("pagination: %v", err)
 	}
 }
+
+func TestLatestMirrorRunOrdersAndScopesResults(t *testing.T) {
+	st, now := openMirrorTest(t)
+	repoID, _ := seedMirrorRepo(t, st, now, "latest-runs")
+	mirror := insertMirrorFixture(t, st, now, repoID, "edge")
+	other := insertMirrorFixture(t, st, now, repoID, "other")
+	if err := st.Read(t.Context(), func(tx *ReadTx) error {
+		_, err := tx.LatestMirrorRun(mirror.ID)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("empty history error = %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var expected MirrorRunRow
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		if _, err := tx.InsertRun(now, MirrorRunRow{MirrorID: mirror.ID, PublicID: "first", Kind: "sync", State: "failed", Trigger: "manual"}); err != nil {
+			return err
+		}
+		latest, err := tx.InsertRun(now, MirrorRunRow{MirrorID: mirror.ID, PublicID: "latest", Kind: "sync", State: "failed", Trigger: "manual"})
+		if err != nil {
+			return err
+		}
+		expected = latest
+		if _, err := tx.InsertRun(now.Add(-time.Second), MirrorRunRow{MirrorID: mirror.ID, PublicID: "backdated", Kind: "sync", State: "failed", Trigger: "manual"}); err != nil {
+			return err
+		}
+		_, err = tx.InsertRun(now.Add(time.Hour), MirrorRunRow{MirrorID: other.ID, PublicID: "another-mirror", Kind: "sync", State: "failed", Trigger: "manual"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Read(t.Context(), func(tx *ReadTx) error {
+		latest, err := tx.LatestMirrorRun(mirror.ID)
+		if err != nil {
+			return err
+		}
+		if latest.ID != expected.ID {
+			t.Fatalf("latest = %+v, want %+v", latest, expected)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -934,6 +934,23 @@ func (tx *ReadTx) GetRunByPublicID(pub string) (MirrorRunRow, error) {
 	return row, serr
 }
 
+// LatestMirrorRun returns the newest run of one mirror, or ErrNotFound.
+func (tx *ReadTx) LatestMirrorRun(mirrorID int64) (MirrorRunRow, error) {
+	inner, err := tx.live()
+	if err != nil {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w", err)
+	}
+	row, serr := scanRunRow(inner.QueryRowContext(tx.ctx,
+		`SELECT `+sqlRunColumns+` FROM mirror_runs WHERE mirror_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, mirrorID).Scan)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w: mirror %d has no runs", ErrNotFound, mirrorID)
+	}
+	if serr != nil {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w", serr)
+	}
+	return row, nil
+}
+
 // ListRuns lists one mirror's runs, oldest first, with a next cursor. A
 // non-empty state filters to that state.
 func (tx *ReadTx) ListRuns(mirrorID int64, state, after string, limit int) ([]MirrorRunRow, string, error) {
