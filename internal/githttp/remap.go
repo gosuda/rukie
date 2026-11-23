@@ -44,8 +44,9 @@ func (b *diffByteString) UnmarshalJSON(raw []byte) error {
 }
 
 type diffFileItem struct {
-	Path diffByteString    `json:"path"`
-	Body jsonv1.RawMessage `json:"body"`
+	OldPath *diffByteString   `json:"old_path"`
+	Path    diffByteString    `json:"path"`
+	Body    jsonv1.RawMessage `json:"body"`
 }
 
 type diffFilesPage struct {
@@ -87,6 +88,7 @@ func (s *Server) changeSpans(ctx context.Context, repoID int64, oldHead, newHead
 
 func collectChangeSpans(ctx context.Context, read func(context.Context, jsonv1.RawMessage) (diffReplyJSON, error)) (map[string][]review.Span, error) {
 	spans := make(map[string][]review.Span)
+	renamed := make(map[string]struct{})
 	var cursor jsonv1.RawMessage
 	for {
 		reply, err := read(ctx, cursor)
@@ -106,11 +108,27 @@ func collectChangeSpans(ctx context.Context, read func(context.Context, jsonv1.R
 				return nil, fmt.Errorf("collectChangeSpans: diff file has no path")
 			}
 			spans[path] = nil
+			if file.OldPath != nil {
+				oldPath := string(*file.OldPath)
+				if oldPath == "" {
+					return nil, fmt.Errorf("collectChangeSpans: rename has no source path")
+				}
+				renamed[oldPath] = struct{}{}
+				renamed[path] = struct{}{}
+				continue
+			}
 			if text {
-				spans[path] = review.SpansFromPatch(map[string]string{path: patch})[path]
+				fileSpans, err := review.SpansFromPatch(map[string]string{path: patch})
+				if err != nil {
+					return nil, fmt.Errorf("collectChangeSpans: %w", err)
+				}
+				spans[path] = fileSpans[path]
 			}
 		}
 		if len(reply.Files.Next) == 0 || bytes.Equal(bytes.TrimSpace(reply.Files.Next), []byte("null")) {
+			for path := range renamed {
+				spans[path] = nil
+			}
 			return spans, nil
 		}
 		if bytes.Equal(cursor, reply.Files.Next) {

@@ -164,6 +164,9 @@ func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent) error {
 				return fmt.Errorf("Ingest: %w: event seq %d misses its name", store.ErrInvalid, event.Seq)
 			}
 			current := event.New.Hex()
+			if err := enqueueReviewRemap(tx, now, f.repoID, event.Name, current); err != nil {
+				return err
+			}
 			if tips[event.Name] == current {
 				if int64(event.Seq) > front {
 					front = int64(event.Seq)
@@ -285,6 +288,9 @@ func (f *Follower) resnapshot(ctx context.Context) error {
 			return rerr
 		}
 		for name, target := range tips {
+			if err := enqueueReviewRemap(tx, now, f.repoID, name, target); err != nil {
+				return err
+			}
 			if before[name] == target {
 				continue
 			}
