@@ -86,15 +86,15 @@ func TestScheduledRetryRetainsOnlyMatchingApproval(t *testing.T) {
 	w, st, q, now := openWorker(t)
 	repoID := insertRepo(t, st, now, "approved-retry")
 	mirror := insertMirror(t, st, now, repoID, true)
-	cfg, err := mirrorConfigOf(mirror)
-	if err != nil {
-		t.Fatal(err)
+	cfg, configErr := mirrorConfigOf(mirror)
+	if configErr != nil {
+		t.Fatal(configErr)
 	}
 	local := map[string]string{"refs/heads/main": "base"}
 	remote := map[string]string{"refs/heads/main": "base", "refs/tags/obsolete": "old"}
-	plan, err := ComputePlan(local, remote, cfg, "main", "main", "")
-	if !errors.Is(err, ErrNeedsConfirmation) || len(plan.Deletes) != 1 {
-		t.Fatalf("prune plan = %+v, %v", plan, err)
+	plan, planErr := ComputePlan(local, remote, cfg, "main", "main", "")
+	if !errors.Is(planErr, ErrNeedsConfirmation) || len(plan.Deletes) != 1 {
+		t.Fatalf("prune plan = %+v, %v", plan, planErr)
 	}
 	pub := "run-approved-retry"
 	run := insertRun(t, st, now, mirror.ID, pub)

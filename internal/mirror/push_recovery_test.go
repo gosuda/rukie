@@ -104,13 +104,13 @@ func TestPushRecoveryDoesNotSendAnEmptyBatch(t *testing.T) {
 
 func TestPushRecoveryKeepsFailuresAndBoundsRetries(t *testing.T) {
 	for _, test := range []struct {
-		name       string
 		initial    error
 		observeErr error
-		newPlans   bool
+		name       string
 		updates    int
 		wantSends  int
 		wantReads  int
+		newPlans   bool
 	}{
 		{name: "missing typed plan", initial: &ruk.Error{Code: wire.CodePushUncertain}, updates: 1, wantSends: 1},
 		{name: "other refusal", initial: &ruk.Error{Code: wire.CodeForbidden}, updates: 1, wantSends: 1},

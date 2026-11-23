@@ -25,7 +25,7 @@ func enqueueReviewRemap(tx *store.WriteTx, now time.Time, repoID int64, name, he
 	if err != nil {
 		return fmt.Errorf("enqueueReviewRemap: %w", err)
 	}
-	if _, err := tx.EnqueueJob(store.JobSpec{
+	if _, err := tx.EnqueueRecoverableJob(store.JobSpec{
 		Payload: string(payload), ID: "review-remap-ref:" + hex.EncodeToString(digest[:]),
 		Kind: string(queue.KindReviewRemap), RepoID: repoID, At: now,
 	}); err != nil {

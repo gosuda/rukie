@@ -21,7 +21,7 @@ func TestConcurrentSchedulersUseLatestApprovalAndQueueOnce(t *testing.T) {
 	t.Cleanup(releaseAll)
 	var gate atomic.Bool
 	var waiting atomic.Int64
-	st, err := store.Open(ctx, store.Options{
+	st, openErr := store.Open(ctx, store.Options{
 		Path: t.TempDir() + "/scheduler.sqlite",
 		Barrier: func() (func(), bool) {
 			if gate.Load() && waiting.Add(1) <= schedulerCount {
@@ -35,8 +35,8 @@ func TestConcurrentSchedulersUseLatestApprovalAndQueueOnce(t *testing.T) {
 			return func() {}, true
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if openErr != nil {
+		t.Fatal(openErr)
 	}
 	t.Cleanup(func() { _ = st.Close(context.Background()) })
 	repoID := insertRepo(t, st, now, "concurrent-schedule")

@@ -65,7 +65,7 @@ func (r *Reconciler) ReconcileRepo(ctx context.Context) (int, error) {
 		}
 		for name, target := range listed {
 			if err := enqueueReviewRemap(tx, now, r.repoID, name, target); err != nil {
-				return err
+				return fmt.Errorf("ReconcileRepo: %w", err)
 			}
 			if tips[name] == target {
 				continue
