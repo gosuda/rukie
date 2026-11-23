@@ -15,7 +15,7 @@ import (
 
 func TestReconcileGuardStopsAutomaticMirrorRecovery(t *testing.T) {
 	for _, route := range []string{"blocked-push", "uncertain-result"} {
-		for _, failure := range []string{"rewritten", "original-remote-required", "plan-mismatch"} {
+		for _, failure := range []string{"rewritten", "original-remote-required", "plan-mismatch", "incomplete"} {
 			t.Run(route+"/"+failure, func(t *testing.T) {
 				w, st, q, now := openWorker(t)
 				repoID := insertRepo(t, st, now, "reconcile-guard")
@@ -67,6 +67,9 @@ func TestReconcileGuardStopsAutomaticMirrorRecovery(t *testing.T) {
 					}
 					if failure == "original-remote-required" {
 						return ruk.PushReconcileReply{}, &ruk.Error{Code: wire.CodeInvalid, Message: "legacy push plan requires explicit original_remote"}
+					}
+					if failure == "incomplete" {
+						return ruk.PushReconcileReply{}, &ruk.IncompleteReconciliationError{Reason: "missing continuation page"}
 					}
 					if failure == "plan-mismatch" {
 						planID = "another-plan"
@@ -185,5 +188,55 @@ func TestLegacyReconcileExtraRefsPreserveRequestedCAS(t *testing.T) {
 		return nil
 	}); err != nil || resends != 1 {
 		t.Fatalf("legacy extra refs blocked uncertain recovery: %v, sends = %d", err, resends)
+	}
+}
+
+func TestPartialReconcileFailureDoesNotResend(t *testing.T) {
+	for _, route := range []string{"blocked-push", "uncertain-result"} {
+		t.Run(route, func(t *testing.T) {
+			tracked := &trackedRef{
+				plan: RefPlan{Ref: "refs/heads/main", Old: "old", New: "wanted", Action: ActionForceUpdate},
+				status: "uncertain", planID: "plan",
+			}
+			e := &execution{tracked: []*trackedRef{tracked}}
+			before := *tracked
+			sends, reads := 0, 0
+			reconcile := func(context.Context, string) (ruk.PushReconcileReply, error) {
+				wanted := "wanted"
+				return ruk.PushReconcileReply{
+					Plan: "plan", State: "uncertain",
+					Observations: []ruk.ReconcileObservation{{RemoteRef: tracked.plan.Ref, Observed: &wanted, Verdict: "equal_new"}},
+				}, fmt.Errorf("final reconciliation page: %w", ruk.ErrIo)
+			}
+			var recoveryErr error
+			if route == "blocked-push" {
+				_, recoveryErr = e.pushWithReconciliation(t.Context(), "request", []ruk.PushUpdate{{
+					RemoteRef: tracked.plan.Ref, Source: ruk.CommitSource(tracked.plan.New),
+				}}, func(context.Context, string, []ruk.PushUpdate) (ruk.PushReply, error) {
+					sends++
+					return ruk.PushReply{}, blockedPush("plan")
+				}, reconcile, func(context.Context) (map[string]string, error) {
+					reads++
+					return nil, nil
+				})
+				if sends != 1 {
+					t.Fatalf("partial reconciliation resent the push %d times", sends)
+				}
+			} else {
+				recoveryErr = e.resolveUncertainWith(t.Context(), reconcile, func(context.Context, []*trackedRef) error {
+					sends++
+					return nil
+				})
+				if sends != 0 {
+					t.Fatalf("partial reconciliation resent %d refs", sends)
+				}
+			}
+			if !errors.Is(recoveryErr, ruk.ErrIo) || reads != 0 || *tracked != before {
+				t.Fatalf("partial reconciliation changed the ref or error: %+v, %v, reads = %d", tracked, recoveryErr, reads)
+			}
+			if _, terminal := errors.AsType[*ruk.IncompleteReconciliationError](recoveryErr); terminal {
+				t.Fatalf("transport failure requires operator recovery: %v", recoveryErr)
+			}
+		})
 	}
 }
