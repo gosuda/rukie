@@ -203,7 +203,7 @@ func TestSandboxP10ProbeImage(t *testing.T) {
 	}
 }
 
-var belowFloorPattern = regexp.MustCompile(`podman \d+\.\d+\.\d+ is below `)
+var belowFloorPattern = regexp.MustCompile(`podman \d+\.\d+\.\d+\S* is below `)
 
 func TestSandboxP11LiveProbe(t *testing.T) {
 	if _, err := os.Stat("/usr/bin/podman"); err != nil {
