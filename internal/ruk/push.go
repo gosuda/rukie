@@ -374,6 +374,24 @@ type boundedList[T any] struct {
 	Items []T `json:"items"`
 }
 
+// PushDetailOf returns a typed push failure with a nonempty plan identity.
+func PushDetailOf(err error) (PushReply, bool) {
+	callErr, ok := errors.AsType[*Error](err)
+	if !ok || callErr == nil || len(callErr.Detail) == 0 {
+		return PushReply{}, false
+	}
+	var env struct {
+		Push *PushReply `json:"push"`
+	}
+	if err := jsonv2.Unmarshal(callErr.Detail, &env, jsonv1.DefaultOptionsV1()); err != nil {
+		return PushReply{}, false
+	}
+	if env.Push == nil || env.Push.Plan == "" {
+		return PushReply{}, false
+	}
+	return *env.Push, true
+}
+
 // HTTPDetail carries the facts behind one HTTP refusal: the status, the
 // Retry-After delay, the redirect target, and a scrubbed body preview.
 type HTTPDetail struct {
