@@ -44,7 +44,7 @@ func reconcilePageJSON(t *testing.T, page reconcileTestPage) jsonv1.RawMessage {
 	return jsonv1.RawMessage(mustMarshalJSON(t, page))
 }
 
-func callReconcilePages(t *testing.T, args PushReconcileArgs, pages []jsonv1.RawMessage) (PushReconcileReply, error, []PushReconcileArgs) {
+func callReconcilePages(t *testing.T, args PushReconcileArgs, pages []jsonv1.RawMessage) (PushReconcileReply, []PushReconcileArgs, error) {
 	t.Helper()
 	var mu sync.Mutex
 	var requests []PushReconcileArgs
@@ -78,7 +78,7 @@ func callReconcilePages(t *testing.T, args PushReconcileArgs, pages []jsonv1.Raw
 	reply, err := PushReconcile(ctx, client, Repo{Path: "/repo"}, args, wire.TransportAuth{})
 	mu.Lock()
 	defer mu.Unlock()
-	return reply, err, slices.Clone(requests)
+	return reply, slices.Clone(requests), err
 }
 
 func TestPushReconcilePaginationHappy(t *testing.T) {
@@ -111,7 +111,7 @@ func TestPushReconcilePaginationHappy(t *testing.T) {
 	}
 	remote := "ssh://alice@example.test:2222/repository"
 	ssh := OriginalSSHIdentity{User: "alice", Port: 2222}
-	reply, err, calls := callReconcilePages(t, PushReconcileArgs{
+	reply, calls, err := callReconcilePages(t, PushReconcileArgs{
 		Plan: "plan", OriginalRemote: &remote, OriginalSSH: &ssh,
 	}, pages)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestPushReconcilePreservesRepeatedReports(t *testing.T) {
 	}
 	second := first
 	second.Next = nil
-	reply, err, calls := callReconcilePages(t, PushReconcileArgs{Plan: "plan"}, []jsonv1.RawMessage{
+	reply, calls, err := callReconcilePages(t, PushReconcileArgs{Plan: "plan"}, []jsonv1.RawMessage{
 		reconcilePageJSON(t, first), reconcilePageJSON(t, second),
 	})
 	if err != nil || len(calls) != 2 || len(reply.ReportedObservations) != 2 {
@@ -252,7 +252,7 @@ func TestPushReconcileRejectsPages(t *testing.T) {
 			if name == "missing-total" {
 				pages[0] = jsonv1.RawMessage(`{"plan":"plan","state":"uncertain","observations":{"items":[{"remote_ref":"main","verdict":"equal_old"}]},"next":{"session":"s","request":"r","page":1}}`)
 			}
-			reply, err, calls := callReconcilePages(t, PushReconcileArgs{Plan: "plan"}, pages)
+			reply, calls, err := callReconcilePages(t, PushReconcileArgs{Plan: "plan"}, pages)
 			if _, ok := errors.AsType[*IncompleteReconciliationError](err); !ok {
 				t.Fatalf("invalid snapshot error = %v", err)
 			}
@@ -272,7 +272,7 @@ func TestPushReconcileFinalPageFailure(t *testing.T) {
 		},
 	})
 	failure := jsonv1.RawMessage(`{"schema_version":{"major":1,"minor":1},"body":{"failure":{"code":"E_IO","message":"final page unavailable"}}}`)
-	reply, err, calls := callReconcilePages(t, PushReconcileArgs{Plan: "plan"}, []jsonv1.RawMessage{first, failure})
+	reply, calls, err := callReconcilePages(t, PushReconcileArgs{Plan: "plan"}, []jsonv1.RawMessage{first, failure})
 	if !errors.Is(err, ErrIo) {
 		t.Fatalf("final page failure = %v", err)
 	}
@@ -286,7 +286,7 @@ func TestPushReconcileFinalPageFailure(t *testing.T) {
 
 func TestPushReconcileLegacySnapshot(t *testing.T) {
 	page := jsonv1.RawMessage(`{"plan":"plan","state":"uncertain","rewritten":true,"observations":{"items":[{"remote_ref":"main","verdict":"equal_old"}],"total":1,"truncated":false}}`)
-	reply, err, calls := callReconcilePages(t, PushReconcileArgs{Plan: "plan"}, []jsonv1.RawMessage{page})
+	reply, calls, err := callReconcilePages(t, PushReconcileArgs{Plan: "plan"}, []jsonv1.RawMessage{page})
 	if err != nil || len(calls) != 1 || len(reply.Observations) != 1 || len(reply.ReportedObservations) != 0 || !reply.Rewritten {
 		t.Fatalf("legacy snapshot = %+v, %v, calls = %d", reply, err, len(calls))
 	}
