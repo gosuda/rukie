@@ -262,7 +262,20 @@ func (f *Follower) resnapshot(ctx context.Context) error {
 		}
 		tips[ref.Name] = target
 	}
+	if asOf > math.MaxInt64 {
+		return fmt.Errorf("resnapshot: %w: as_of overflows int64", store.ErrInvalid)
+	}
 	return f.store.Write(ctx, func(tx *store.WriteTx) error {
+		cursor, cerr := tx.Outbox().Cursor(eventConsumer(f.repoID))
+		if cerr != nil {
+			return cerr
+		}
+		if cursor < 0 {
+			return fmt.Errorf("resnapshot: stored cursor %d is negative", cursor)
+		}
+		if int64(asOf) < cursor {
+			return nil
+		}
 		before, berr := tx.WriteTips(f.repoID)
 		if berr != nil {
 			return berr
@@ -286,14 +299,7 @@ func (f *Follower) resnapshot(ctx context.Context) error {
 				return serr
 			}
 		}
-		cursor, cerr := tx.Outbox().Cursor(eventConsumer(f.repoID))
-		if cerr != nil {
-			return cerr
-		}
-		if asOf > math.MaxInt64 {
-			return fmt.Errorf("resnapshot: %w: as_of overflows int64", store.ErrInvalid)
-		}
-		if int64(asOf) <= cursor {
+		if int64(asOf) == cursor {
 			return nil
 		}
 		return tx.Outbox().Advance(eventConsumer(f.repoID), cursor, int64(asOf))
