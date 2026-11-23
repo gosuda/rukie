@@ -28,15 +28,15 @@ VALUES (?1, ?2, ?3, ?4, 'queued', 0, '', 0, ?5, ?5)`
 	sqlRecoverableJobInsert = sqlJobInsertRow + ` ON CONFLICT (id) DO UPDATE SET
 payload = excluded.payload, state = 'queued', attempts = 0, lease_owner = '',
 lease_token = '', lease_expires_at = 0, run_after = excluded.updated_at, updated_at = excluded.updated_at
-WHERE jobs.state = 'dead' AND jobs.kind = excluded.kind AND jobs.repo_id = excluded.repo_id`
+WHERE jobs.state = 'dead' AND jobs.terminal_error = '' AND jobs.kind = excluded.kind AND jobs.repo_id = excluded.repo_id`
 
 	sqlJobClaim = `UPDATE jobs SET state = 'leased', lease_owner = ?1, lease_token = ?6, lease_expires_at = ?2, updated_at = ?3
 WHERE id IN (SELECT id FROM jobs
 WHERE (state = 'queued' OR (state = 'leased' AND lease_expires_at <= ?4)) AND run_after <= ?4
 ORDER BY created_at, id LIMIT ?5)
-RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at`
+RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at, terminal_error`
 
-	sqlJobGet = `SELECT id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at
+	sqlJobGet = `SELECT id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at, terminal_error
 FROM jobs WHERE id = ?1`
 
 	sqlJobDone = `UPDATE jobs SET state = 'done', lease_owner = '', lease_token = '', lease_expires_at = 0, updated_at = ?1
@@ -53,6 +53,7 @@ type JobSpec struct {
 
 type Job struct {
 	Payload        string
+	TerminalError  string
 	LeaseOwner     string
 	LeaseToken     string
 	ID             string
@@ -102,7 +103,8 @@ func (tx *WriteTx) EnqueueJob(spec JobSpec) (bool, error) {
 }
 
 // EnqueueRecoverableJob inserts a new job or revives a dead job of the same
-// kind and repository. It leaves queued, leased, and completed jobs unchanged.
+// kind and repository after transient failures. It leaves terminal failures
+// and queued, leased, and completed jobs unchanged.
 func (tx *WriteTx) EnqueueRecoverableJob(spec JobSpec) (bool, error) {
 	if err := checkJobSpec(spec); err != nil {
 		return false, fmt.Errorf("EnqueueRecoverableJob: %w", err)
@@ -123,7 +125,7 @@ func scanJob(rows interface {
 }) (Job, error) {
 	var job Job
 	var payload string
-	if err := rows.Scan(&job.ID, &job.Kind, &job.RepoID, &payload, &job.State, &job.Attempts, &job.LeaseOwner, &job.LeaseToken, &job.LeaseExpiresAt, &job.RunAfter, &job.CreatedAt, &job.UpdatedAt); err != nil {
+	if err := rows.Scan(&job.ID, &job.Kind, &job.RepoID, &payload, &job.State, &job.Attempts, &job.LeaseOwner, &job.LeaseToken, &job.LeaseExpiresAt, &job.RunAfter, &job.CreatedAt, &job.UpdatedAt, &job.TerminalError); err != nil {
 		return Job{}, err
 	}
 	job.Payload = payload
@@ -203,7 +205,7 @@ WHERE id IN (SELECT id FROM jobs
 WHERE kind IN (SELECT value FROM json_each(?4)) AND (state = 'queued' OR (state = 'leased' AND lease_expires_at <= ?5)) AND run_after <= ?5
 AND (kind != 'repo_purge' OR json_extract(payload, '$.not_before') <= ?6)
 ORDER BY created_at, id LIMIT ?7)
-RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at`
+RETURNING id, kind, repo_id, payload, state, attempts, lease_owner, lease_token, lease_expires_at, run_after, created_at, updated_at, terminal_error`
 	args := []any{owner, at + lease.Milliseconds(), at, string(kindsJSON), at, at, limit, token}
 	rows, qerr := inner.QueryContext(tx.ctx, query, args...)
 	if qerr != nil {
@@ -309,7 +311,7 @@ func (tx *WriteTx) ResetJob(spec JobSpec, now time.Time) error {
 	}
 	at := msOf(spec.At)
 	moved, merr := execAffected(tx.ctx, inner, `UPDATE jobs
-SET kind = ?2, repo_id = ?3, payload = ?4, state = 'queued', attempts = 0,
+SET kind = ?2, repo_id = ?3, payload = ?4, state = 'queued', attempts = 0, terminal_error = '',
     lease_owner = '', lease_token = '', lease_expires_at = 0, run_after = ?5, updated_at = ?6
 WHERE id = ?1`,
 		spec.ID, spec.Kind, spec.RepoID, spec.Payload, at, msOf(now))
@@ -328,38 +330,57 @@ WHERE id = ?1`,
 // holder requeues; a fenced-out worker reports ErrStale and exits
 // cleanly instead of running the job twice.
 func (tx *WriteTx) RequeueJob(owner, id, token string, now time.Time) error {
+	if err := tx.failJob(owner, id, token, "", now); err != nil {
+		return fmt.Errorf("RequeueJob: %w", err)
+	}
+	return nil
+}
+
+// FailJobPermanently records a nonempty terminal error and dead-letters the
+// job. Only the current lease-token holder may fail the job.
+func (tx *WriteTx) FailJobPermanently(owner, id, token, reason string, now time.Time) error {
+	if reason == "" {
+		return fmt.Errorf("FailJobPermanently: %w: terminal error must not be empty", ErrInvalid)
+	}
+	if err := tx.failJob(owner, id, token, reason, now); err != nil {
+		return fmt.Errorf("FailJobPermanently: %w", err)
+	}
+	return nil
+}
+
+func (tx *WriteTx) failJob(owner, id, token, terminalError string, now time.Time) error {
 	if len(owner) == 0 || len(id) == 0 || len(token) == 0 {
-		return fmt.Errorf("RequeueJob: %w: owner, id, and lease token must not be empty", ErrInvalid)
+		return fmt.Errorf("failJob: %w: owner, id, and lease token must not be empty", ErrInvalid)
 	}
 	inner, err := tx.live()
 	if err != nil {
-		return err
+		return fmt.Errorf("failJob: %w", err)
 	}
 	at := msOf(now)
 	if at <= 0 {
-		return fmt.Errorf("RequeueJob: %w: time must be after the Unix epoch", ErrInvalid)
+		return fmt.Errorf("failJob: %w: time must be after the Unix epoch", ErrInvalid)
 	}
 	var attempts int64
 	err = inner.QueryRowContext(tx.ctx,
 		`SELECT attempts FROM jobs WHERE id = ?1 AND state = 'leased' AND lease_owner = ?2 AND lease_token = ?3`,
 		id, owner, token).Scan(&attempts)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("RequeueJob: %w: job is not leased to this owner", ErrStale)
+		return fmt.Errorf("failJob: %w: job is not leased to this owner", ErrStale)
 	}
 	if err != nil {
-		return fmt.Errorf("RequeueJob: %w", mapErr(err))
+		return fmt.Errorf("failJob: %w", mapErr(err))
 	}
 	next := attempts + 1
-	if next >= jobMaxAttempts {
+	if next >= jobMaxAttempts || terminalError != "" {
 		moved, merr := execAffected(tx.ctx, inner,
-			`UPDATE jobs SET state = 'dead', attempts = ?1, lease_owner = '', lease_token = '', lease_expires_at = 0, run_after = 0, updated_at = ?2
+			`UPDATE jobs SET state = 'dead', attempts = ?1, lease_owner = '', lease_token = '', lease_expires_at = 0, run_after = 0, updated_at = ?2, terminal_error = ?6
 WHERE id = ?3 AND state = 'leased' AND lease_owner = ?4 AND lease_token = ?5`,
-			next, at, id, owner, token)
+			next, at, id, owner, token, terminalError)
 		if merr != nil {
-			return fmt.Errorf("RequeueJob: %w", mapErr(merr))
+			return fmt.Errorf("failJob: %w", mapErr(merr))
 		}
 		if moved == 0 {
-			return fmt.Errorf("RequeueJob: %w: job is not leased to this owner", ErrStale)
+			return fmt.Errorf("failJob: %w: job is not leased to this owner", ErrStale)
 		}
 
 		if _, derr := execAffected(tx.ctx, inner,
@@ -367,7 +388,7 @@ WHERE id = ?3 AND state = 'leased' AND lease_owner = ?4 AND lease_token = ?5`,
 			 WHERE id = (SELECT repo_id FROM jobs WHERE id = ?2 AND kind = 'repo_fork')
 			   AND state = 'forking'`,
 			at, id); derr != nil {
-			return fmt.Errorf("RequeueJob: %w: dead fork cleanup: %w", mapErr(derr), derr)
+			return fmt.Errorf("failJob: %w: dead fork cleanup: %w", mapErr(derr), derr)
 		}
 		if _, derr := execAffected(tx.ctx, inner,
 			`UPDATE repos SET forks_count = CASE WHEN forks_count > 0 THEN forks_count - 1 ELSE 0 END
@@ -376,7 +397,7 @@ WHERE id = ?3 AND state = 'leased' AND lease_owner = ?4 AND lease_token = ?5`,
 			                AND state = 'deleted'
 			                AND fork_of_repo_id IS NOT NULL)`,
 			id); derr != nil {
-			return fmt.Errorf("RequeueJob: %w: dead fork counter: %w", mapErr(derr), derr)
+			return fmt.Errorf("failJob: %w: dead fork counter: %w", mapErr(derr), derr)
 		}
 		return nil
 	}
@@ -386,10 +407,10 @@ WHERE id = ?3 AND state = 'leased' AND lease_owner = ?4 AND lease_token = ?5`,
 WHERE id = ?4 AND state = 'leased' AND lease_owner = ?5 AND lease_token = ?6`,
 		next, wait, at, id, owner, token)
 	if merr != nil {
-		return fmt.Errorf("RequeueJob: %w", mapErr(merr))
+		return fmt.Errorf("failJob: %w", mapErr(merr))
 	}
 	if moved == 0 {
-		return fmt.Errorf("RequeueJob: %w: job is not leased to this owner", ErrStale)
+		return fmt.Errorf("failJob: %w: job is not leased to this owner", ErrStale)
 	}
 	return nil
 }

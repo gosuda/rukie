@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
 
+	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/review"
 	"github.com/gosuda/rukie/internal/ruk"
 	"github.com/gosuda/rukie/internal/ruk/wire"
@@ -93,6 +95,9 @@ func collectChangeSpans(ctx context.Context, read func(context.Context, jsonv1.R
 	for {
 		reply, err := read(ctx, cursor)
 		if err != nil {
+			if daemonErr, ok := errors.AsType[*ruk.Error](err); ok && daemonErr.Code == wire.CodeLimit && daemonErr.Message == "alignment exceeds its cell bound" {
+				return nil, fmt.Errorf("collectChangeSpans: %w: %w", queue.ErrTerminal, err)
+			}
 			return nil, fmt.Errorf("collectChangeSpans: %w", err)
 		}
 		if reply.Files == nil || reply.Files.Items == nil {

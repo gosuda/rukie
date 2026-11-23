@@ -1,0 +1,1 @@
+ALTER TABLE jobs ADD COLUMN terminal_error TEXT NOT NULL DEFAULT '';

@@ -10,7 +10,10 @@ import (
 	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
 
+	"github.com/gosuda/rukie/internal/queue"
 	"github.com/gosuda/rukie/internal/review"
+	"github.com/gosuda/rukie/internal/ruk"
+	"github.com/gosuda/rukie/internal/ruk/wire"
 )
 
 func diffPage(t *testing.T, raw string) diffReplyJSON {
@@ -73,6 +76,37 @@ func TestCollectChangeSpansDiscardsIncompleteDiff(t *testing.T) {
 	})
 	if !errors.Is(err, unavailable) || spans != nil {
 		t.Fatalf("incomplete diff = (%v, %v), want no mappings", spans, err)
+	}
+}
+
+func TestCollectChangeSpansDistinguishesTerminalAlignmentLimit(t *testing.T) {
+	for _, tc := range []struct {
+		err      error
+		name     string
+		terminal bool
+	}{
+		{name: "alignment", err: &ruk.Error{Code: wire.CodeLimit, Message: "alignment exceeds its cell bound"}, terminal: true},
+		{name: "wrapped alignment", err: fmt.Errorf("read: %w", &ruk.Error{Code: wire.CodeLimit, Message: "alignment exceeds its cell bound"}), terminal: true},
+		{name: "admission", err: &ruk.Error{Code: wire.CodeLimit, Message: "admission queue is full"}},
+		{name: "unknown limit", err: ruk.ErrLimit},
+		{name: "transport", err: ruk.ErrNoDaemon},
+		{name: "other code", err: &ruk.Error{Code: wire.CodeIo, Message: "alignment exceeds its cell bound"}},
+		{name: "untyped message", err: errors.New("alignment exceeds its cell bound")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := diffPage(t, `{"files":{"items":[{"path":"main.go","body":"binary"}],"next":{"position":"next"}}}`)
+			pages := 0
+			spans, readErr := collectChangeSpans(t.Context(), func(context.Context, jsonv1.RawMessage) (diffReplyJSON, error) {
+				pages++
+				if pages == 1 {
+					return first, nil
+				}
+				return diffReplyJSON{}, tc.err
+			})
+			if !errors.Is(readErr, tc.err) || errors.Is(readErr, queue.ErrTerminal) != tc.terminal || spans != nil || pages != 2 {
+				t.Fatalf("failed continuation = (%v, %v), pages = %d, terminal = %v", spans, readErr, pages, tc.terminal)
+			}
+		})
 	}
 }
 

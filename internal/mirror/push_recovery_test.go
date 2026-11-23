@@ -23,6 +23,10 @@ func blockedPush(plan string) error {
 	}
 }
 
+func unchangedReconcile(_ context.Context, plan string) (ruk.PushReconcileReply, error) {
+	return ruk.PushReconcileReply{Plan: plan}, nil
+}
+
 func TestPushRecoveryRetainsCASAndConfirmedRows(t *testing.T) {
 	expected := ruk.PresentExpect("original")
 	updates := []ruk.PushUpdate{
@@ -42,19 +46,23 @@ func TestPushRecoveryRetainsCASAndConfirmedRows(t *testing.T) {
 		}
 		return ruk.PushReply{Plan: "new-plan", State: "rejected", Refs: []ruk.PushRefOutcome{{RemoteRef: "refs/heads/main", Status: ruk.RejectedStatus("remote ref moved")}}}, nil
 	}
-	observe := func(_ context.Context, plan string) (map[string]string, error) {
+	reconcile := func(_ context.Context, plan string) (ruk.PushReconcileReply, error) {
 		if plan != "blocked-plan" {
 			t.Fatalf("reconcile plan = %q", plan)
 		}
+		events = append(events, "reconcile")
+		return ruk.PushReconcileReply{Plan: plan}, nil
+	}
+	observe := func(context.Context) (map[string]string, error) {
 		events = append(events, "observe target")
 		return map[string]string{"refs/heads/landed": "wanted", "refs/heads/main": "third-party"}, nil
 	}
 	e := &execution{}
-	reply, err := e.pushWithReconciliation(t.Context(), "initial-request", updates, send, observe)
+	reply, err := e.pushWithReconciliation(t.Context(), "initial-request", updates, send, reconcile, observe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(events, []string{"send", "observe target", "send"}) {
+	if !slices.Equal(events, []string{"send", "reconcile", "observe target", "send"}) {
 		t.Fatalf("events = %v", events)
 	}
 	if len(batches) != 2 || len(batches[1]) != 1 || ids[0] == ids[1] {
@@ -93,10 +101,10 @@ func TestPushRecoveryDoesNotSendAnEmptyBatch(t *testing.T) {
 		calls++
 		return ruk.PushReply{}, blockedPush("old-plan")
 	}
-	observe := func(context.Context, string) (map[string]string, error) {
+	observe := func(context.Context) (map[string]string, error) {
 		return map[string]string{"refs/heads/main": "wanted"}, nil
 	}
-	reply, err := e.pushWithReconciliation(t.Context(), "request", updates, send, observe)
+	reply, err := e.pushWithReconciliation(t.Context(), "request", updates, send, unchangedReconcile, observe)
 	if err != nil || calls != 1 || reply.State != "confirmed" || len(reply.Refs) != 1 || reply.Refs[0].Status.Kind != "confirmed" {
 		t.Fatalf("reply = %+v, error = %v, sends = %d", reply, err, calls)
 	}
@@ -136,11 +144,11 @@ func TestPushRecoveryKeepsFailuresAndBoundsRetries(t *testing.T) {
 				}
 				return ruk.PushReply{}, blockedPush(plan)
 			}
-			observe := func(context.Context, string) (map[string]string, error) {
+			observe := func(context.Context) (map[string]string, error) {
 				reads++
 				return map[string]string{}, test.observeErr
 			}
-			_, err := e.pushWithReconciliation(t.Context(), "request", updates, send, observe)
+			_, err := e.pushWithReconciliation(t.Context(), "request", updates, send, unchangedReconcile, observe)
 			if err == nil || sends != test.wantSends || reads != test.wantReads {
 				t.Fatalf("error = %v, sends = %d, reads = %d", err, sends, reads)
 			}
@@ -196,14 +204,17 @@ func TestBlockedPlanFailureKeepsMirrorScheduled(t *testing.T) {
 				sends++
 				return ruk.PushReply{}, blockedPush("foreign-plan")
 			}
-			observe := func(context.Context, string) (map[string]string, error) {
+			reconcile := func(_ context.Context, plan string) (ruk.PushReconcileReply, error) {
 				if test.blocked {
-					return nil, &blockedPlanReconcileError{plan: "foreign-plan", err: refusal}
+					return ruk.PushReconcileReply{}, refusal
 				}
+				return ruk.PushReconcileReply{Plan: plan}, nil
+			}
+			observe := func(context.Context) (map[string]string, error) {
 				return nil, refusal
 			}
 			updates := []ruk.PushUpdate{{RemoteRef: "refs/heads/main", Source: ruk.CommitSource("wanted")}}
-			_, recoveryErr := e.pushWithReconciliation(testCtx(t), "request", updates, send, observe)
+			_, recoveryErr := e.pushWithReconciliation(testCtx(t), "request", updates, send, reconcile, observe)
 			if !errors.Is(recoveryErr, refusal) || sends != 1 {
 				t.Fatalf("recovery error = %v, sends = %d", recoveryErr, sends)
 			}
