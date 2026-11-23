@@ -63,7 +63,7 @@ func Classify(code string, status int, retryAfter, reason string) Verdict {
 		return v(ClassProtocol, true, "failing")
 	case "E_CAPACITY", "E_CANCELLED":
 		return v(ClassBusy, true, "failing")
-	case "E_DIVERGED":
+	case "E_DIVERGENT":
 		return v(ClassDiverged, false, "partial")
 	case "E_SECRET":
 		return v(ClassSecret, false, "needs_attention")
@@ -105,6 +105,7 @@ var reasonGroups = []reasonGroup{
 	{class: ClassRefPolicy, state: "needs_attention", terms: []string{"push protection", "secret scanning", "gh013"}, retry: false},
 	{class: ClassTooLarge, state: "needs_attention", terms: []string{"exceeds", "file size limit", "pack exceeds", "too large", "100 mb", "100 mib"}, retry: false},
 	{class: ClassRefHook, state: "partial", terms: []string{"hook declined", "pre-receive", "update hook"}, retry: false},
+	{class: ClassDiverged, state: "partial", terms: []string{"non-fast-forward", "remote ref moved", "remote ref is absent"}, retry: false},
 }
 
 func classifyReason(reason string) Verdict {

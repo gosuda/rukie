@@ -876,12 +876,7 @@ func (e *execution) pushDeletesFirst(ctx context.Context, send func(ctx context.
 				t.class = string(ClassOK)
 				t.reason = ""
 			case "rejected":
-				t.status = "rejected"
-				t.class = string(Classify("", 0, "", outcome.Status.Reason).Class)
-				if t.class == string(ClassOK) {
-					t.class = string(ClassRefOther)
-				}
-				t.reason = outcome.Status.Reason
+				t.reject(outcome.Status.Reason)
 			default:
 				t.status = "uncertain"
 				t.class = string(ClassUncertain)
@@ -986,15 +981,22 @@ func (e *execution) resendOnce(ctx context.Context, refs []*trackedRef) error {
 			t.class = string(ClassOK)
 			t.reason = ""
 		case "rejected":
-			t.status = "rejected"
-			t.class = string(Classify("", 0, "", outcome.Status.Reason).Class)
-			if t.class == string(ClassOK) {
-				t.class = string(ClassRefOther)
-			}
-			t.reason = outcome.Status.Reason
+			t.reject(outcome.Status.Reason)
 		}
 	}
 	return nil
+}
+
+func (t *trackedRef) reject(reason string) {
+	t.status = "rejected"
+	t.class = string(Classify("", 0, "", reason).Class)
+	t.reason = reason
+	switch t.class {
+	case string(ClassDiverged):
+		t.status = "diverged"
+	case string(ClassOK):
+		t.class = string(ClassRefOther)
+	}
 }
 
 func countUncertain(tracked []*trackedRef) int {
