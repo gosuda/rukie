@@ -230,3 +230,69 @@ func TestSpansFromPatchRejectsMismatchedRawPathLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestSpansFromLegacyEmptyFilePatches(t *testing.T) {
+	for _, path := range []string{"a.txt", "odd\n\xffname.txt"} {
+		oldHeader := "--- a/" + path + "\n"
+		newHeader := "+++ b/" + path + "\n"
+		for name, patch := range map[string]string{
+			"added":         "--- /dev/null\n" + newHeader + "@@ -1,0 +1,2 @@\n+first\n+last\n",
+			"deleted":       oldHeader + "+++ /dev/null\n@@ -1,2 +1,0 @@\n-first\n-last\n",
+			"empty-filled":  oldHeader + newHeader + "@@ -1,0 +1,1 @@\n+filled\n",
+			"filled-empty":  oldHeader + newHeader + "@@ -1,1 +1,0 @@\n-filled\n",
+			"unterminated":  oldHeader + newHeader + "@@ -1,1 +1,0 @@\n-filled\n\\ No newline at end of file\n",
+			"added-empty":   "--- /dev/null\n" + newHeader,
+			"deleted-empty": oldHeader + "+++ /dev/null\n",
+		} {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				spans, err := SpansFromPatch(map[string]string{path: patch})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(spans[path]) != 0 {
+					t.Fatalf("empty-file transition invented unchanged lines: %+v", spans[path])
+				}
+			})
+		}
+	}
+}
+
+func TestSpansFromLegacyEmptyFileRejectsMalformedNeighbors(t *testing.T) {
+	const header = "--- a/a.txt\n+++ b/a.txt\n"
+	for name, patch := range map[string]string{
+		"no-headers":      "@@ -1,0 +1,1 @@\n+added\n",
+		"wrong-old-start": header + "@@ -2,0 +1,1 @@\n+added\n",
+		"wrong-new-start": header + "@@ -1,0 +3,1 @@\n+added\n",
+		"implicit-count":  header + "@@ -1,0 +1 @@\n+added\n",
+		"leading-zero":    header + "@@ -1,00 +1,1 @@\n+added\n",
+		"hunk-label":      header + "@@ -1,0 +1,1 @@ function\n+added\n",
+		"truncated-add":   header + "@@ -1,0 +1,2 @@\n+added\n",
+		"truncated-drop":  header + "@@ -1,2 +1,0 @@\n-dropped\n",
+		"extra-line":      header + "@@ -1,0 +1,1 @@\n+added\n+extra\n",
+		"wrong-prefix":    header + "@@ -1,0 +1,1 @@\n context\n",
+		"second-hunk":     header + "@@ -1,0 +1,1 @@\n+added\n@@ -1,1 +2,1 @@\n context\n",
+		"later-empty":     header + "@@ -1,1 +1,1 @@\n context\n@@ -1,0 +1,1 @@\n+added\n",
+		"deleted-adds":    "--- a/a.txt\n+++ /dev/null\n@@ -1,0 +1,1 @@\n+added\n",
+		"added-deletes":   "--- /dev/null\n+++ b/a.txt\n@@ -1,1 +1,0 @@\n-deleted\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := SpansFromPatch(map[string]string{"a.txt": patch}); err == nil {
+				t.Fatalf("invalid legacy neighbor accepted: %q", patch)
+			}
+		})
+	}
+}
+
+func TestSpansFromStandardZeroRangePreservesExistingLine(t *testing.T) {
+	patch := "--- a/a.txt\n+++ b/a.txt\n@@ -1,0 +2,1 @@\n+added\n"
+	spans, err := SpansFromPatch(map[string]string{"a.txt": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := RemapLine(1, spans["a.txt"]); !ok || got != 1 {
+		t.Fatalf("line before standard insertion = (%d, %v)", got, ok)
+	}
+	if got, ok := RemapLine(2, spans["a.txt"]); !ok || got != 3 {
+		t.Fatalf("line after standard insertion = (%d, %v)", got, ok)
+	}
+}

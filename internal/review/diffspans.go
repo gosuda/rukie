@@ -25,6 +25,7 @@ func SpansFromPatch(patches map[string]string) (map[string][]Span, error) {
 func spansFromUnified(path, patch string) ([]Span, error) {
 	oldHeader := "--- a/" + path + "\n"
 	newHeader := "+++ b/" + path + "\n"
+	fileHeaders := true
 	var added, deleted bool
 	switch {
 	case strings.HasPrefix(patch, oldHeader+newHeader):
@@ -36,6 +37,7 @@ func spansFromUnified(path, patch string) ([]Span, error) {
 		patch = patch[len(oldHeader)+len("+++ /dev/null\n"):]
 		deleted = true
 	case patch == "" || strings.HasPrefix(patch, "@@ -"):
+		fileHeaders = false
 	default:
 		return nil, fmt.Errorf("spansFromUnified: invalid file headers")
 	}
@@ -43,7 +45,7 @@ func spansFromUnified(path, patch string) ([]Span, error) {
 	var oldCursor, newCursor int64 = 1, 1
 	var oldRemaining, newRemaining int64
 	var spanOld, spanNew int64
-	var sawHunk, open bool
+	var sawHunk, open, legacyEmpty bool
 	closeSpan := func() {
 		if open && oldCursor > spanOld {
 			oldStart, okOld := toUint32(spanOld)
@@ -60,13 +62,26 @@ func spansFromUnified(path, patch string) ([]Span, error) {
 			if oldRemaining != 0 || newRemaining != 0 {
 				return nil, fmt.Errorf("spansFromUnified: incomplete hunk")
 			}
+			if legacyEmpty {
+				return nil, fmt.Errorf("spansFromUnified: legacy empty-file patch has multiple hunks")
+			}
 			oldPart, newPart, separated := strings.Cut(rest, " +")
-			newPart, _, terminated := strings.Cut(newPart, " @@")
+			newPart, suffix, terminated := strings.Cut(newPart, " @@")
 			if !separated || !terminated {
 				return nil, fmt.Errorf("spansFromUnified: malformed hunk header")
 			}
 			oldStart, oldCount, oldOK := parseHunkRange(oldPart)
 			newStart, newCount, newOK := parseHunkRange(newPart)
+			if fileHeaders && !sawHunk && oldOK && newOK && suffix == "" {
+				switch {
+				case !deleted && oldPart == "1,0" && newStart == 1 && newCount > 0 && newPart == "1,"+strconv.FormatInt(newCount, 10):
+					oldStart = 1
+					legacyEmpty = true
+				case !added && newPart == "1,0" && oldStart == 1 && oldCount > 0 && oldPart == "1,"+strconv.FormatInt(oldCount, 10):
+					newStart = 1
+					legacyEmpty = true
+				}
+			}
 			if !oldOK || !newOK || oldStart < oldCursor || newStart < newCursor || oldStart-oldCursor != newStart-newCursor {
 				return nil, fmt.Errorf("spansFromUnified: inconsistent hunk ranges")
 			}
@@ -130,7 +145,7 @@ func spansFromUnified(path, patch string) ([]Span, error) {
 		return nil, fmt.Errorf("spansFromUnified: incomplete patch")
 	}
 	closeSpan()
-	if added || deleted {
+	if added || deleted || legacyEmpty {
 		return nil, nil
 	}
 	tail := min(int64(math.MaxUint32)+1-oldCursor, int64(math.MaxUint32)+1-newCursor)
