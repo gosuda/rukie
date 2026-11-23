@@ -164,14 +164,25 @@ func (c *conn) writeKind(kind Kind, stream uint64, payload []byte) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	if err := c.nc.SetWriteDeadline(time.Now().Add(c.writeEvery)); err != nil {
-		return fmt.Errorf("writeKind: %w", err)
+		c.fail(fmt.Errorf("writeKind: %w", err))
+		return c.cause()
 	}
 	err := writeFrame(c.nc, kind, stream, payload)
 	_ = c.nc.SetWriteDeadline(time.Time{})
 	if err != nil {
-		return fmt.Errorf("writeKind: %w", err)
+		c.fail(fmt.Errorf("writeKind: %w", err))
+		return c.cause()
 	}
 	return nil
+}
+
+func (c *conn) readFrame() (Frame, error) {
+	frame, err := readFrame(c.nc)
+	if err != nil {
+		c.fail(fmt.Errorf("readFrame: %w", err))
+		return Frame{}, c.cause()
+	}
+	return frame, nil
 }
 
 func (c *conn) fail(err error) {
@@ -218,9 +229,8 @@ func (c *conn) lookup(id uint64) (*stream, bool) {
 func (c *conn) readLoop() {
 	defer close(c.readerDone)
 	for {
-		frame, err := readFrame(c.nc)
+		frame, err := c.readFrame()
 		if err != nil {
-			c.fail(fmt.Errorf("read: %w", err))
 			return
 		}
 		if frame.Stream == ControlStream {

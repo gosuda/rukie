@@ -174,7 +174,7 @@ func (d *streamDriver) readAbortable(ctx context.Context) (Frame, error) {
 	}
 	box := make(chan result, 1)
 	go func() {
-		frame, err := readFrame(d.pc.nc)
+		frame, err := d.pc.readFrame()
 		box <- result{frame: frame, err: err}
 	}()
 	select {
@@ -414,7 +414,7 @@ func (d *streamDriver) decodeExit(payload []byte) (wire.CommandExitReport, bool,
 }
 
 func (d *streamDriver) awaitRefusedExit() error {
-	frame, err := readFrame(d.pc.nc)
+	frame, err := d.pc.readFrame()
 	if err != nil {
 		return fmt.Errorf("RunCommandStream: %w: %w", err, ErrOutcomeUnknown)
 	}

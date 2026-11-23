@@ -209,7 +209,7 @@ func (c *Client) archivePump(ctx context.Context, pc *conn, repo Repo, requestID
 	var written int64
 	seenAccepted := false
 	for {
-		frame, err := readFrame(pc.nc)
+		frame, err := pc.readFrame()
 		if err != nil {
 			if ctx.Err() != nil {
 				return out, fmt.Errorf("Archive: %w", ctx.Err())
