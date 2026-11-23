@@ -24,7 +24,7 @@ type Options struct {
 	// Logger receives slow-operation warnings. Nil selects slog.Default.
 	Logger  *slog.Logger
 	Barrier func() (release func(), ok bool)
-	// Path is the database file. Its parent directory is created 0700 and the file 0600.
+	// Path is the database file. Writable opens create its parent directory 0700 and the file 0600.
 	Path string
 	// ReadConns is the reader pool size. Zero selects max(2, GOMAXPROCS); values clamp to [2, 64].
 	ReadConns int
@@ -36,6 +36,9 @@ type Options struct {
 	QueueDepth int
 	// AllowPOSIXLocks permits Open where OFD locks are unavailable.
 	AllowPOSIXLocks bool
+	// ReadOnly requires an existing database with all embedded migrations applied. It starts no
+	// writer, rejects Write, and skips migration and checkpointing. SQLite may create reader sidecars.
+	ReadOnly bool
 }
 
 // Stats is advisory and intended for metrics.
@@ -70,7 +73,8 @@ type Store struct {
 	closed       bool
 }
 
-// Open verifies the database, applies embedded migrations, and starts the writer and reader pool.
+// Open verifies the database and starts the reader pool. Writable opens apply embedded migrations
+// and start the writer. Read-only opens require the complete embedded migration state.
 // It returns ErrAlreadyOpen for a path already open in this process.
 func Open(ctx context.Context, opts Options) (*Store, error) {
 	return open(ctx, opts, embeddedMigrations)
@@ -95,6 +99,9 @@ func open(ctx context.Context, opts Options, fsys fs.FS) (*Store, error) {
 func openAt(ctx context.Context, path string, opts Options, fsys fs.FS) (*Store, error) {
 	if err := setupProcess(opts.AllowPOSIXLocks); err != nil {
 		return nil, err
+	}
+	if opts.ReadOnly {
+		return openReadOnlyAt(ctx, path, opts, fsys)
 	}
 	if err := ensureFile(path); err != nil {
 		return nil, err
@@ -176,6 +183,9 @@ func (s *Store) Write(ctx context.Context, fn func(tx *WriteTx) error) error {
 	if fn == nil {
 		return ErrInvalid
 	}
+	if s.writer == nil {
+		return fmt.Errorf("Write: %w", ErrReadOnly)
+	}
 	if s.barrier != nil {
 		release, ok := s.barrier()
 		if !ok {
@@ -192,6 +202,9 @@ func (s *Store) Write(ctx context.Context, fn func(tx *WriteTx) error) error {
 
 // Stats returns advisory counters.
 func (s *Store) Stats() Stats {
+	if s.writer == nil {
+		return Stats{ReadersInUse: s.readerCount - len(s.readers)}
+	}
 	return Stats{
 		QueueLen:       len(s.writer.reqs),
 		ReadersInUse:   s.readerCount - len(s.readers),
@@ -203,20 +216,24 @@ func (s *Store) Stats() Stats {
 	}
 }
 
-// Close stops new work, drains queued writes, checkpoints, and closes the database. Close returns
-// within its context: if ctx expires first, it returns an error and the store stays open with its
-// path reserved. Call Close again to finish the shutdown and release the path.
+// Close stops new work and closes the database. Writable stores drain queued writes and checkpoint.
+// Close returns within its context: if ctx expires first, it returns an error and the store stays
+// open with its path reserved. Call Close again to finish the shutdown and release the path.
 func (s *Store) Close(ctx context.Context) error {
 	s.signalOnce.Do(func() {
-		close(s.writer.closing)
+		if s.writer != nil {
+			close(s.writer.closing)
+		}
 		close(s.readClosing)
 	})
-	stop := context.AfterFunc(ctx, func() { s.abortOnce.Do(func() { close(s.writer.abort) }) })
-	defer stop()
-	select {
-	case <-s.writer.done:
-	case <-ctx.Done():
-		return fmt.Errorf("Close: writer still busy: %w", ctx.Err())
+	if s.writer != nil {
+		stop := context.AfterFunc(ctx, func() { s.abortOnce.Do(func() { close(s.writer.abort) }) })
+		defer stop()
+		select {
+		case <-s.writer.done:
+		case <-ctx.Done():
+			return fmt.Errorf("Close: writer still busy: %w", ctx.Err())
+		}
 	}
 	select {
 	case s.closeSem <- struct{}{}:
@@ -234,7 +251,10 @@ func (s *Store) Close(ctx context.Context) error {
 func (s *Store) teardown(ctx context.Context) error {
 	drainErr := s.drainIdleReaders()
 	rdbErr := s.rdb.Close()
-	connErr := s.writer.closeConn(ctx)
+	var connErr error
+	if s.writer != nil {
+		connErr = s.writer.closeConn(ctx)
+	}
 	releasePath(s.path)
 	return errors.Join(drainErr, rdbErr, connErr)
 }
