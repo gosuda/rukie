@@ -91,6 +91,7 @@ func readFull(c net.Conn, buf []byte) (int, error) {
 
 // Config tunes one fake.
 type Config struct {
+	Answer            func(method string, args jsonv1.RawMessage) jsonv1.RawMessage
 	BeforeHandshake   func()
 	ValidRepo         func(repo string) (handle string, code string)
 	ValidSession      func(session string) string
@@ -381,6 +382,15 @@ func (s *Server) runStream(c *connection, open frame) {
 }
 
 func (s *Server) answer(invocation invocationOpen) []byte {
+	if s.cfg.Answer != nil {
+		var args jsonv1.RawMessage
+		if invocation.ArgsJSON != nil {
+			args = jsonv1.RawMessage(*invocation.ArgsJSON)
+		}
+		if reply := s.cfg.Answer(invocation.Method, args); reply != nil {
+			return reply
+		}
+	}
 	switch invocation.Method {
 	case "schema":
 		return []byte(s.cfg.Doc)

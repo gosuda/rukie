@@ -264,7 +264,19 @@ func (s *Store) ListJobsAdmin(ctx context.Context, filter AdminJobFilter) ([]Job
 	return out, next, nil
 }
 
-// CountTerminalJobs counts done and dead jobs settled before the cutoff.
+const sqlPrunableTerminalJobs = `jobs.state IN ('done','dead') AND jobs.updated_at < ?
+AND NOT (jobs.state = 'dead' AND jobs.kind = 'review_remap' AND jobs.terminal_error != ''
+  AND EXISTS (
+    SELECT 1 FROM changes
+    WHERE changes.id = CAST(substr(json_extract(jobs.payload, '$.landed[0].name'), 14) AS INTEGER)
+      AND changes.repo_id = jobs.repo_id
+      AND changes.patchset_count = CAST(substr(json_extract(jobs.payload, '$.landed[0].name'),
+        instr(json_extract(jobs.payload, '$.landed[0].name'), '/patchset/') + 10) AS INTEGER)
+      AND changes.head_oid = json_extract(jobs.payload, '$.landed[0].new')
+  ))`
+
+// CountTerminalJobs counts prunable done and dead jobs settled before the
+// cutoff. Terminal failures for the current review patchset are retained.
 func (s *Store) CountTerminalJobs(ctx context.Context, beforeMillis int64) (int64, error) {
 	var n int64
 	err := s.Read(ctx, func(tx *ReadTx) error {
@@ -272,8 +284,7 @@ func (s *Store) CountTerminalJobs(ctx context.Context, beforeMillis int64) (int6
 		if lerr != nil {
 			return lerr
 		}
-		if qerr := inner.QueryRowContext(tx.ctx, `SELECT COUNT(*) FROM jobs
-WHERE state IN ('done','dead') AND updated_at < ?`, beforeMillis).Scan(&n); qerr != nil {
+		if qerr := inner.QueryRowContext(tx.ctx, `SELECT COUNT(*) FROM jobs WHERE `+sqlPrunableTerminalJobs, beforeMillis).Scan(&n); qerr != nil {
 			return fmt.Errorf("CountTerminalJobs: %w", mapErr(qerr))
 		}
 		return nil
@@ -285,8 +296,8 @@ WHERE state IN ('done','dead') AND updated_at < ?`, beforeMillis).Scan(&n); qerr
 }
 
 // PruneTerminalJobs deletes done and dead jobs settled before the cutoff.
-// Retries re-enqueue under the same id through ResetJob, so old terminal
-// rows are pure history.
+// It retains terminal failures for the current review patchset until an
+// explicit reset or a new patchset makes that failure obsolete.
 func (s *Store) PruneTerminalJobs(ctx context.Context, beforeMillis int64) (int64, error) {
 	var n int64
 	err := s.Write(ctx, func(tx *WriteTx) error {
@@ -294,8 +305,7 @@ func (s *Store) PruneTerminalJobs(ctx context.Context, beforeMillis int64) (int6
 		if lerr != nil {
 			return lerr
 		}
-		res, derr := inner.ExecContext(tx.ctx, `DELETE FROM jobs
-WHERE state IN ('done','dead') AND updated_at < ?`, beforeMillis)
+		res, derr := inner.ExecContext(tx.ctx, `DELETE FROM jobs WHERE `+sqlPrunableTerminalJobs, beforeMillis)
 		if derr != nil {
 			return fmt.Errorf("PruneTerminalJobs: %w", mapErr(derr))
 		}

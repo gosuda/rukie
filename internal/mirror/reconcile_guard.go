@@ -19,7 +19,8 @@ func (e *reconcileNeedsAttentionError) Error() string {
 func (e *reconcileNeedsAttentionError) Unwrap() error { return e.err }
 
 func checkReconcilePlan(plan string, reply ruk.PushReconcileReply, callErr error) error {
-	if errors.Is(callErr, ruk.ErrInvalid) {
+	_, incomplete := errors.AsType[*ruk.IncompleteReconciliationError](callErr)
+	if incomplete || errors.Is(callErr, ruk.ErrInvalid) {
 		return fmt.Errorf("checkReconcilePlan: %w", &reconcileNeedsAttentionError{plan: plan, err: callErr})
 	}
 	if callErr != nil {
