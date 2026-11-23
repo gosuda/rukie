@@ -100,10 +100,12 @@ func TestProbeTripleBoundaries(t *testing.T) {
 		{"5.9.9", false},
 		{"bogus", false},
 		{"6.1", false},
+		{"6.1.4+build1", true},
+		{"6.1.4-rc1", false},
+		{"6.1.5-rc1", true},
+		{"5.0.0-dev", false},
 	} {
-		major, minor, patch, ok := parseTriple("podman version " + row.text)
-		got := ok && atLeast(major, minor, patch, minPodmanMajor, minPodmanMinor, minPodmanPatch)
-		if got != row.want {
+		if got := podmanMeetsFloor("podman version " + row.text); got != row.want {
 			t.Errorf("version %q accepted = %v, want %v", row.text, got, row.want)
 		}
 	}
@@ -118,6 +120,61 @@ func TestProbeRejectsPodmanBelowFloor(t *testing.T) {
 	_, rerr := RunProbe(cfg, env)
 	if rerr == nil || rerr.Code != "PODMAN_VERSION" || rerr.Exit != ExitConfigUnavailable {
 		t.Fatalf("below-floor podman = %v, want E_PODMAN_VERSION/78", rerr)
+	}
+}
+
+func TestProbeRejectsPodmanReleaseCandidate(t *testing.T) {
+	env := passingEnv()
+	env.Run = func(string, ...string) ([]byte, []byte, error) {
+		return []byte(`{"Client":{"Version":"6.1.4-rc1"}}`), nil, nil
+	}
+	cfg := DefaultConfig(t.TempDir())
+	_, rerr := RunProbe(cfg, env)
+	if rerr == nil || rerr.Code != "PODMAN_VERSION" || rerr.Exit != ExitConfigUnavailable {
+		t.Fatalf("release-candidate podman = %v, want E_PODMAN_VERSION/78", rerr)
+	}
+}
+
+func TestProbeAcceptsGitWithBuildSuffix(t *testing.T) {
+	env := passingEnv()
+	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		if strings.HasPrefix(name, "git") {
+			return []byte("git version 2.39.5 (Apple Git-154)"), nil, nil
+		}
+		if strings.Contains(joined, "version") {
+			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
+		}
+		if strings.Contains(joined, "info") {
+			return []byte(`{"host":{"security":{"rootless":"true"}}}`), nil, nil
+		}
+		return []byte(""), nil, nil
+	}
+	cfg := DefaultConfig(t.TempDir())
+	if _, rerr := RunProbe(cfg, env); rerr != nil {
+		t.Fatalf("suffixed git = %v, want no failure", rerr)
+	}
+}
+
+func TestProbeRejectsOldGitWithBuildSuffix(t *testing.T) {
+	env := passingEnv()
+	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
+		joined := strings.Join(args, " ")
+		if strings.HasPrefix(name, "git") {
+			return []byte("git version 2.30.9 (Apple Git-130)"), nil, nil
+		}
+		if strings.Contains(joined, "version") {
+			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
+		}
+		if strings.Contains(joined, "info") {
+			return []byte(`{"host":{"security":{"rootless":"true"}}}`), nil, nil
+		}
+		return []byte(""), nil, nil
+	}
+	cfg := DefaultConfig(t.TempDir())
+	_, rerr := RunProbe(cfg, env)
+	if rerr == nil || rerr.Code != "GIT_VERSION" {
+		t.Fatalf("old suffixed git = %v, want E_GIT_VERSION", rerr)
 	}
 }
 

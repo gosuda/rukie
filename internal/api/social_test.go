@@ -312,8 +312,6 @@ func TestSocialExploreUsersAndOrgs(t *testing.T) {
 	}
 }
 
-// socialNextLink returns the rel=next target from a paginated API response,
-// or "" when the page is terminal.
 func socialNextLink(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	for part := range strings.SplitSeq(rec.Header().Get("Link"), ",") {
@@ -330,8 +328,6 @@ func socialNextLink(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return ""
 }
 
-// socialRawCursor decodes the framework-signed continuation back to the raw
-// store cursor it seals, so tests can prove a cursor names no hidden row.
 func socialRawCursor(t *testing.T, link string) string {
 	t.Helper()
 	parsed, perr := url.Parse(link)

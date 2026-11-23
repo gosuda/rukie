@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,8 @@ func TestSandboxP02VersionFloor(t *testing.T) {
 	}{
 		{`{"Client":{"Version":"6.1.3"}}`, false},
 		{`{"Client":{"Version":"6.1.4"}}`, true},
+		{`{"Client":{"Version":"6.1.4+build1"}}`, true},
+		{`{"Client":{"Version":"5.0.0-dev"}}`, false},
 		{`{"Client":{"Version":"8.0.1"}}`, true},
 	} {
 		env := versionEnv(row.version)
@@ -202,12 +205,17 @@ func TestSandboxP10ProbeImage(t *testing.T) {
 	}
 }
 
+var belowFloorPattern = regexp.MustCompile(`podman \d+\.\d+\.\d+\S* is below `)
+
 func TestSandboxP11LiveProbe(t *testing.T) {
 	if _, err := os.Stat("/usr/bin/podman"); err != nil {
 		t.Skip("podman unavailable on this host: the probe exits 78 E_PODMAN_MISSING")
 	}
 	cfg := DefaultConfig(t.TempDir())
 	report, rerr := FullProbe(cfg, LiveProbeEnv())
+	if rerr != nil && rerr.Code == "PODMAN_VERSION" && belowFloorPattern.MatchString(rerr.Msg) {
+		t.Skipf("host podman is below the supported floor: %s", rerr.Msg)
+	}
 	if rerr != nil {
 		t.Fatalf("live sandbox probe: %v", rerr)
 	}

@@ -40,7 +40,7 @@ func TestRemoteInvokerJarPersistsToFile(t *testing.T) {
 	if err := os.WriteFile(sessionFile, []byte(name+"=S1\n"), 0o600); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
-	// Process 1 presents S1; the stub rotates to S2.
+
 	first := newIO()
 	if code := runCLI(t, []string{"api", "index", "--server", stub.URL, "--session-file", sessionFile, "--json"}, first); code != 0 {
 		t.Fatalf("first call exit %d: %s", code, first.stderr.String())
@@ -64,8 +64,7 @@ func TestRemoteInvokerJarPersistsToFile(t *testing.T) {
 	if !strings.Contains(firstCookie, "S1") {
 		t.Fatalf("first call sent %q, want the S1 session", firstCookie)
 	}
-	// Process 2 is a fresh invoker that only reads the file: it must present
-	// the rotated session and succeed without logging in again.
+
 	second := newIO()
 	if code := runCLI(t, []string{"api", "index", "--server", stub.URL, "--session-file", sessionFile, "--json"}, second); code != 0 {
 		t.Fatalf("second call exit %d: %s", code, second.stderr.String())

@@ -1,0 +1,99 @@
+# Native Depot copy of .github/workflows/ci.yml. Fork pull requests
+# do not start Depot workflows, so .github/workflows/ci.yml stays
+# their CI path.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUSTUP_TOOLCHAIN: 1.99.1
+
+jobs:
+  rukie:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: |
+          make check
+
+  ruk-integration:
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check out pinned Ruk
+        run: |
+          ruk_revision=$(<tools/ruk.pin)
+          [[ "$ruk_revision" =~ ^[0-9a-f]{40}$ ]]
+          git init ruk
+          git -C ruk remote add origin https://github.com/gosuda/ruk.git
+          git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
+          git -C ruk checkout --detach FETCH_HEAD
+      - run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - run: |
+          cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
+      - run: |
+          tools/passgate.sh '--- PASS: ' -- env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off go test -race -count=1 -v -tags integration ./internal/ruk/...
+
+  ruk:
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Check out pinned Ruk
+        run: |
+          ruk_revision=$(<tools/ruk.pin)
+          [[ "$ruk_revision" =~ ^[0-9a-f]{40}$ ]]
+          git init ruk
+          git -C ruk remote add origin https://github.com/gosuda/ruk.git
+          git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
+          git -C ruk checkout --detach FETCH_HEAD
+      - run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519
+        id: nextest
+        with:
+          tool: cargo-nextest@0.9.148
+          fallback: none
+      - run: |
+          cargo fmt --all -- --check
+        working-directory: ruk
+      - run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        if: ${{ !cancelled() }}
+        working-directory: ruk
+      - run: |
+          cargo nextest run --workspace --locked --no-fail-fast
+        working-directory: ruk
+        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
+      - run: |
+          cargo test --workspace --locked --doc --no-fail-fast
+        working-directory: ruk
+        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}

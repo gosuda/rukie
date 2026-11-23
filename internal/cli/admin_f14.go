@@ -83,10 +83,6 @@ func adminServerToken(std IO, tokenFlag, tokenFileFlag string) (string, int) {
 	return raw, 0
 }
 
-// adminLocalOperator resolves the invoking site admin for offline hand-written
-// commands, mirroring the local-dispatch credential rule: a bearer token or a
-// session is required, it must authenticate, and its account must be an
-// active site admin.
 func adminLocalOperator(ctx context.Context, std IO, svc *auth.Service, tokenFlag, tokenFileFlag, sessionFileFlag string) (auth.User, int) {
 	token, code := adminServerToken(std, tokenFlag, tokenFileFlag)
 	if code != 0 {
@@ -221,17 +217,12 @@ func runAdminGC(ctx context.Context, std IO, argv []string) int {
 	return 0
 }
 
-// importHooks carries the outward effects of repo import so tests inject
-// failures deterministically.
 type importHooks struct {
 	mirrorClone func(ctx context.Context, from, dir string) error
 	mirrorPush  func(ctx context.Context, dir, remote, auth string) error
 	verify      func(ctx context.Context, dir, remote, auth string) error
 }
 
-// gitAuthEnv carries the push credential as an extra HTTP header instead of
-// embedding it in the URL, so the secret never appears in argv, error
-// output, or the process table.
 func gitAuthEnv(auth string) []string {
 	return append(os.Environ(),
 		"GIT_CONFIG_COUNT=1",
@@ -443,7 +434,6 @@ func runAdminRepoImport(ctx context.Context, std IO, argv []string) int {
 		importSpec{From: *fromGit, Owner: *owner, Name: *name, DefaultBranch: *defBranch, AsJSON: *asJSON}, liveImportHooks())
 }
 
-// importSpec carries one repo import request.
 type importSpec struct {
 	From          string
 	Owner         string
@@ -452,11 +442,6 @@ type importSpec struct {
 	AsJSON        bool
 }
 
-// importRepo imports one stock-git repo and purges it again when any step
-// after creation fails (ENG-50). Tokens are minted least-privilege: a
-// create-only token for the owner namespace first, then a push token scoped
-// to the new repository id. Every outstanding token is revoked before return,
-// and a failed revoke is fatal because the token may still be valid.
 func importRepo(ctx context.Context, std IO, api importAPI, spec importSpec, hooks importHooks) (code int) {
 	owner, name := spec.Owner, spec.Name
 	full := owner + "/" + name
@@ -610,10 +595,6 @@ func lookupRepoID(ctx context.Context, api importAPI, owner, full string) (int64
 	return 0, fmt.Errorf("repository %s was not found", full)
 }
 
-// rollbackImport purges the half-imported repo with the operator token, so a
-// failed import leaves no repository behind. The purge carries a fresh
-// If-Match taken from the admin listing, so a concurrent change fails
-// instead of purging something new.
 func rollbackImport(ctx context.Context, adminAPI importAPI, owner, name string) error {
 	full := owner + "/" + name
 	repos, err := listAdminRepos(ctx, adminAPI, owner)

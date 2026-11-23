@@ -46,7 +46,7 @@ func TestWatchCRUD(t *testing.T) {
 		if _, serr = tx.SetWatch(ada.ID, other, "all", nil, 3000); serr != nil {
 			return serr
 		}
-		// Invalid: unknown level, bad bit, empty custom, bits on plain level.
+
 		for i, args := range [][3]any{
 			{"everything", nil, nil},
 			{"custom", []string{"nope"}, nil},
@@ -170,7 +170,6 @@ func TestMarkTransitions(t *testing.T) {
 		t.Fatalf("bogus op = %v, want ErrInvalid", err)
 	}
 
-	// Wrong user and missing ids land in failed, not err.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		updated, failed, merr := tx.MarkInboxThreads(999999, []string{threadID, "nope"}, "read", 0, 40007)
 		if merr != nil {
@@ -197,7 +196,7 @@ func TestSnoozeWindow(t *testing.T) {
 			return merr
 		})
 	}
-	// Boundaries: exactly 1m and exactly 90d are valid; outside is not.
+
 	if err := snooze(now + 60*1000); err != nil {
 		t.Fatalf("1m snooze: %v", err)
 	}
@@ -244,8 +243,6 @@ func TestSnoozedAndMutedFanout(t *testing.T) {
 	_, watcher, repo, threadID := seedInboxThread(ctx, t, s, now)
 	_ = repo
 
-	// Snooze, then replay a new event on the same subject: the thread stays
-	// snoozed with bumped_at frozen but counts the item.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		_, _, merr := tx.MarkInboxThreads(watcher.ID, []string{threadID}, "snooze", now+3600*1000, now)
 		return merr
@@ -260,7 +257,7 @@ func TestSnoozedAndMutedFanout(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	// A distinct ref event (different new OID) reaches the snoozed thread.
+
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		_, eerr := tx.Outbox().Emit(Event{OccurredAt: time.UnixMilli(now + 1000), Kind: "ref.updated",
 			Body: jsontextValue(`{"repo":` + itoa(repo) + `,"name":"refs/heads/main","old":"000","new":"def","source":"t"}`)})
@@ -273,8 +270,7 @@ func TestSnoozedAndMutedFanout(t *testing.T) {
 		if gerr != nil {
 			return gerr
 		}
-		// Snoozed branch refs collide with the seeded task thread? No: the
-		// ref event makes a NEW (branch_view) thread. Find it instead.
+
 		_ = after
 		threads, _, lerr := tx.ListInboxThreads(watcher.ID, "", "", 0, "", 10)
 		if lerr != nil {
@@ -288,8 +284,6 @@ func TestSnoozedAndMutedFanout(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	// A NEW event on the same subject reaches the snoozed thread: state and
-	// bumped_at frozen, unread/total incremented, item recorded unbumped.
 	var subjectID string
 	if err := s.Read(ctx, func(tx *ReadTx) error {
 		th, gerr := tx.GetInboxThread(watcher.ID, threadID)
@@ -336,10 +330,6 @@ func TestSnoozedAndMutedFanout(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	// Mute the task thread, then drive another new emission on the same
-	// subject: one silent item (total+1, bumped=false), every other counter
-	// frozen. Distinct emissions append; only a same-row double fan-out
-	// dedupes.
 	if err := s.Write(ctx, func(tx *WriteTx) error {
 		_, _, merr := tx.MarkInboxThreads(watcher.ID, []string{threadID}, "mute", 0, now+2000)
 		return merr
@@ -355,8 +345,7 @@ func TestSnoozedAndMutedFanout(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("emit claimed: %v", err)
 	}
-	// Same-row double fan-out changes nothing: the (event_id,user_id) and
-	// (outbox_seq,endpoint_id) ignores absorb the replay.
+
 	beforeMsgs := int64(0)
 	if err := s.Read(ctx, func(tx *ReadTx) error {
 		inner, lerr := tx.live()
@@ -486,7 +475,7 @@ func TestIgnoreSuppressesAll(t *testing.T) {
 		if n, cerr := tx.CountUnreadInbox(ignorer.ID); cerr != nil || n != 0 {
 			t.Fatalf("ignored unread = %d, %v", n, cerr)
 		}
-		// The non-ignored participant still gets theirs.
+
 		threads, _, lerr = tx.ListInboxThreads(other.ID, "", "", 0, "", 10)
 		if lerr != nil || len(threads) != 1 {
 			t.Fatalf("author threads = %d, %v", len(threads), lerr)
@@ -606,7 +595,7 @@ func TestListInboxThreadsFilters(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	// Wrong-user GetInboxThread reports ErrNotFound, never the row.
+
 	other := seedF8User(t, s, "liststranger")
 	if err := s.Read(ctx, func(tx *ReadTx) error {
 		threads, _, lerr := tx.ListInboxThreads(ada.ID, "", "", 0, "", 1)

@@ -394,7 +394,6 @@ func dropAttempt(work AttemptWork) {
 	_ = os.RemoveAll(work.Dir)
 }
 
-// Execute runs one granted attempt to a finish or an abandon.
 func (l *Loop) execute(ctx context.Context, grant *Grant) ExecuteOutcome {
 	work, err := PrepareAttempt(l.Config, grant)
 	if err != nil {

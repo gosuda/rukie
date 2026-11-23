@@ -94,8 +94,6 @@ func countLiveRepos(t *testing.T, dbPath string) int {
 	return n
 }
 
-// seedGCAdminToken mints an admin:write token for the gc store admin and
-// writes the secret to a token file.
 func seedGCAdminToken(t *testing.T, dbPath string) string {
 	t.Helper()
 	return mintGCUserToken(t, dbPath, 1, "gc", op.ScopeAdminWrite)

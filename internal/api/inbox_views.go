@@ -122,8 +122,6 @@ func writeInboxDetail(w io.Writer, c op.ViewCtx, out InboxGetOut) error {
 	return err
 }
 
-// serveInboxSettings renders the settings page: default level, claim window,
-// and every explicit watch with per-row forms. HTML only, human gated.
 func (d Deps) serveInboxSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	principal := RawBytes{Deps: d}.principalFor(r)
@@ -237,9 +235,6 @@ func (d Deps) InboxPages(next http.Handler) http.Handler {
 	})
 }
 
-// serveInboxThread marks the thread read for HTML views, then delegates to
-// the op mux so the op stays pure and its PageView renders with a fresh CSRF
-// token. Anonymous views delegate without marking.
 func (d Deps) serveInboxThread(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	ctx := r.Context()
 	principal := RawBytes{Deps: d}.principalFor(r)

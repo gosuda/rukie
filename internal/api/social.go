@@ -273,13 +273,6 @@ func (d Deps) listRepoStarsCore(ctx context.Context, rq requester, owner, name, 
 	return out, nil
 }
 
-// collectTokenVisible pages a keyset store listing past rows the requester's
-// token repository selector denies, following the search lane's
-// visibility-safe frontier pattern: the fetch cursor advances past every raw
-// row, including denied ones, so pages fill, while the emitted continuation
-// seals only the last visible row, so cursors never name hidden
-// repositories. Callers without a repository-scoped token observe the
-// store's own pages unchanged.
 func collectTokenVisible[R any](
 	limit int,
 	cursor string,
@@ -555,16 +548,11 @@ func (d Deps) forkCreateCore(ctx context.Context, p op.Principal, owner, repo st
 		return gerr
 	})
 	if werr != nil {
-		// A unique violation means a concurrent fork committed this name
-		// first and the store at destAbs belongs to the winner; only the
-		// non-unique failure path may roll the store back.
+
 		if isUniqueViolation(werr) {
 			return ForkCreateOut{}, op.Errorf(op.CodeConflict, "repository name is already taken")
 		}
-		// Forking a still-forking parent is a client timing conflict, not a
-		// server failure: the source row fails the active-state gate with
-		// ErrInvalid, and every other ErrInvalid here is unreachable
-		// because the visibility and job spec were validated above.
+
 		if errors.Is(werr, store.ErrInvalid) {
 			d.deleteForkStore(ctx, destAbs)
 			return ForkCreateOut{}, op.Errorf(op.CodeConflict, "source repository is not ready to fork")

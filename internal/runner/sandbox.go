@@ -141,7 +141,6 @@ func cmpOr(value, fallback string) string {
 	return fallback
 }
 
-// linkOrCopyBinary places the runner executable into the container-visible directory.
 func linkOrCopyBinary(dir string) error {
 	self, err := os.Executable()
 	if err != nil {
@@ -193,7 +192,6 @@ func MirrorPath(stateDir, repoKey string) string {
 	return filepath.Join(stateDir, "git", repoKey+".git")
 }
 
-// fetchedRef pins the fetched commit in the mirror.
 const fetchedRef = "refs/rukie/fetched"
 
 // UpdateMirror fetches the mirror up to the wanted commit.

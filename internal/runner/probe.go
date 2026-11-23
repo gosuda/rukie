@@ -137,10 +137,10 @@ func parseTriple(text string) (int, int, int, bool) {
 	if len(fields) < 3 {
 		return 0, 0, 0, false
 	}
-	tail := fields[len(fields)-3:]
-	major, err1 := strconv.Atoi(tail[0])
-	minor, err2 := strconv.Atoi(tail[1])
-	patch, err3 := strconv.Atoi(tail[2])
+	head := fields[:3]
+	major, err1 := strconv.Atoi(head[0])
+	minor, err2 := strconv.Atoi(head[1])
+	patch, err3 := strconv.Atoi(head[2])
 	if err1 != nil || err2 != nil || err3 != nil {
 		return 0, 0, 0, false
 	}
@@ -155,6 +155,43 @@ func atLeast(major, minor, patch, wantMajor, wantMinor, wantPatch int) bool {
 		return minor > wantMinor
 	}
 	return patch >= wantPatch
+}
+
+func isPrerelease(text string) bool {
+	s := strings.TrimSpace(text)
+	i := strings.IndexFunc(s, func(r rune) bool { return r >= '0' && r <= '9' })
+	if i < 0 {
+		return false
+	}
+	rest := s[i:]
+	for k := 0; k < 3; k++ {
+		j := 0
+		for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+			j++
+		}
+		if j == 0 {
+			return false
+		}
+		rest = rest[j:]
+		if k < 2 {
+			if len(rest) == 0 || rest[0] != '.' {
+				return false
+			}
+			rest = rest[1:]
+		}
+	}
+	return len(rest) > 1 && rest[0] == '-'
+}
+
+func podmanMeetsFloor(versionStr string) bool {
+	major, minor, patch, ok := parseTriple(versionStr)
+	if !ok || !atLeast(major, minor, patch, minPodmanMajor, minPodmanMinor, minPodmanPatch) {
+		return false
+	}
+	if isPrerelease(versionStr) && major == minPodmanMajor && minor == minPodmanMinor && patch == minPodmanPatch {
+		return false
+	}
+	return true
 }
 
 func nestedMap(m map[string]any, keys ...string) (any, bool) {
@@ -196,8 +233,7 @@ func probeP02(c *probeCtx) *Failure {
 	}
 	found, _ := nestedMap(decoded, "client", "version")
 	versionStr, _ := found.(string)
-	major, minor, patch, ok := parseTriple(versionStr)
-	if !ok || !atLeast(major, minor, patch, minPodmanMajor, minPodmanMinor, minPodmanPatch) {
+	if !podmanMeetsFloor(versionStr) {
 		return c.fail("P02", "PODMAN_VERSION", "podman "+versionStr+" is below 6.1.4", ExitConfigUnavailable)
 	}
 	c.pass("P02")
@@ -520,7 +556,6 @@ func FullProbe(cfg Config, env ProbeEnv) (ProbeReport, *Failure) {
 	return report, nil
 }
 
-// probeP12 passes unconfigured egress and checks pasta availability otherwise.
 func probeP12(c *probeCtx) *Failure {
 	if !c.cfg.Egress {
 		c.pass("P12")

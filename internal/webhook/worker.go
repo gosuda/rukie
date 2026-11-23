@@ -143,8 +143,6 @@ type Worker struct {
 	cfg    WorkerConfig
 }
 
-// defaultInstanceID mints a 16-hex-char lease owner from crypto/rand,
-// falling back to the current nanotime when randomness is unavailable.
 func defaultInstanceID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err == nil {
@@ -372,9 +370,7 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 		}
 		return w.failAttempt(ctx, msg, endpoint, attemptFailure{attemptNo: attemptNo, errText: "endpoint inactive", delay: tableDelay(attemptNo)}, now)
 	}
-	// Re-fetch immediately before Send so a rotation (or disable/delete)
-	// landing between claim and send is observed; the fresh row also gates
-	// active/deleted and supplies the secrets below.
+
 	fresh, ferr := w.cfg.backend.GetWebhookEndpoint(ctx, msg.EndpointID)
 	switch {
 	case ferr == nil:
@@ -484,12 +480,6 @@ func (w *Worker) deliverOne(ctx context.Context, msg store.WebhookMessageRow) er
 	}
 }
 
-// rotationRetryDelay is the fast retry after a 401/403 that raced a secret
-// rotation. It re-fetches the endpoint and re-opens its secrets; when the
-// bytes differ from the ones Send used, the credentials rotated mid-flight
-// and a short retry converges without burning the table backoff. Unchanged
-// bytes mean the credentials are genuinely wrong, so the normal backoff
-// applies.
 const rotationRetryDelay = 30 * time.Second
 
 func (w *Worker) rotatedSecretDelay(ctx context.Context, endpoint store.WebhookEndpointRow, used DeliverySecrets) (time.Duration, bool) {
@@ -513,7 +503,6 @@ func (w *Worker) rotatedSecretDelay(ctx context.Context, endpoint store.WebhookE
 	return rotationRetryDelay, true
 }
 
-// attemptFailure groups one failed attempt with its retry decision.
 type attemptFailure struct {
 	errText   string
 	attemptNo int64
@@ -562,9 +551,7 @@ func (w *Worker) recordUnsentAttempt(ctx context.Context, msg store.WebhookMessa
 }
 
 func (w *Worker) failAttempt(ctx context.Context, msg store.WebhookMessageRow, endpoint store.WebhookEndpointRow, cause attemptFailure, now time.Time) error {
-	// The fenced completion runs first: another worker may have stolen the
-	// lease, in which case ErrStale is benign and no endpoint counters move.
-	// The attempt row recorded by the caller stays as audit either way.
+
 	nowMillis := now.UnixMilli()
 	if cause.attemptNo >= MaxAttempts {
 		if derr := w.cfg.backend.MarkWebhookDead(ctx, msg.ID, truncate2K(cause.errText), nowMillis, cause.status, w.cfg.InstanceID); derr != nil {
@@ -647,7 +634,6 @@ func applyJitterPct(d time.Duration, pct float64) time.Duration {
 	return time.Duration(float64(d) * (1 + (unit*2-1)*pct))
 }
 
-// applyFailure maps the post-increment failure count to the endpoint
 func applyFailure(consecutive int64) (string, bool) {
 	switch {
 	case consecutive >= store.WebhookSuspendAfterFailures:

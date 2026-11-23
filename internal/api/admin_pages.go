@@ -19,8 +19,6 @@ import (
 	"github.com/gosuda/rukie/internal/web/secheaders"
 )
 
-// adminPageHeaders locks a raw page to the same document policy as op
-// pages: no scripts, no plugins, styles only from the bundled font host.
 func adminPageHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", secheaders.CSP)
@@ -50,8 +48,6 @@ func (d Deps) AdminRaw(next http.Handler, csrfKey []byte) http.Handler {
 	})
 }
 
-// adminCSRFField mirrors the mux CSRF contract for hand-rendered pages: the
-// _csrf field is the MAC of the csrf cookie under the server key.
 func adminCSRFField(w http.ResponseWriter, r *http.Request, key []byte) string {
 	if len(key) == 0 {
 		return ""
@@ -77,9 +73,6 @@ func (d Deps) adminRawPrincipal(r *http.Request) op.Principal {
 	return RawBytes{Deps: d}.principalFor(r)
 }
 
-// adminPageAuth enforces the same gate as the admin operations: the caller
-// must carry the admin scope and belong to an active site admin. Scope first,
-// like the op framework, so a scoped-down token fails closed.
 func (d Deps) adminPageAuth(r *http.Request) (op.Principal, error) {
 	p := d.adminRawPrincipal(r)
 	if !p.Can(op.ScopeAdminWrite) {
@@ -113,10 +106,6 @@ func writeAdminProblem(w http.ResponseWriter, err error) {
 		"<p>"+esc(firstLine(err.Error()))+"</p>\n"))
 }
 
-// adminPlumbProblem renders a daemon failure for a page-only surface. The
-// daemon detail never reaches HTML: pages carry a fixed sentence plus the
-// problem code, while JSON op errors keep the verbatim detail their contract
-// already promises.
 func adminPlumbProblem(title string, err error) (string, string) {
 	code := op.CodeUnavailable
 	if oerr, ok := errors.AsType[*op.Error](err); ok {
@@ -163,7 +152,7 @@ func (d Deps) serveAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		writeAdminProblem(w, err)
 		return
 	}
-	// Bounded counts only; the dashboard never loads whole tables.
+
 	users, uerr := st.CountUsers(ctx)
 	if uerr != nil {
 		writeAdminProblem(w, mapAdminStore(uerr))
@@ -339,8 +328,6 @@ func (d Deps) serveAdminUserDetail(w http.ResponseWriter, r *http.Request, name 
 	_, _ = io.WriteString(w, pageShell("User "+target.Name, b.String()))
 }
 
-// serveRepoPlumbing serves /{owner}/{repo}/-/ops|claims|attestations|refs.
-// It reports whether the path belonged to the plumbing namespace.
 func (d Deps) serveRepoPlumbing(w http.ResponseWriter, r *http.Request) bool {
 	path := strings.Trim(r.URL.Path, "/")
 	parts := strings.Split(path, "/")
@@ -369,10 +356,7 @@ func (d Deps) serveRepoPlumbing(w http.ResponseWriter, r *http.Request) bool {
 		writeAdminProblem(w, cerr)
 		return true
 	}
-	// Per-repo authorization applies to site admins too: a token scoped to
-	// another repository must not read this one. checkRepoAccess folds the
-	// token's repo restriction into the decision and answers 404 either way
-	// so private repositories do not leak existence.
+
 	if derr := d.checkRepoAccess(rq, rc.row, "repo.view", ""); derr != nil {
 		writeAdminProblem(w, derr)
 		return true

@@ -28,21 +28,6 @@ func nonemptyStrings(in []string) []string {
 	return slices.Clone(in)
 }
 
-// Webhook endpoint and delivery ops (F8). Repo-family paths carry the owner
-// and repo segments; endpoint authorization always follows the ENDPOINT's own
-// scope, never the path segments:
-//
-//   - repo-scope endpoints: repo admin of the endpoint's repo.
-//   - owner-scope endpoints: owner admin of the endpoint's owner (the owning
-//     user, or the owners team / site admin for organizations).
-//
-// A path repo that disagrees with a repo-scope endpoint's repo, or any path
-// repo on an owner-scope endpoint, is ignored after the endpoint loads. A
-// literal "-" repo segment routes the same op and is the conventional
-// placeholder when no repository is in context (owner hooks page). Owner
-// scope creation reads the owner from the path (In.owner may repeat it or be
-// absent); any other In.owner is rejected.
-
 const (
 	webhookDefaultConcurrency int64 = 4
 	webhookMinConcurrency     int64 = 1
@@ -360,8 +345,6 @@ func (d Deps) requireRepoAdmin(rq requester, row store.RepoRow) error {
 	return nil
 }
 
-// webhookOwnerKind resolves an owner name to its user or org id. Either a
-// user or an org may own the name, never both.
 type webhookOwnerKind struct {
 	name  string
 	id    int64
@@ -420,10 +403,6 @@ func (d Deps) requireOwnerAdmin(rq requester, owner webhookOwnerKind) error {
 	return op.Errorf(op.CodeForbidden, "webhook owner access was denied")
 }
 
-// webhookOwnerByID resolves an owner id stored on an endpoint row. The row's
-// owner kind selects the namespace. An empty kind on an owner row is corrupt
-// (the store requires user|org); it fails closed as not-found so no caller is
-// authorized against the wrong namespace.
 func (d Deps) webhookOwnerByID(ctx context.Context, ownerID int64, kind string) (webhookOwnerKind, error) {
 	switch kind {
 	case "org":
@@ -459,8 +438,6 @@ func (d Deps) webhookOrgByID(ctx context.Context, orgID int64) (store.OrgRow, er
 	return org, nil
 }
 
-// webhookEndpointAccess is an endpoint row plus whichever scope principal was
-// authorized against it.
 type webhookEndpointAccess struct {
 	owner     webhookOwnerKind
 	row       store.WebhookEndpointRow
@@ -468,9 +445,6 @@ type webhookEndpointAccess struct {
 	repoValid bool
 }
 
-// loadWebhookEndpoint loads an endpoint by id and authorizes the caller
-// against the endpoint's own scope. Path segments are already spent: a
-// disagreeing path repo never overrides the endpoint's repo.
 func (d Deps) loadWebhookEndpoint(ctx context.Context, rq requester, id string) (webhookEndpointAccess, error) {
 	var out webhookEndpointAccess
 	if strings.TrimSpace(id) == "" {
@@ -513,14 +487,10 @@ func (d Deps) loadWebhookEndpoint(ctx context.Context, rq requester, id string) 
 	return out, nil
 }
 
-// webhookSealAAD binds an endpoint secret to its endpoint id.
 func webhookSealAAD(endpointID string) string {
 	return "webhook-endpoint-secret:" + endpointID
 }
 
-// sealWebhookSecret seals raw secret bytes under aad. Every endpoint secret is
-// sealed under its endpoint id; the one throwaway provisioning seal (replaced
-// by rotation before create returns) uses the provisioning aad.
 func (d Deps) sealWebhookSecret(aad string, raw []byte) ([]byte, error) {
 	if len(d.SealKey) == 0 {
 		return nil, op.Errorf(op.CodeInternal, "webhook seal key is not configured")
@@ -630,8 +600,7 @@ func webhookAttemptJSON(row store.WebhookAttemptRow) WebhookAttemptJSON {
 		AttemptTimestamp: row.AttemptTimestamp,
 		HTTPStatus:       row.HTTPStatus, Error: row.Error, DurationMs: row.DurationMs,
 	}
-	// Request headers arrive redacted upstream (signature presence marker);
-	// empty bytes stay omitted.
+
 	if len(row.ReqHeaders) > 0 {
 		var headers map[string]any
 		if uerr := unmarshalObject(row.ReqHeaders, &headers); uerr == nil {
@@ -784,9 +753,7 @@ func webhookEndpointCreateHandler(d Deps) func(context.Context, op.Principal, We
 		if !webhook.IsValidSecretDisplay(display) {
 			return WebhookEndpointCreateOut{}, op.Errorf(op.CodeInternal, "webhook secret generation failed")
 		}
-		// The endpoint id is handler-generated so the secret seals under the
-		// final id aad in a single insert; fresh endpoints carry no previous
-		// secret.
+
 		now := d.now()
 		endpointID := "wh_" + string(store.NewID(now))
 		sealed, serr := d.sealWebhookSecret(webhookSealAAD(endpointID), raw)

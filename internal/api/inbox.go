@@ -14,11 +14,6 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 )
 
-// Inbox ops (F8). Every inbox handler addresses the caller only: the
-// addressee is always p.UserID, so no target-user parameter exists and
-// GetInboxThread(userID=p.UserID) enforces isolation. Anonymous and service
-// principals are refused; the user must be active. Reads never auto-mark;
-// the HTML thread page marks through the inbox.mark path before rendering.
 const (
 	inboxListRatePerSec   = 1.0
 	inboxListBurst        = 5.0
@@ -42,9 +37,6 @@ type inboxRateBucket struct {
 	tokens float64
 }
 
-// inboxRateAllow admits one event for userID under the named budget. Budgets
-// follow the settled rates: list 1 qps burst 5, count 2 qps burst 4,
-// mark/snooze 5 qps burst 10.
 func inboxRateAllow(userID int64, budget string, now time.Time) (bool, time.Duration) {
 	var rate, burst float64
 	switch budget {
@@ -88,9 +80,6 @@ func inboxRateLimited(retry time.Duration) *op.Error {
 	return err
 }
 
-// requireInboxUser gates every inbox op: human principal, non-zero user, and
-// an active account. Scoped tokens on human accounts pass; sessions pass;
-// anonymous and service principals do not.
 func (d Deps) requireInboxUser(ctx context.Context, p op.Principal) (int64, error) {
 	if p.Kind != op.PrincipalHuman || p.UserID == 0 {
 		return 0, op.Errorf(op.CodeUnauthorized, "authentication is required")
@@ -379,8 +368,7 @@ func (d Deps) resolveInboxRepo(ctx context.Context, full string) (store.RepoRow,
 	if !ok || strings.TrimSpace(owner) == "" || strings.TrimSpace(name) == "" {
 		return store.RepoRow{}, op.Errorf(op.CodeInvalid, "inbox repo must look like owner/name")
 	}
-	// Existence only: threads are already scoped to the caller, so no access
-	// check runs here. Unknown repos report not-found for a stable filter.
+
 	var rq requester
 	rc, cerr := d.resolveRepo(ctx, rq, strings.TrimSpace(owner), strings.TrimSpace(name), false)
 	if cerr != nil {

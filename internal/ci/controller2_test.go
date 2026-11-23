@@ -1164,8 +1164,7 @@ func TestCIRetryDependentWaitsForPrereq(t *testing.T) {
 	if jobs["lint"].State != "queued" {
 		t.Fatalf("retried lint = %q, want queued", jobs["lint"].State)
 	}
-	// The dependent must wait for its prerequisite instead of racing it:
-	// lint is only queued here, so test may not be eligible yet.
+
 	if jobs["test"].State != "waiting" {
 		t.Fatalf("retried test = %q, want waiting", jobs["test"].State)
 	}

@@ -337,9 +337,7 @@ WHERE id = ?3 AND state = 'leased' AND lease_owner = ?4 AND lease_token = ?5`,
 		if moved == 0 {
 			return fmt.Errorf("RequeueJob: %w: job is not leased to this owner", ErrStale)
 		}
-		// A dead repo_fork job leaves its fork row terminal: the row moves to
-		// deleted and the source counter gives the increment back, so a
-		// retry-exhausted fork cannot sit in forking forever.
+
 		if _, derr := execAffected(tx.ctx, inner,
 			`UPDATE repos SET state = 'deleted', deleted_at = ?1
 			 WHERE id = (SELECT repo_id FROM jobs WHERE id = ?2 AND kind = 'repo_fork')

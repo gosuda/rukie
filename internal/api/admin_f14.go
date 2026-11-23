@@ -19,14 +19,6 @@ import (
 	"github.com/gosuda/rukie/internal/store"
 )
 
-// This file lands F14: the admin operation surface. Every op here requires
-// ScopeAdminWrite plus a site admin, and every mutation writes a domain
-// audit row. Reads are safe; none of them is served from a cache.
-
-// ---------------------------------------------------------------------------
-// admin.user.delete
-// ---------------------------------------------------------------------------
-
 type AdminDeleteBody struct {
 	Confirm string `json:"confirm"`
 }
@@ -42,10 +34,6 @@ type AdminDeleteOut struct {
 	Name       string `json:"name"`
 	PurgeAfter int64  `json:"purge_after"`
 }
-
-// ---------------------------------------------------------------------------
-// admin.repo.list / admin.repo.purge / admin.repo.verify
-// ---------------------------------------------------------------------------
 
 type AdminRepoListIn struct {
 	State  string `query:"state"`
@@ -105,10 +93,6 @@ type AdminRepoVerifyOut struct {
 	OK     bool             `json:"ok"`
 }
 
-// ---------------------------------------------------------------------------
-// admin.job.list / admin.job.retry
-// ---------------------------------------------------------------------------
-
 type AdminJobListIn struct {
 	Kind   string `query:"kind"`
 	State  string `query:"state"`
@@ -141,10 +125,6 @@ type AdminJobRetryOut struct {
 	State string `json:"state"`
 }
 
-// ---------------------------------------------------------------------------
-// admin.audit.list
-// ---------------------------------------------------------------------------
-
 type AdminAuditListIn struct {
 	Actor  string `query:"actor"`
 	Action string `query:"action"`
@@ -168,10 +148,6 @@ type AdminAuditListOut struct {
 	Events []AdminAuditItem `json:"events"`
 }
 
-// ---------------------------------------------------------------------------
-// admin.health.get
-// ---------------------------------------------------------------------------
-
 type AdminHealthIn struct{}
 
 type AdminHealthStore struct {
@@ -189,10 +165,6 @@ type AdminHealthOut struct {
 	Store  AdminHealthStore `json:"store"`
 	Ruk    AdminHealthRuk   `json:"ruk"`
 }
-
-// ---------------------------------------------------------------------------
-// admin.token.list / admin.token.create / admin.token.revoke
-// ---------------------------------------------------------------------------
 
 type AdminTokenListIn struct {
 	User string `path:"user"`
@@ -249,10 +221,6 @@ type AdminTokenRevokeOut struct {
 	Revoked int    `json:"revoked"`
 }
 
-// ---------------------------------------------------------------------------
-// admin.search.sync
-// ---------------------------------------------------------------------------
-
 type AdminSearchSyncIn struct {
 	IdempotencyKey string `header:"Idempotency-Key"`
 }
@@ -263,10 +231,6 @@ type AdminSearchSyncOut struct {
 	UsersChecked int64 `json:"users_checked"`
 	UsersFixed   int64 `json:"users_fixed"`
 }
-
-// ---------------------------------------------------------------------------
-// admin.mirror.sync / admin.mirror.retry
-// ---------------------------------------------------------------------------
 
 type AdminMirrorSyncIn struct {
 	IdempotencyKey string `header:"Idempotency-Key"`
@@ -289,10 +253,6 @@ type AdminMirrorRetryOut struct {
 	Manual bool   `json:"manual"`
 }
 
-// ---------------------------------------------------------------------------
-// admin.attest.verify
-// ---------------------------------------------------------------------------
-
 type AdminAttestVerifyIn struct {
 	Owner   string `query:"owner"`
 	Repo    string `query:"repo"`
@@ -305,10 +265,6 @@ type AdminAttestVerifyOut struct {
 	Attestations int      `json:"attestations"`
 	Live         int      `json:"live"`
 }
-
-// ---------------------------------------------------------------------------
-// admin.inbox.test
-// ---------------------------------------------------------------------------
 
 type AdminInboxTestBody struct {
 	User string `json:"user"`
@@ -374,13 +330,11 @@ func adminListETag(prefix string, n int, next string) string {
 	return fmt.Sprintf("\"%s-%d-%s\"", prefix, n, next)
 }
 
-// adminDaemonGone reports a daemon reply that already lost the repository.
 func adminDaemonGone(err error) bool {
 	oerr, ok := errors.AsType[*op.Error](err)
 	return ok && oerr.Code == op.CodeNotFound
 }
 
-// adminTokenRepos resolves a repo id selector to existing repositories.
 func adminTokenRepos(ctx context.Context, deps Deps, ids []int64) ([]int64, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -418,7 +372,6 @@ func adminTokenRepos(ctx context.Context, deps Deps, ids []int64) ([]int64, erro
 	return out, nil
 }
 
-// adminTokenByRow loads one token row and proves it belongs to the target.
 func adminTokenByRow(ctx context.Context, deps Deps, userID, rowID int64) (store.TokenRecord, error) {
 	st, err := requireStore(deps)
 	if err != nil {
@@ -434,7 +387,6 @@ func adminTokenByRow(ctx context.Context, deps Deps, userID, rowID int64) (store
 	return rec, nil
 }
 
-// adminJobDisplay maps the stored job state onto the admin vocabulary.
 func adminJobDisplay(state string) string {
 	switch state {
 	case "leased":
@@ -615,9 +567,7 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 				var reply map[string]any
 				if cerr := deps.callRuk(ctx, daemon, wire.MethodRepoDelete,
 					map[string]any{"repo": row.RukPath, "confirm_path": row.RukPath}, &reply); cerr != nil {
-					// A daemon miss only counts as already-purged when the
-					// row was already a tombstone. On a live row it means a
-					// bad daemon path, and failing preserves the data.
+
 					if !wasDeleted || !adminDaemonGone(cerr) {
 						return AdminRepoPurgeOut{}, mapRukError(cerr)
 					}
@@ -849,8 +799,7 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 				return AdminHealthOut{}, err
 			}
 			out := AdminHealthOut{Queues: map[string]int64{}}
-			// Every hop below is bounded: a slow store degrades this
-			// reading, never the request.
+
 			pctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, fmt.Errorf("admin health store ping timed out"))
 			defer cancel()
 			start := time.Now()
@@ -946,9 +895,7 @@ func RegisterAdminF14(t *op.Table, deps Deps) error {
 					return AdminTokenCreateOut{}, op.Errorf(op.CodeValidation, "unparseable ttl")
 				}
 			}
-			// Site admins mint for the target, not themselves: only the
-			// repository's existence is checked, never the caller's access.
-			// Visibility is enforced when the token is used.
+
 			repos, verr := adminTokenRepos(ctx, deps, in.Body.Repos)
 			if verr != nil {
 				return AdminTokenCreateOut{}, verr

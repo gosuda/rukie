@@ -22,9 +22,6 @@ type DeleteUserInput struct {
 	IfMatch string
 }
 
-// userPurgeDelay is the tombstone horizon for deleted users and the
-// user-namespace repos soft-deleted alongside them. It mirrors the
-// repository purge delay: one horizon for the whole deletion.
 const userPurgeDelay = 30 * 24 * time.Hour
 
 // DeleteUser soft-deletes any user account and returns the purge horizon in

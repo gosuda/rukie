@@ -345,8 +345,7 @@ func runServe(argv []string) int {
 	}()
 	mirrorDone := make(chan error, 1)
 	go func() {
-		// A drain error is transient (a store hiccup, a rejected run). Let the
-		// scheduler restart instead of silently dropping every later mirror.
+
 		superviseWorker(workerCtx, time.Minute, func(error) bool { return true }, func(ctx context.Context) error {
 			return app.mirror.Scheduler(ctx, 10*time.Second, "serve-mirror")
 		})
@@ -735,8 +734,7 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 		OnRepoCreated: func(repoID int64) { watcher.Start(ctx, repoID) },
 		OnRepoDeleted: watcher.Stop,
 	}
-	// AdminF14 needs the repo dependency set: repo verify and attest verify
-	// call the daemon through Deps.Ruk, which authDeps does not carry.
+
 	if regErr := api.RegisterAdminF14(table, repoDeps); regErr != nil {
 		cleanup()
 		return nil, cleanup, fmt.Errorf("setupApp: %w", regErr)
@@ -932,8 +930,6 @@ func setupApp(ctx context.Context, cfg config.Config, logger *slog.Logger, sup *
 	return &app{server: server, handler: api.RewriteSearchPaths(api.ReleaseBytes{Deps: repoDeps}.Wrap(repoDeps.InboxPages(repoDeps.WebhookPages(adminPaged)))), store: st, auth: authSvc, docs: docs, spool: spool, watcher: watcher, jobs: repoJobs, ssh: sshSrv, mirror: mirror.Worker{Store: st, Queue: repoJobs, Ruk: repoClient, SealKey: key, Clock: time.Now, RepoRoot: cfg.Ruk.RepoRoot, WorkerCount: cfg.Mirrors.MaxConcurrentPushes, PushTimeout: time.Duration(pushTimeoutMs) * time.Millisecond}, ci: ciCtrl, forks: forks.Worker{Store: st, Queue: repoJobs, Clock: time.Now}, webhooks: webhookWorker}, cleanup, nil
 }
 
-// webhookRetention converts operator-configured days to a Duration,
-// defaulting to zero (the worker's 30-day default) outside 1..36500.
 func webhookRetention(days uint) time.Duration {
 	if days == 0 || days > 36500 {
 		return 0

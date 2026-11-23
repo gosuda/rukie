@@ -133,15 +133,12 @@ func (c *conn) reserve() (*stream, bool) {
 
 func (c *conn) release(s *stream) {
 	present, freed := c.drop(s.id)
-	// The hook takes the pool lock, which acquire holds while probing load,
-	// so it must run outside the critical section.
+
 	if present && freed != nil {
 		freed()
 	}
 }
 
-// drop removes one live stream and reports whether it was there plus the
-// pool wakeup hook. Callers invoke the hook after drop returns.
 func (c *conn) drop(id uint64) (bool, func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

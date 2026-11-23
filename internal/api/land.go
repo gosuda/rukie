@@ -873,9 +873,6 @@ func viewCreateHandler(d Deps) func(context.Context, op.Principal, ViewCreateIn)
 	}
 }
 
-// canSeeView reports whether the caller may read one saved view. Shared views
-// are open to anyone who can see the repository; private ones belong to their
-// owner and to repository administrators.
 func canSeeView(rq requester, repo store.RepoRow, view store.ViewRow) bool {
 	if view.Shared {
 		return true
@@ -911,8 +908,7 @@ func viewGetHandler(d Deps) func(context.Context, op.Principal, ViewGetIn) (View
 			if gerr != nil {
 				return gerr
 			}
-			// change.view only proves the repo is visible. A private view is
-			// visible to its owner and to users who may administer the repo.
+
 			if !canSeeView(rq, rc.row, row) {
 				return store.ErrNotFound
 			}

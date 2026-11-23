@@ -66,11 +66,6 @@ var denyPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001:db8::/32"),
 }
 
-// testBypassPrefixes are the only ranges AllowPrivateTargets bypasses:
-// loopback and RFC 1918. Every other denied range (link-local, CGNAT, ULA,
-// multicast, reserved, documentation, NAT64, ...) still denies under the flag,
-// so hermetic tests can use loopback/RFC 1918 without opening the metadata
-// or multicast surface.
 var testBypassPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("127.0.0.0/8"),
 	netip.MustParsePrefix("::1/128"),
@@ -79,9 +74,6 @@ var testBypassPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("192.168.0.0/16"),
 }
 
-// isTestBypassable reports whether ip is in the narrow bypass set above.
-// Callers normalize zones and IPv4-mapped forms first; this normalizes again
-// defensively so both forms behave identically.
 func isTestBypassable(ip netip.Addr) bool {
 	addr := ip.WithZone("")
 	if addr.Is4In6() {

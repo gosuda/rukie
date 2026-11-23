@@ -184,7 +184,6 @@ func f14JSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return decoded
 }
 
-// f14CSRF fetches a CSRF cookie and field value for hand-posted forms.
 func f14CSRF(t *testing.T, e *f14Env, path, cookie string) (string, string) {
 	t.Helper()
 	rec := f14Call(t, e, f14Req{Method: http.MethodGet, Target: path, Auth: cookie, Accept: "text/html"})
@@ -350,8 +349,7 @@ func TestEveryOpHasPageTest(t *testing.T) {
 	if len(forms) != 9 {
 		t.Fatalf("form map covers %d mutations, want 9", len(forms))
 	}
-	// Every admin op the table knows must be covered by a probe above: a new
-	// op without a page or form fixture fails here, not in a dump gate.
+
 	landedAdmin := map[string]bool{
 		"admin.user.create": true, "admin.user.update": true, "admin.user.unlock": true,
 		"admin.user.reset-password": true, "admin.user.totp-reset": true, "admin.land.run": true,
@@ -427,8 +425,7 @@ func TestAdminOpScopes(t *testing.T) {
 		t.Fatalf("scope matrix covers %d ops, want 16", len(probes))
 	}
 	for _, probe := range probes {
-		// No credential reaches the scope gate as anonymous and is
-		// refused; a bad credential fails authentication instead.
+
 		anon := f14Call(t, e, f14Req{Method: probe.Method, Target: probe.Target, Body: probe.Body})
 		if anon.Code != http.StatusForbidden {
 			t.Fatalf("%s %s anon = %d, want 403", probe.Method, probe.Target, anon.Code)
@@ -538,19 +535,19 @@ func TestAdminUserDeleteLifecycle(t *testing.T) {
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("unknown delete = %d, want 404", missing.Code)
 	}
-	// N-1: empty confirm is refused.
+
 	empty := f14Call(t, e, f14Req{Method: http.MethodPost, Target: "/admin/users/carol/delete",
 		Auth: acookie, Headers: map[string]string{"If-Match": etag}, Body: `{}`})
 	if empty.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("empty confirm = %d, want 422", empty.Code)
 	}
-	// N: wrong confirm is refused.
+
 	wrong := f14Call(t, e, f14Req{Method: http.MethodPost, Target: "/admin/users/carol/delete",
 		Auth: acookie, Headers: map[string]string{"If-Match": etag}, Body: `{"confirm":"mallory"}`})
 	if wrong.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("wrong confirm = %d, want 422", wrong.Code)
 	}
-	// N+1: missing If-Match is refused.
+
 	noMatch := f14Call(t, e, f14Req{Method: http.MethodPost, Target: "/admin/users/carol/delete",
 		Auth: acookie, Body: `{"confirm":"carol"}`})
 	if noMatch.Code != http.StatusPreconditionRequired && noMatch.Code != http.StatusForbidden {
@@ -566,8 +563,7 @@ func TestAdminUserDeleteLifecycle(t *testing.T) {
 	if horizon <= float64(time.Now().UnixMilli()) {
 		t.Fatalf("purge_after = %v, want a future horizon", out["purge_after"])
 	}
-	// The tombstoned account stops authenticating at once: the profile
-	// vanishes and the password no longer works.
+
 	profile := f14Call(t, e, f14Req{Method: http.MethodGet, Target: "/carol"})
 	if profile.Code != http.StatusNotFound {
 		t.Fatalf("tombstoned profile = %d, want 404", profile.Code)
@@ -581,13 +577,13 @@ func TestAdminUserDeleteLifecycle(t *testing.T) {
 	if again.Code != http.StatusNotFound {
 		t.Fatalf("second delete = %d, want 404", again.Code)
 	}
-	// The last active admin refuses to delete themselves.
+
 	self := f14Call(t, e, f14Req{Method: http.MethodPost, Target: "/admin/users/ada/delete",
 		Auth: acookie, Headers: map[string]string{"If-Match": f14ETag(t, e, 1)}, Body: `{"confirm":"ada"}`})
 	if self.Code != http.StatusConflict {
 		t.Fatalf("last admin delete = %d, want 409", self.Code)
 	}
-	// Past the horizon the sweeper hard-deletes the row.
+
 	future := time.Now().Add(31 * 24 * time.Hour)
 	watcher := repowatch.New(repowatch.Config{Store: e.st, Clock: func() time.Time { return future }})
 	if err := watcher.SweepDueUserPurges(t.Context()); err != nil {
@@ -806,8 +802,7 @@ func TestAdminJobRetryDead(t *testing.T) {
 	if queued.Code != http.StatusConflict {
 		t.Fatalf("retry queued = %d, want 409", queued.Code)
 	}
-	// Fail to the attempt cap with the clock jumping over every backoff.
-	// The tenth failure parks the job dead.
+
 	for range 10 {
 		claimed, err := q.Claim(t.Context(), "f14-test", time.Minute, 10)
 		if err != nil {
