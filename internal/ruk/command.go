@@ -147,7 +147,7 @@ func (d *commandDriver) fail(format string, args ...any) (wire.CommandExitReport
 }
 
 func (d *commandDriver) read() (Frame, error) {
-	return readFrame(d.pc.nc)
+	return d.pc.readFrame()
 }
 
 func (d *commandDriver) runAdvertise(ctx context.Context) (wire.CommandExitReport, []byte, bool, error) {
