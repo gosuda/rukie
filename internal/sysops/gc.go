@@ -82,22 +82,22 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 			rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon unreachable; metadata kept"})
 			continue
 		}
-		if dryRun {
-			rep.ReposPurged = append(rep.ReposPurged, full)
-			forecastPurges = append(forecastPurges, row.ID)
-			continue
-		}
 		if row.RukPath != "" {
 			dctx, cancel := context.WithTimeoutCause(ctx, 30*time.Second, fmt.Errorf("sysops: gc repo %s timed out", full))
 			repo, oerr := openGCDaemonRepo(dctx, daemon, cfg.Ruk.RepoRoot, row)
-			if oerr == nil {
-				oerr = callGCRepoDelete(dctx, daemon, repo, row.RukPath)
+			if oerr == nil && !dryRun {
+				oerr = callGCRepoDelete(dctx, daemon, repo)
 			}
 			cancel()
 			if oerr != nil {
 				rep.ReposFailed = append(rep.ReposFailed, GCPending{Repo: full, Reason: oerr.Error()})
 				continue
 			}
+		}
+		if dryRun {
+			rep.ReposPurged = append(rep.ReposPurged, full)
+			forecastPurges = append(forecastPurges, row.ID)
+			continue
 		}
 		jobID := fmt.Sprintf("repo-purge:%d", row.ID)
 		if werr := st.Write(ctx, func(tx *store.WriteTx) error {
@@ -187,8 +187,11 @@ func openGCDaemonRepo(ctx context.Context, client *ruk.Client, repoRoot string, 
 	return client.OpenRepo(ctx, abs)
 }
 
-func callGCRepoDelete(ctx context.Context, client *ruk.Client, repo ruk.Repo, path string) error {
+func callGCRepoDelete(ctx context.Context, client *ruk.Client, repo ruk.Repo) error {
 	_, err := ruk.Call[map[string]any, map[string]any](ctx, client, repo, wire.MethodRepoDelete,
-		map[string]any{"repo": path, "confirm_path": path})
-	return err
+		map[string]any{"repo": repo.Path, "confirm_path": repo.Path})
+	if err != nil {
+		return fmt.Errorf("callGCRepoDelete: %w", err)
+	}
+	return nil
 }

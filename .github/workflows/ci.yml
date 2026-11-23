@@ -92,11 +92,12 @@ jobs:
             '--- PASS: TestDaemonLifecycle (' \
             '--- PASS: TestModelCLIMatchesSnapshot (' \
             '--- PASS: TestDaemonPushReconcilePagination (' \
+            '--- PASS: TestGCRejectsUnavailableDaemonRepos (' \
             '--- PASS: TestSSHStockGitCloneAndPush (' \
             '--- PASS: TestDevLoopStarts (' -- \
             env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
             go test -race -count=1 -v -timeout 30m -tags integration \
-            ./internal/ruk/... ./internal/gitssh/... ./cmd/rukie/...
+            ./internal/ruk/... ./internal/gitssh/... ./internal/sysops/... ./cmd/rukie/...
       - name: Test Git and agent workflows against the daemon
         run: |
           tools/passgate.sh \
