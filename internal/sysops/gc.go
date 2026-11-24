@@ -35,7 +35,11 @@ type GCReport struct {
 // GC purges repository rows past their purge horizon and drops terminal
 // jobs older than the retention window. Daemon removal goes through the
 // daemon when its socket answers; rows whose daemon is unreachable are
-// reported pending instead of half-purged. With dryRun nothing is written.
+// reported pending instead of half-purged. A dry run opens existing metadata
+// read-only. It does not migrate the schema or change application records.
+// Daemon repositories stay pending and unverified, and their removal-dependent
+// jobs are excluded from the forecast. Their stores are never opened.
+// The data directory lock and SQLite reader coordination files may be created.
 func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) (GCReport, error) {
 	rep := GCReport{DryRun: dryRun}
 	lock, lerr := AcquireDataDirLock(cfg.DataDir)
@@ -43,7 +47,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 		return GCReport{}, fmt.Errorf("%w: gc needs the server stopped", ErrDataDirLive)
 	}
 	defer func() { _ = lock.Release() }()
-	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path})
+	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, ReadOnly: dryRun})
 	if err != nil {
 		return GCReport{}, fmt.Errorf("sysops: gc: %w", err)
 	}
@@ -62,7 +66,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 	}
 
 	var daemon *ruk.Client
-	if socket := cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath); socket != "" {
+	if socket := cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath); socket != "" && !dryRun {
 		dctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, fmt.Errorf("sysops: gc daemon dial timed out"))
 		defer cancel()
 		if client, derr := ruk.Dial(dctx, socket); derr == nil {
@@ -78,6 +82,15 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 			rep.ReposFailed = append(rep.ReposFailed, GCPending{Repo: fmt.Sprintf("id=%d", row.ID), Reason: ferr.Error()})
 			continue
 		}
+		if dryRun {
+			if row.RukPath != "" {
+				rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon cleanup unverified in dry run; metadata kept"})
+			} else {
+				rep.ReposPurged = append(rep.ReposPurged, full)
+				forecastPurges = append(forecastPurges, row.ID)
+			}
+			continue
+		}
 		if row.RukPath != "" && daemon == nil {
 			rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon unreachable; metadata kept"})
 			continue
@@ -85,7 +98,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 		if row.RukPath != "" {
 			dctx, cancel := context.WithTimeoutCause(ctx, 30*time.Second, fmt.Errorf("sysops: gc repo %s timed out", full))
 			repo, oerr := openGCDaemonRepo(dctx, daemon, cfg.Ruk.RepoRoot, row)
-			if oerr == nil && !dryRun {
+			if oerr == nil {
 				oerr = callGCRepoDelete(dctx, daemon, repo)
 			}
 			cancel()
@@ -93,11 +106,6 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 				rep.ReposFailed = append(rep.ReposFailed, GCPending{Repo: full, Reason: oerr.Error()})
 				continue
 			}
-		}
-		if dryRun {
-			rep.ReposPurged = append(rep.ReposPurged, full)
-			forecastPurges = append(forecastPurges, row.ID)
-			continue
 		}
 		jobID := fmt.Sprintf("repo-purge:%d", row.ID)
 		if werr := st.Write(ctx, func(tx *store.WriteTx) error {

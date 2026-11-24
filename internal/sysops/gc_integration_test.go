@@ -3,10 +3,13 @@
 package sysops_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,40 +27,59 @@ import (
 )
 
 func TestGCRejectsUnavailableDaemonRepos(t *testing.T) {
-	stack := e2estack.New(t, nil)
+	allowed := e2estack.New(t, nil)
+	denied := e2estack.NewNoAdmin(t, nil)
 	forbidden := filepath.Join(t.TempDir(), ".ruk")
 	if err := os.Mkdir(forbidden, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	relative := filepath.Join("ada", "valid.git")
-	repoDir := filepath.Join(stack.Roots, relative)
-	seedCtx, seedCancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer seedCancel()
-	if out, err := rukproc.Run(seedCtx, e2estack.RukBin(t), []string{"git", "init", repoDir}, append(os.Environ(), "RUK_COORDINATOR=off")); err != nil {
-		t.Fatalf("seed repository: %v\n%s", err, out)
-	}
 	for _, tc := range []struct {
+		stack    *e2estack.Stack
 		want     error
 		name     string
 		path     string
 		openPath string
+		seed     bool
 	}{
-		{want: ruk.ErrNotFound, name: "missing", path: "missing", openPath: filepath.Join(stack.Roots, "missing", ".ruk")},
-		{want: ruk.ErrForbidden, name: "forbidden", path: forbidden, openPath: forbidden},
-		{name: "relative", path: relative, openPath: filepath.Join(repoDir, ".ruk")},
+		{stack: allowed, want: ruk.ErrNotFound, name: "missing", path: "missing", openPath: filepath.Join(allowed.Roots, "missing", ".ruk")},
+		{stack: allowed, want: ruk.ErrForbidden, name: "forbidden", path: forbidden, openPath: forbidden},
+		{stack: allowed, name: "relative", path: relative, openPath: filepath.Join(allowed.Roots, relative, ".ruk"), seed: true},
+		{stack: denied, want: ruk.ErrForbidden, name: "denied", path: relative, openPath: filepath.Join(denied.Roots, relative, ".ruk"), seed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 			defer cancel()
-			if _, err := stack.Client.OpenRepo(ctx, tc.openPath); !errors.Is(err, tc.want) {
-				t.Fatalf("daemon preflight = %v, want %v", err, tc.want)
+			segmentPath := filepath.Join(tc.openPath, "segments", "seg_0000000000000000")
+			var committedSize int64
+			if tc.seed {
+				repoDir := filepath.Dir(tc.openPath)
+				env := append(os.Environ(), "RUK_COORDINATOR=off")
+				if out, err := rukproc.Run(ctx, e2estack.RukBin(t), []string{"git", "init", repoDir}, env); err != nil {
+					t.Fatalf("seed repository: %v\n%s", err, out)
+				}
+				payload := filepath.Join(t.TempDir(), "payload")
+				if err := os.WriteFile(payload, []byte("cold repository recovery probe\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := rukproc.RunInDir(ctx, e2estack.RukBin(t), repoDir, []string{"git", "hash-object", "-w", payload}, env); err != nil {
+					t.Fatalf("seed blob: %v\n%s", err, out)
+				}
+				committed, readErr := os.ReadFile(segmentPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				committedSize = int64(len(committed))
+				if err := os.WriteFile(segmentPath, append(committed, bytes.Repeat([]byte{0xaa}, 100)...), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			cfg := config.Defaults()
 			cfg.DataDir = t.TempDir()
 			cfg.Store.SQLite.Path = filepath.Join(cfg.DataDir, "metadata.sqlite")
-			cfg.Ruk.RepoRoot = stack.Roots
-			cfg.Ruk.Socket = stack.Socket
-			cfg.Ruk.SocketPath = stack.Socket
+			cfg.Ruk.RepoRoot = tc.stack.Roots
+			cfg.Ruk.Socket = tc.stack.Socket
+			cfg.Ruk.SocketPath = tc.stack.Socket
 			st, openErr := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path})
 			if openErr != nil {
 				t.Fatal(openErr)
@@ -133,19 +155,42 @@ func TestGCRejectsUnavailableDaemonRepos(t *testing.T) {
 			if err := st.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
+			before := gcRepositoryFiles(t, tc.openPath)
+			metadataBefore, metadataErr := os.ReadFile(cfg.Store.SQLite.Path)
+			if metadataErr != nil {
+				t.Fatal(metadataErr)
+			}
 			for _, dryRun := range []bool{true, false} {
 				report, gcErr := sysops.GC(ctx, cfg, dryRun, "ada/broken")
 				if gcErr != nil {
 					t.Fatal(gcErr)
 				}
 				wantJobs := int64(1)
-				if tc.want == nil {
+				if dryRun {
+					after := gcRepositoryFiles(t, tc.openPath)
+					if !maps.EqualFunc(before, after, func(a, b gcFile) bool {
+						return a.mode == b.mode && bytes.Equal(a.data, b.data)
+					}) {
+						t.Fatal("preview changed cold repository files")
+					}
+					metadataAfter, readErr := os.ReadFile(cfg.Store.SQLite.Path)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					if !bytes.Equal(metadataBefore, metadataAfter) {
+						t.Fatal("preview changed metadata database bytes")
+					}
+					wantPending := []sysops.GCPending{{Repo: "ada/broken", Reason: "daemon cleanup unverified in dry run; metadata kept"}}
+					if len(report.ReposPurged) != 0 || len(report.ReposFailed) != 0 || !slices.Equal(report.ReposPending, wantPending) {
+						t.Fatalf("preview claimed daemon cleanup readiness: %+v", report)
+					}
+				} else if tc.want == nil {
 					wantJobs++
 					if !slices.Equal(report.ReposPurged, []string{"ada/broken"}) || len(report.ReposPending) != 0 || len(report.ReposFailed) != 0 {
 						t.Fatalf("dry=%t: cleanup classification = %+v", dryRun, report)
 					}
-					if _, statErr := os.Stat(tc.openPath); (dryRun && statErr != nil) || (!dryRun && !errors.Is(statErr, os.ErrNotExist)) {
-						t.Fatalf("dry=%t: repository on disk: %v", dryRun, statErr)
+					if _, statErr := os.Stat(tc.openPath); !errors.Is(statErr, os.ErrNotExist) {
+						t.Fatalf("purged repository on disk: %v", statErr)
 					}
 				} else if len(report.ReposPurged) != 0 || len(report.ReposPending) != 0 || len(report.ReposFailed) != 1 ||
 					report.ReposFailed[0].Repo != "ada/broken" || !strings.Contains(report.ReposFailed[0].Reason, tc.want.Error()) {
@@ -205,7 +250,66 @@ func TestGCRejectsUnavailableDaemonRepos(t *testing.T) {
 				if err := st.Close(ctx); err != nil {
 					t.Fatal(err)
 				}
+				if dryRun {
+					_, probeErr := tc.stack.Client.OpenRepo(ctx, tc.openPath)
+					if tc.seed {
+						if probeErr != nil {
+							t.Fatal(probeErr)
+						}
+						info, statErr := os.Stat(segmentPath)
+						if statErr != nil {
+							t.Fatal(statErr)
+						}
+						if info.Size() != committedSize {
+							t.Fatalf("cold open left segment size %d, want recovered size %d", info.Size(), committedSize)
+						}
+					} else if !errors.Is(probeErr, tc.want) {
+						t.Fatalf("daemon probe = %v, want %v", probeErr, tc.want)
+					}
+				}
 			}
 		})
 	}
+}
+
+type gcFile struct {
+	data []byte
+	mode fs.FileMode
+}
+
+func gcRepositoryFiles(t *testing.T, root string) map[string]gcFile {
+	t.Helper()
+	files := make(map[string]gcFile)
+	if walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if path == root && errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("gcRepositoryFiles: %w", err)
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return fmt.Errorf("gcRepositoryFiles: %w", infoErr)
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return fmt.Errorf("gcRepositoryFiles: %w", relErr)
+		}
+		file := gcFile{mode: info.Mode()}
+		if !entry.IsDir() {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("gcRepositoryFiles: unexpected file type at %s", path)
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return fmt.Errorf("gcRepositoryFiles: %w", readErr)
+			}
+			file.data = data
+		}
+		files[relative] = file
+		return nil
+	}); walkErr != nil {
+		t.Fatal(walkErr)
+	}
+	return files
 }

@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"bytes"
 	"database/sql"
 	"io"
 	"net/http"
@@ -163,6 +164,11 @@ func TestAdminGCDryRunKeepsRows(t *testing.T) {
 	ownerID := seedGCAdmin(t, dbPath, "gcadmin")
 	tokenFile := seedGCAdminToken(t, dbPath)
 	seedTombstonedRepo(t, dbPath, ownerID, "gone", -time.Hour)
+	plebToken := mintGCPlebToken(t, dbPath, ownerID)
+	before, beforeErr := os.ReadFile(dbPath)
+	if beforeErr != nil {
+		t.Fatal(beforeErr)
+	}
 
 	anon := newIO()
 	if code := runCLI(t, []string{"admin", "gc", "--config", cfgPath, "--dry-run"}, anon); code != 3 {
@@ -173,7 +179,6 @@ func TestAdminGCDryRunKeepsRows(t *testing.T) {
 		t.Fatalf("unconfirmed gc exit %d, want 64", code)
 	}
 	pleb := newIO()
-	plebToken := mintGCPlebToken(t, dbPath, ownerID)
 	if code := runCLI(t, []string{"admin", "gc", "--config", cfgPath, "--dry-run", "--token-file", plebToken}, pleb); code != 3 {
 		t.Fatalf("non-admin gc exit %d, want 3", code)
 	}
@@ -183,6 +188,13 @@ func TestAdminGCDryRunKeepsRows(t *testing.T) {
 	}
 	if !strings.Contains(dry.stdout.String(), "gone") {
 		t.Fatalf("dry output names no repo: %q", dry.stdout.String())
+	}
+	after, afterErr := os.ReadFile(dbPath)
+	if afterErr != nil {
+		t.Fatal(afterErr)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("preview or its authentication changed metadata database bytes")
 	}
 	if n := countLiveRepos(t, dbPath); n != 0 {
 		t.Fatalf("live repos = %d, want 0 (tombstoned rows stay hidden)", n)
@@ -201,6 +213,16 @@ func TestAdminGCDryRunKeepsRows(t *testing.T) {
 	}
 	if !strings.Contains(scoped.stdout.String(), "repos purged: 0") {
 		t.Fatalf("scoped output = %q, want zero purges", scoped.stdout.String())
+	}
+}
+
+func TestAdminGCHelpExplainsUnverifiedPreview(t *testing.T) {
+	help := newIO()
+	if code := runCLI(t, []string{"admin", "gc", "--help"}, help); code != 0 {
+		t.Fatalf("help exit %d: %s", code, help.stderr.String())
+	}
+	if !strings.Contains(help.stdout.String(), "daemon repositories stay pending and unverified") {
+		t.Fatalf("help omits unverified daemon cleanup: %q", help.stdout.String())
 	}
 }
 

@@ -1,9 +1,11 @@
 package sysops
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -124,9 +126,20 @@ func TestGCForecastsTerminalReviewJobsAfterSelectedPurges(t *testing.T) {
 			if err := st.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
+			before, beforeErr := os.ReadFile(cfg.Store.SQLite.Path)
+			if beforeErr != nil {
+				t.Fatal(beforeErr)
+			}
 			dry, dryErr := GC(ctx, cfg, true, tc.filter)
 			if dryErr != nil {
 				t.Fatal(dryErr)
+			}
+			after, afterErr := os.ReadFile(cfg.Store.SQLite.Path)
+			if afterErr != nil {
+				t.Fatal(afterErr)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("dry run changed metadata database bytes")
 			}
 			wantJobs := int64(len(tc.purged)) + 2
 			if slices.Contains(tc.purged, "ada/first") {
@@ -134,7 +147,7 @@ func TestGCForecastsTerminalReviewJobsAfterSelectedPurges(t *testing.T) {
 			}
 			wantPending := make([]GCPending, len(tc.pending))
 			for i, repo := range tc.pending {
-				wantPending[i] = GCPending{Repo: repo, Reason: "daemon unreachable; metadata kept"}
+				wantPending[i] = GCPending{Repo: repo, Reason: "daemon cleanup unverified in dry run; metadata kept"}
 			}
 			if !slices.Equal(dry.ReposPurged, tc.purged) || !slices.Equal(dry.ReposPending, wantPending) ||
 				len(dry.ReposFailed) != 0 || dry.JobsWouldDrop != wantJobs || dry.JobsDeleted != 0 {
@@ -171,6 +184,9 @@ func TestGCForecastsTerminalReviewJobsAfterSelectedPurges(t *testing.T) {
 			live, liveErr := GC(ctx, cfg, false, tc.filter)
 			if liveErr != nil {
 				t.Fatal(liveErr)
+			}
+			for i := range wantPending {
+				wantPending[i].Reason = "daemon unreachable; metadata kept"
 			}
 			if !slices.Equal(live.ReposPurged, tc.purged) || !slices.Equal(live.ReposPending, wantPending) ||
 				len(live.ReposFailed) != 0 || live.JobsDeleted != dry.JobsWouldDrop {

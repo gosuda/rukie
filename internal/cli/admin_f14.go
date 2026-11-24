@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -131,7 +132,7 @@ func runAdminGC(ctx context.Context, std IO, argv []string) int {
 	fs := flag.NewFlagSet("admin gc", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	configFlag := fs.String("config", "", "config file path")
-	dryRun := fs.Bool("dry-run", false, "list what would be collected without writing")
+	dryRun := fs.Bool("dry-run", false, "preview metadata cleanup; daemon repositories stay pending and unverified")
 	confirm := fs.Bool("confirm", false, "acknowledge the destructive collection pass")
 	repo := fs.String("repo", "", "limit collection to one owner/name repository")
 	tokenFlag := fs.String("token", "", "admin bearer token (prefer --token-file)")
@@ -139,6 +140,12 @@ func runAdminGC(ctx context.Context, std IO, argv []string) int {
 	sessionFileFlag := fs.String("session-file", "", "file holding the admin session cookie")
 	asJSON := fs.Bool("json", false, "machine output")
 	if err := fs.Parse(argv); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			emit(std.Stdout, "usage: rukie admin gc [flags]")
+			fs.SetOutput(std.Stdout)
+			fs.PrintDefaults()
+			return 0
+		}
 		emit(std.Stderr, "rukie admin gc: flag parse failed")
 		return 64
 	}
@@ -156,7 +163,7 @@ func runAdminGC(ctx context.Context, std IO, argv []string) int {
 		return 64
 	}
 	validate := func() int {
-		st, openErr := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path})
+		st, openErr := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, ReadOnly: *dryRun})
 		if openErr != nil {
 			emit(std.Stderr, "rukie admin gc:", openErr.Error())
 			return 1
