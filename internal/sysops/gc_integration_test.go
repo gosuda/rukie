@@ -62,7 +62,7 @@ func TestGCRejectsUnavailableDaemonRepos(t *testing.T) {
 				if err := os.WriteFile(payload, []byte("cold repository recovery probe\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if out, err := rukproc.RunInDir(ctx, e2estack.RukBin(t), repoDir, []string{"git", "hash-object", "-w", payload}, env); err != nil {
+				if out, err := rukproc.Run(ctx, e2estack.RukBin(t), []string{"git", "--git-dir=" + repoDir, "hash-object", "-w", payload}, env); err != nil {
 					t.Fatalf("seed blob: %v\n%s", err, out)
 				}
 				committed, readErr := os.ReadFile(segmentPath)
