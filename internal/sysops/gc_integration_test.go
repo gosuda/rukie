@@ -166,7 +166,8 @@ func TestGCRejectsUnavailableDaemonRepos(t *testing.T) {
 					t.Fatal(gcErr)
 				}
 				wantJobs := int64(1)
-				if dryRun {
+				switch {
+				case dryRun:
 					after := gcRepositoryFiles(t, tc.openPath)
 					if !maps.EqualFunc(before, after, func(a, b gcFile) bool {
 						return a.mode == b.mode && bytes.Equal(a.data, b.data)
@@ -184,7 +185,7 @@ func TestGCRejectsUnavailableDaemonRepos(t *testing.T) {
 					if len(report.ReposPurged) != 0 || len(report.ReposFailed) != 0 || !slices.Equal(report.ReposPending, wantPending) {
 						t.Fatalf("preview claimed daemon cleanup readiness: %+v", report)
 					}
-				} else if tc.want == nil {
+				case tc.want == nil:
 					wantJobs++
 					if !slices.Equal(report.ReposPurged, []string{"ada/broken"}) || len(report.ReposPending) != 0 || len(report.ReposFailed) != 0 {
 						t.Fatalf("dry=%t: cleanup classification = %+v", dryRun, report)
@@ -192,8 +193,8 @@ func TestGCRejectsUnavailableDaemonRepos(t *testing.T) {
 					if _, statErr := os.Stat(tc.openPath); !errors.Is(statErr, os.ErrNotExist) {
 						t.Fatalf("purged repository on disk: %v", statErr)
 					}
-				} else if len(report.ReposPurged) != 0 || len(report.ReposPending) != 0 || len(report.ReposFailed) != 1 ||
-					report.ReposFailed[0].Repo != "ada/broken" || !strings.Contains(report.ReposFailed[0].Reason, tc.want.Error()) {
+				case len(report.ReposPurged) != 0 || len(report.ReposPending) != 0 || len(report.ReposFailed) != 1 ||
+					report.ReposFailed[0].Repo != "ada/broken" || !strings.Contains(report.ReposFailed[0].Reason, tc.want.Error()):
 					t.Fatalf("dry=%t: cleanup classification = %+v", dryRun, report)
 				}
 				wantDrop, wantDeleted := int64(0), wantJobs
