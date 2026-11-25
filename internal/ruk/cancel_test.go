@@ -62,7 +62,6 @@ func (s *scriptedServer) client() *Client {
 		socket:   s.socket,
 		profile:  "rukie",
 		timeouts: DefaultTimeouts(),
-		closed:   make(chan struct{}),
 	}
 	client.pool = newPool(client, 8, 8)
 	s.t.Cleanup(func() { _ = client.Close() })

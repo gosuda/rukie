@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -710,5 +712,164 @@ func TestMirrorListPagination(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatalf("pagination: %v", err)
+	}
+}
+
+func TestLatestMirrorRunOrdersAndScopesResults(t *testing.T) {
+	st, now := openMirrorTest(t)
+	repoID, _ := seedMirrorRepo(t, st, now, "latest-runs")
+	mirror := insertMirrorFixture(t, st, now, repoID, "edge")
+	other := insertMirrorFixture(t, st, now, repoID, "other")
+	if err := st.Read(t.Context(), func(tx *ReadTx) error {
+		_, err := tx.LatestMirrorRun(mirror.ID)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("empty history error = %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var expected MirrorRunRow
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		if _, err := tx.InsertRun(now, MirrorRunRow{MirrorID: mirror.ID, PublicID: "first", Kind: "sync", State: "failed", Trigger: "manual"}); err != nil {
+			return err
+		}
+		latest, err := tx.InsertRun(now, MirrorRunRow{MirrorID: mirror.ID, PublicID: "latest", Kind: "sync", State: "failed", Trigger: "manual"})
+		if err != nil {
+			return err
+		}
+		expected = latest
+		if _, insertErr := tx.InsertRun(now.Add(-time.Second), MirrorRunRow{MirrorID: mirror.ID, PublicID: "backdated", Kind: "sync", State: "failed", Trigger: "manual"}); insertErr != nil {
+			return insertErr
+		}
+		_, err = tx.InsertRun(now.Add(time.Hour), MirrorRunRow{MirrorID: other.ID, PublicID: "another-mirror", Kind: "sync", State: "failed", Trigger: "manual"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Read(t.Context(), func(tx *ReadTx) error {
+		latest, err := tx.LatestMirrorRun(mirror.ID)
+		if err != nil {
+			return err
+		}
+		if latest.ID != expected.ID {
+			t.Fatalf("latest = %+v, want %+v", latest, expected)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMirrorScheduleEnqueueFailureRollsBackRun(t *testing.T) {
+	st, now := openMirrorTest(t)
+	repoID, _ := seedMirrorRepo(t, st, now, "schedule-rollback")
+	mirror := insertMirrorFixture(t, st, now, repoID, "edge")
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		if _, err := tx.InsertRun(now, MirrorRunRow{
+			PublicID:        "approved-attempt",
+			MirrorID:        mirror.ID,
+			Kind:            "manual",
+			State:           "failed",
+			Trigger:         "manual",
+			ConfirmedDigest: "approved-digest",
+		}); err != nil {
+			return err
+		}
+		if err := tx.SetMirrorResult(now, mirror.ID, MirrorResult{State: "failing", NextRunAt: now.UnixMilli()}); err != nil {
+			return err
+		}
+		inner, err := tx.live()
+		if err != nil {
+			return err
+		}
+		_, err = inner.ExecContext(tx.ctx, `CREATE TRIGGER reject_mirror_job BEFORE INSERT ON jobs
+WHEN NEW.kind = 'mirror_run' BEGIN SELECT RAISE(ABORT, 'mirror enqueue rejected'); END`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const runID = "scheduled-retry"
+	const jobID = "mirror-run:" + runID
+	schedule := func(tx *WriteTx) error {
+		due, err := tx.DueMirrors(now.UnixMilli(), 10)
+		if err != nil {
+			return err
+		}
+		if len(due) != 1 || due[0].ID != mirror.ID {
+			return fmt.Errorf("TestMirrorScheduleEnqueueFailureRollsBackRun: due mirrors = %+v", due)
+		}
+		latest, err := tx.LatestMirrorRun(mirror.ID)
+		if err != nil {
+			return err
+		}
+		if _, insertErr := tx.InsertRun(now, MirrorRunRow{
+			PublicID:        runID,
+			MirrorID:        mirror.ID,
+			Kind:            "reconcile",
+			State:           "queued",
+			Trigger:         "schedule",
+			ConfirmedDigest: latest.ConfirmedDigest,
+		}); insertErr != nil {
+			return insertErr
+		}
+		_, err = tx.EnqueueJob(JobSpec{
+			ID:      jobID,
+			Kind:    "mirror_run",
+			RepoID:  repoID,
+			Payload: `{"run":"scheduled-retry"}`,
+			At:      now,
+		})
+		return err
+	}
+	if err := st.Write(t.Context(), schedule); err == nil || !strings.Contains(err.Error(), "EnqueueJob: constraint failed: mirror enqueue rejected") {
+		t.Fatalf("enqueue failure = %v", err)
+	}
+	if err := st.Read(t.Context(), func(tx *ReadTx) error {
+		if _, err := tx.GetRunByPublicID(runID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("failed enqueue left a run: %v", err)
+		}
+		if _, err := tx.GetJob(jobID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("failed enqueue left a job: %v", err)
+		}
+		latest, err := tx.LatestMirrorRun(mirror.ID)
+		if err != nil {
+			return err
+		}
+		if latest.PublicID != "approved-attempt" || latest.ConfirmedDigest != "approved-digest" {
+			t.Fatalf("failed enqueue changed prior approval: %+v", latest)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(t.Context(), func(tx *WriteTx) error {
+		inner, err := tx.live()
+		if err != nil {
+			return err
+		}
+		_, err = inner.ExecContext(tx.ctx, "DROP TRIGGER reject_mirror_job")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(t.Context(), schedule); err != nil {
+		t.Fatalf("enqueue retry: %v", err)
+	}
+	if err := st.Read(t.Context(), func(tx *ReadTx) error {
+		run, err := tx.GetRunByPublicID(runID)
+		if err != nil {
+			return err
+		}
+		job, err := tx.GetJob(jobID)
+		if err != nil {
+			return err
+		}
+		if run.State != "queued" || run.ConfirmedDigest != "approved-digest" || job.State != "queued" {
+			t.Fatalf("enqueue retry = %+v, %+v", run, job)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -126,7 +126,6 @@ type Client struct {
 	pool      *pool
 	handles   *handleCache
 	sessions  *sessionCache
-	closed    chan struct{}
 	socket    string
 	profile   string
 	timeouts  Timeouts
@@ -160,11 +159,11 @@ func Dial(ctx context.Context, socketPath string, opts ...Option) (*Client, erro
 		hooks:    cfg.hooks,
 		handles:  newHandleCache(),
 		sessions: newSessionCache(),
-		closed:   make(chan struct{}),
 	}
 	c.pool = newPool(c, cfg.maxConns, cfg.streamsPerConn)
-	first, err := dialBackoff(ctx, c, cfg.timeouts)
+	first, err := c.pool.dial(ctx)
 	if err != nil {
+		c.pool.stop()
 		return nil, err
 	}
 	c.pool.add(first)
@@ -193,7 +192,7 @@ func dialBackoff(ctx context.Context, c *Client, timeouts Timeouts) (*conn, erro
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return nil, fmt.Errorf("Dial: %w", ctx.Err())
+				return nil, fmt.Errorf("dialBackoff: %w: %w", ctx.Err(), context.Cause(ctx))
 			case <-timer.C:
 			}
 			backoff *= 2
@@ -201,9 +200,12 @@ func dialBackoff(ctx context.Context, c *Client, timeouts Timeouts) (*conn, erro
 				backoff = time.Second
 			}
 		}
-		pc, err = dialConn(ctx, c.pool.nextID(), c.socket, c.profile, timeouts, c.hooks)
+		pc, err = dialRawConn(ctx, c.pool.nextID(), c.socket, c.profile, timeouts, c.hooks)
 		if err == nil {
 			return pc, nil
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("dialBackoff: %w: %w", ctx.Err(), context.Cause(ctx))
 		}
 		if errors.Is(err, ErrVersionMismatch) {
 			return nil, err
@@ -212,17 +214,17 @@ func dialBackoff(ctx context.Context, c *Client, timeouts Timeouts) (*conn, erro
 	return nil, err
 }
 
-// Close drains every connection.
+// Close rejects new calls and closes every connection.
 func (c *Client) Close() error {
-	c.closeOnce.Do(func() {
-		close(c.closed)
-	})
-	c.pool.close()
+	c.closeOnce.Do(c.pool.close)
 	return nil
 }
 
 // OpenRepo resolves one absolute path to a handle.
 func (c *Client) OpenRepo(ctx context.Context, absPath string) (Repo, error) {
+	if c.pool.lifetime.Err() != nil {
+		return Repo{}, fmt.Errorf("OpenRepo: %w", ErrClosed)
+	}
 	if !filepath.IsAbs(absPath) {
 		return Repo{}, fmt.Errorf("OpenRepo: %w: relative path %q", ErrInvalidPath, absPath)
 	}

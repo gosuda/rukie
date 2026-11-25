@@ -35,7 +35,11 @@ type GCReport struct {
 // GC purges repository rows past their purge horizon and drops terminal
 // jobs older than the retention window. Daemon removal goes through the
 // daemon when its socket answers; rows whose daemon is unreachable are
-// reported pending instead of half-purged. With dryRun nothing is written.
+// reported pending instead of half-purged. A dry run opens existing metadata
+// read-only. It does not migrate the schema or change application records.
+// Daemon repositories stay pending and unverified, and their removal-dependent
+// jobs are excluded from the forecast. Their stores are never opened.
+// The data directory lock and SQLite reader coordination files may be created.
 func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) (GCReport, error) {
 	rep := GCReport{DryRun: dryRun}
 	lock, lerr := AcquireDataDirLock(cfg.DataDir)
@@ -43,7 +47,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 		return GCReport{}, fmt.Errorf("%w: gc needs the server stopped", ErrDataDirLive)
 	}
 	defer func() { _ = lock.Release() }()
-	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path})
+	st, err := store.Open(ctx, store.Options{Path: cfg.Store.SQLite.Path, ReadOnly: dryRun})
 	if err != nil {
 		return GCReport{}, fmt.Errorf("sysops: gc: %w", err)
 	}
@@ -62,17 +66,16 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 	}
 
 	var daemon *ruk.Client
-	if !dryRun {
-		if socket := cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath); socket != "" {
-			dctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, fmt.Errorf("sysops: gc daemon dial timed out"))
-			defer cancel()
-			if client, derr := ruk.Dial(dctx, socket); derr == nil {
-				daemon = client
-				defer func() { _ = client.Close() }()
-			}
+	if socket := cmp.Or(cfg.Ruk.Socket, cfg.Ruk.SocketPath); socket != "" && !dryRun {
+		dctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, fmt.Errorf("sysops: gc daemon dial timed out"))
+		defer cancel()
+		if client, derr := ruk.Dial(dctx, socket); derr == nil {
+			daemon = client
+			defer func() { _ = client.Close() }()
 		}
 	}
 	cutoff := now.Add(-terminalJobRetention).UnixMilli()
+	var forecastPurges []int64
 	for _, row := range due {
 		full, ferr := gcRepoFullName(ctx, st, row)
 		if ferr != nil {
@@ -80,19 +83,23 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 			continue
 		}
 		if dryRun {
-			rep.ReposPurged = append(rep.ReposPurged, full)
+			if row.RukPath != "" {
+				rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon cleanup unverified in dry run; metadata kept"})
+			} else {
+				rep.ReposPurged = append(rep.ReposPurged, full)
+				forecastPurges = append(forecastPurges, row.ID)
+			}
+			continue
+		}
+		if row.RukPath != "" && daemon == nil {
+			rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon unreachable; metadata kept"})
 			continue
 		}
 		if row.RukPath != "" {
-			if daemon == nil {
-				rep.ReposPending = append(rep.ReposPending, GCPending{Repo: full, Reason: "daemon unreachable; metadata kept"})
-				continue
-			}
-
 			dctx, cancel := context.WithTimeoutCause(ctx, 30*time.Second, fmt.Errorf("sysops: gc repo %s timed out", full))
 			repo, oerr := openGCDaemonRepo(dctx, daemon, cfg.Ruk.RepoRoot, row)
 			if oerr == nil {
-				oerr = callGCRepoDelete(dctx, daemon, repo, row.RukPath)
+				oerr = callGCRepoDelete(dctx, daemon, repo)
 			}
 			cancel()
 			if oerr != nil {
@@ -114,7 +121,7 @@ func GC(ctx context.Context, cfg config.Config, dryRun bool, repoFilter string) 
 		rep.ReposPurged = append(rep.ReposPurged, full)
 	}
 	if dryRun {
-		n, cerr := st.CountTerminalJobs(ctx, cutoff)
+		n, cerr := st.CountTerminalJobs(ctx, cutoff, forecastPurges...)
 		if cerr != nil {
 			return GCReport{}, fmt.Errorf("sysops: gc: %w", cerr)
 		}
@@ -188,8 +195,11 @@ func openGCDaemonRepo(ctx context.Context, client *ruk.Client, repoRoot string, 
 	return client.OpenRepo(ctx, abs)
 }
 
-func callGCRepoDelete(ctx context.Context, client *ruk.Client, repo ruk.Repo, path string) error {
+func callGCRepoDelete(ctx context.Context, client *ruk.Client, repo ruk.Repo) error {
 	_, err := ruk.Call[map[string]any, map[string]any](ctx, client, repo, wire.MethodRepoDelete,
-		map[string]any{"repo": path, "confirm_path": path})
-	return err
+		map[string]any{"repo": repo.Path, "confirm_path": repo.Path})
+	if err != nil {
+		return fmt.Errorf("callGCRepoDelete: %w", err)
+	}
+	return nil
 }

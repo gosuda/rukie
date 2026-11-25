@@ -91,7 +91,10 @@ func readFull(c net.Conn, buf []byte) (int, error) {
 
 // Config tunes one fake.
 type Config struct {
+	Answer            func(method string, args jsonv1.RawMessage) jsonv1.RawMessage
+	BeforeHandshake   func()
 	ValidRepo         func(repo string) (handle string, code string)
+	ValidSession      func(session string) string
 	Refuse            map[string]string
 	RefuseAfterAccept map[string]string
 	Directions        *[]string
@@ -180,6 +183,9 @@ func (s *Server) serveConn(nc *net.UnixConn) {
 	}
 	if hello.kind != kindOpen || hello.stream != 0 {
 		return
+	}
+	if s.cfg.BeforeHandshake != nil {
+		s.cfg.BeforeHandshake()
 	}
 	accept, _ := jsonv2.Marshal(map[string]any{
 		"protocol_major": 1,
@@ -308,6 +314,12 @@ func (s *Server) runStream(c *connection, open frame) {
 		s.refuse(c, open.stream, code, "repository refused")
 		return
 	}
+	if invocation.SessionID != nil && s.cfg.ValidSession != nil {
+		if code := s.cfg.ValidSession(*invocation.SessionID); code != "" {
+			s.refuse(c, open.stream, code, "session refused")
+			return
+		}
+	}
 	accepted, _ := jsonv2.Marshal(map[string]any{
 		"stream_id":   open.stream,
 		"method":      invocation.Method,
@@ -370,6 +382,15 @@ func (s *Server) runStream(c *connection, open frame) {
 }
 
 func (s *Server) answer(invocation invocationOpen) []byte {
+	if s.cfg.Answer != nil {
+		var args jsonv1.RawMessage
+		if invocation.ArgsJSON != nil {
+			args = jsonv1.RawMessage(*invocation.ArgsJSON)
+		}
+		if reply := s.cfg.Answer(invocation.Method, args); reply != nil {
+			return reply
+		}
+	}
 	switch invocation.Method {
 	case "schema":
 		return []byte(s.cfg.Doc)

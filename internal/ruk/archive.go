@@ -107,13 +107,12 @@ func Archive(ctx context.Context, c *Client, repo Repo, args ArchiveArgs, w io.W
 	start := time.Now()
 	out, err := c.archiveAttempt(ctx, repo, entry, newRequestID(), string(rawArgs), w)
 	if err != nil && out.retry && out.written == 0 {
-		if next, rerr := c.recoverSession(ctx, repo, wire.Code(out.code)); rerr == nil {
-			_ = next
-			out, err = c.archiveAttempt(ctx, repo, next, newRequestID(), string(rawArgs), w)
-		} else if out.code == string(wire.CodeNotFound) && repo.Handle != "" {
+		if out.code == string(wire.CodeNotFound) && repo.Handle != "" {
 			c.handles.drop(repo.Path)
-			if _, oerr := c.OpenRepo(ctx, repo.Path); oerr == nil {
-				out, err = c.archiveAttempt(ctx, repo, entry, newRequestID(), string(rawArgs), w)
+		}
+		if next, rerr := c.recoverSession(ctx, repo, wire.Code(out.code)); rerr == nil {
+			if reopened, oerr := c.OpenRepo(ctx, repo.Path); oerr == nil {
+				out, err = c.archiveAttempt(ctx, reopened, next, newRequestID(), string(rawArgs), w)
 			}
 		}
 	}
@@ -149,11 +148,11 @@ func validateArchiveArgs(args ArchiveArgs) error {
 func (c *Client) archiveAttempt(ctx context.Context, repo Repo, entry *sessionEntry, requestID, argsText string, w io.Writer) (archiveOutcome, error) {
 	var out archiveOutcome
 	out.outcome = NotCommitted
-	pc, err := dialRawConn(ctx, c.pool.nextID(), c.socket, c.profile, c.timeouts, c.hooks)
+	pc, err := c.pool.openDedicated(ctx)
 	if err != nil {
 		return out, err
 	}
-	defer func() { _ = pc.nc.Close() }()
+	defer c.pool.releaseDedicated(pc)
 	open := wire.InvocationOpen{
 		Repo:      cmp.Or(repo.Handle, repo.Path),
 		Method:    string(wire.MethodArchive),
@@ -209,7 +208,7 @@ func (c *Client) archivePump(ctx context.Context, pc *conn, repo Repo, requestID
 	var written int64
 	seenAccepted := false
 	for {
-		frame, err := readFrame(pc.nc)
+		frame, err := pc.readFrame()
 		if err != nil {
 			if ctx.Err() != nil {
 				return out, fmt.Errorf("Archive: %w", ctx.Err())

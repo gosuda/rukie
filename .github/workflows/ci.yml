@@ -24,9 +24,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Read the Go toolchain
+        id: go_toolchain
+        run: |
+          go_version=$(sed -n 's/^toolchain go//p' go.mod)
+          [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
           cache-dependency-path: |
             go.sum
@@ -36,14 +42,20 @@ jobs:
 
   ruk-integration:
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Read the Go toolchain
+        id: go_toolchain
+        run: |
+          go_version=$(sed -n 's/^toolchain go//p' go.mod)
+          [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - name: Check out pinned Ruk
         run: |
@@ -65,8 +77,37 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
       - run: |
           cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
-      - run: |
-          tools/passgate.sh '--- PASS: ' -- env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off go test -race -count=1 -v -tags integration ./internal/ruk/...
+      - name: Export the pinned Ruk model
+        run: |
+          ruk/target/debug/ruk model --format json > "$RUNNER_TEMP/ruk-model.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ruk-model-${{ github.sha }}
+          path: ${{ runner.temp }}/ruk-model.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Test the daemon, SSH, and application startup
+        run: |
+          tools/passgate.sh \
+            '--- PASS: TestDaemonLifecycle (' \
+            '--- PASS: TestModelCLIMatchesSnapshot (' \
+            '--- PASS: TestDaemonPushReconcilePagination (' \
+            '--- PASS: TestGCRejectsUnavailableDaemonRepos (' \
+            '--- PASS: TestSSHStockGitCloneAndPush (' \
+            '--- PASS: TestDevLoopStarts (' -- \
+            env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
+            go test -race -count=1 -v -timeout 30m -tags integration \
+            ./internal/ruk/... ./internal/gitssh/... ./internal/sysops/... ./cmd/rukie/...
+      - name: Test Git and agent workflows against the daemon
+        run: |
+          tools/passgate.sh \
+            '--- PASS: TestGitPushFetchRoundTrip (' \
+            '--- PASS: TestConcurrentPushesSerialize (' \
+            '--- PASS: TestRepositoryPurgeUsesOpenedPath (' \
+            '--- PASS: TestAgentFlow (' \
+            '--- PASS: TestAgentFlow/change (' -- \
+            env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
+            go test -race -count=1 -v -timeout 30m -tags e2e ./tests/e2e/...
 
   ruk:
     runs-on: depot-ubuntu-24.04

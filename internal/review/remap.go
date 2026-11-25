@@ -1,5 +1,7 @@
 package review
 
+import "math"
+
 // Span is one unchanged span shared by the old and new heads of a file.
 // Only lines inside spans remap; everything else falls to the fallback
 // bucket. Spans never overlap and stay sorted by OldStart.
@@ -25,6 +27,9 @@ func RemapLine(line uint32, spans []Span) (uint32, bool) {
 		}
 		offset := line - span.OldStart
 		if offset < span.Lines {
+			if span.NewStart == 0 || offset > math.MaxUint32-span.NewStart {
+				return 0, false
+			}
 			return span.NewStart + offset, true
 		}
 	}

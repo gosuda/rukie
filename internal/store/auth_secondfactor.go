@@ -19,32 +19,39 @@ type TOTPCredentials struct {
 func (s *Store) GetTOTPCredentials(ctx context.Context, userID int64) (TOTPCredentials, error) {
 	var out TOTPCredentials
 	err := s.Read(ctx, func(tx *ReadTx) error {
-		inner, lerr := tx.live()
-		if lerr != nil {
-			return lerr
-		}
-		var pending sql.NullString
-		var verified sql.NullInt64
-		if serr := inner.QueryRowContext(tx.ctx, `SELECT secret_sealed, pending_secret_sealed, last_counter, verified_at
-			FROM user_totp WHERE user_id = ?`, userID).Scan(
-			&out.Secret, &pending, &out.LastCounter, &verified); serr != nil {
-			if errors.Is(serr, sql.ErrNoRows) {
-				return fmt.Errorf("GetTOTPCredentials: %w: %d", ErrNotFound, userID)
-			}
-			return fmt.Errorf("GetTOTPCredentials: %w", serr)
-		}
-		if pending.Valid && pending.String != "" {
-			out.Pending = pending.String
-			out.HasPending = true
-		}
-		if verified.Valid {
-			out.VerifiedAt = verified.Int64
-			out.HasVerified = true
-		}
-		return nil
+		var readErr error
+		out, readErr = tx.GetTOTPCredentials(userID)
+		return readErr
 	})
 	if err != nil {
-		return TOTPCredentials{}, err
+		return TOTPCredentials{}, fmt.Errorf("GetTOTPCredentials: %w", err)
+	}
+	return out, nil
+}
+
+func (c *txCore) GetTOTPCredentials(userID int64) (TOTPCredentials, error) {
+	var out TOTPCredentials
+	inner, lerr := c.live()
+	if lerr != nil {
+		return TOTPCredentials{}, fmt.Errorf("GetTOTPCredentials: %w", lerr)
+	}
+	var pending sql.NullString
+	var verified sql.NullInt64
+	if serr := inner.QueryRowContext(c.ctx, `SELECT secret_sealed, pending_secret_sealed, last_counter, verified_at
+		FROM user_totp WHERE user_id = ?`, userID).Scan(
+		&out.Secret, &pending, &out.LastCounter, &verified); serr != nil {
+		if errors.Is(serr, sql.ErrNoRows) {
+			return TOTPCredentials{}, fmt.Errorf("GetTOTPCredentials: %w: %d", ErrNotFound, userID)
+		}
+		return TOTPCredentials{}, fmt.Errorf("GetTOTPCredentials: %w", serr)
+	}
+	if pending.Valid && pending.String != "" {
+		out.Pending = pending.String
+		out.HasPending = true
+	}
+	if verified.Valid {
+		out.VerifiedAt = verified.Int64
+		out.HasVerified = true
 	}
 	return out, nil
 }
@@ -83,169 +90,201 @@ func (s *Store) StageTOTPSecret(ctx context.Context, userID int64, sealed string
 	})
 }
 
-func (s *Store) insertRecoveryCodes(txCtx context.Context, inner *sql.Tx, userID, now int64, digests []string) error {
+func insertRecoveryCodes(txCtx context.Context, inner *sql.Tx, userID, now int64, digests []string) error {
 	for _, digest := range digests {
 		_, err := inner.ExecContext(txCtx, `INSERT INTO recovery_codes (user_id, code_sha256, created_at)
 			VALUES (?, ?, ?)`, userID, digest, now)
 		if err != nil {
-			return fmt.Errorf("recovery codes: %w", mapErr(err))
+			return fmt.Errorf("insertRecoveryCodes: %w", mapErr(err))
 		}
 	}
 	return nil
 }
 
-func (s *Store) insertTOTPAttempt(txCtx context.Context, inner *sql.Tx, lower, ip string, now int64) error {
+func insertTOTPAttempt(txCtx context.Context, inner *sql.Tx, lower, ip string, now int64) error {
 	_, err := inner.ExecContext(txCtx, `INSERT INTO login_attempts (username_lower, ip, at, success, reason)
 		VALUES (?, ?, ?, 1, 'totp')`, lower, ip, now)
 	if err != nil {
-		return fmt.Errorf("totp attempt: %w", mapErr(err))
+		return fmt.Errorf("insertTOTPAttempt: %w", mapErr(err))
 	}
 	return nil
 }
 
 func (s *Store) VerifyRecoveryCode(ctx context.Context, userID int64, digest string, now int64, lower, ip string) (bool, error) {
-	applied := false
+	var applied bool
 	err := s.Write(ctx, func(tx *WriteTx) error {
-		inner, lerr := tx.live()
-		if lerr != nil {
-			return lerr
-		}
-		res, rerr := inner.ExecContext(tx.ctx, `UPDATE recovery_codes SET used_at = ?
-			WHERE user_id = ? AND code_sha256 = ? AND used_at IS NULL`,
-			now, userID, digest)
-		if rerr != nil {
-			return fmt.Errorf("VerifyRecoveryCode: %w", mapErr(rerr))
-		}
-		affected, aerr := res.RowsAffected()
-		if aerr != nil {
-			return fmt.Errorf("VerifyRecoveryCode: %w", aerr)
-		}
-		if affected != 1 {
-			return nil
-		}
-		applied = true
-		return s.insertTOTPAttempt(tx.ctx, inner, lower, ip, now)
+		var applyErr error
+		applied, applyErr = tx.VerifyRecoveryCode(userID, digest, now, lower, ip)
+		return applyErr
 	})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("VerifyRecoveryCode: %w", err)
 	}
 	return applied, nil
+}
+
+func (tx *WriteTx) VerifyRecoveryCode(userID int64, digest string, now int64, lower, ip string) (bool, error) {
+	inner, lerr := tx.live()
+	if lerr != nil {
+		return false, fmt.Errorf("VerifyRecoveryCode: %w", lerr)
+	}
+	res, rerr := inner.ExecContext(tx.ctx, `UPDATE recovery_codes SET used_at = ?
+		WHERE user_id = ? AND code_sha256 = ? AND used_at IS NULL`,
+		now, userID, digest)
+	if rerr != nil {
+		return false, fmt.Errorf("VerifyRecoveryCode: %w", mapErr(rerr))
+	}
+	affected, aerr := res.RowsAffected()
+	if aerr != nil {
+		return false, fmt.Errorf("VerifyRecoveryCode: %w", aerr)
+	}
+	if affected != 1 {
+		return false, nil
+	}
+	if err := insertTOTPAttempt(tx.ctx, inner, lower, ip, now); err != nil {
+		return false, fmt.Errorf("VerifyRecoveryCode: %w", err)
+	}
+	return true, nil
 }
 
 func (s *Store) PromoteTOTPSecret(ctx context.Context, userID int64, counter, now int64, lower, ip string, digests []string) (bool, error) {
-	applied := false
+	var applied bool
 	err := s.Write(ctx, func(tx *WriteTx) error {
-		inner, lerr := tx.live()
-		if lerr != nil {
-			return lerr
-		}
-		var pending sql.NullString
-		if qerr := inner.QueryRowContext(tx.ctx, `SELECT pending_secret_sealed FROM user_totp WHERE user_id = ?`,
-			userID).Scan(&pending); qerr != nil {
-			if errors.Is(qerr, sql.ErrNoRows) {
-				return nil
-			}
-			return fmt.Errorf("PromoteTOTPSecret: %w", qerr)
-		} else if !pending.Valid || pending.String == "" {
-			return nil
-		}
-		pres, perr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET secret_sealed = ?, pending_secret_sealed = NULL,
-			last_counter = ?, verified_at = ? WHERE user_id = ? AND last_counter < ?`,
-			pending.String, counter, now, userID, counter)
-		if perr != nil {
-			return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(perr))
-		}
-		affected, aerr := pres.RowsAffected()
-		if aerr != nil {
-			return fmt.Errorf("PromoteTOTPSecret: %w", aerr)
-		}
-		if affected != 1 {
-			return nil
-		}
-		if _, uerr := inner.ExecContext(tx.ctx, `UPDATE users SET totp_enabled = 1, updated_at = ? WHERE id = ?`,
-			now, userID); uerr != nil {
-			return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(uerr))
-		}
-		if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM recovery_codes WHERE user_id = ?`, userID); derr != nil {
-			return fmt.Errorf("PromoteTOTPSecret: %w", mapErr(derr))
-		}
-		if cerr := s.insertRecoveryCodes(tx.ctx, inner, userID, now, digests); cerr != nil {
-			return fmt.Errorf("PromoteTOTPSecret: %w", cerr)
-		}
-		applied = true
-		return s.insertTOTPAttempt(tx.ctx, inner, lower, ip, now)
+		var applyErr error
+		applied, applyErr = tx.PromoteTOTPSecret(userID, counter, now, lower, ip, digests)
+		return applyErr
 	})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", err)
 	}
 	return applied, nil
+}
+
+func (tx *WriteTx) PromoteTOTPSecret(userID int64, counter, now int64, lower, ip string, digests []string) (bool, error) {
+	inner, lerr := tx.live()
+	if lerr != nil {
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", lerr)
+	}
+	var pending sql.NullString
+	if qerr := inner.QueryRowContext(tx.ctx, `SELECT pending_secret_sealed FROM user_totp WHERE user_id = ?`,
+		userID).Scan(&pending); qerr != nil {
+		if errors.Is(qerr, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", qerr)
+	} else if !pending.Valid || pending.String == "" {
+		return false, nil
+	}
+	pres, perr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET secret_sealed = ?, pending_secret_sealed = NULL,
+		last_counter = ?, verified_at = ? WHERE user_id = ? AND last_counter < ?`,
+		pending.String, counter, now, userID, counter)
+	if perr != nil {
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", mapErr(perr))
+	}
+	affected, aerr := pres.RowsAffected()
+	if aerr != nil {
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", aerr)
+	}
+	if affected != 1 {
+		return false, nil
+	}
+	if _, uerr := inner.ExecContext(tx.ctx, `UPDATE users SET totp_enabled = 1, updated_at = ? WHERE id = ?`,
+		now, userID); uerr != nil {
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", mapErr(uerr))
+	}
+	if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM recovery_codes WHERE user_id = ?`, userID); derr != nil {
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", mapErr(derr))
+	}
+	if cerr := insertRecoveryCodes(tx.ctx, inner, userID, now, digests); cerr != nil {
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", cerr)
+	}
+	if err := insertTOTPAttempt(tx.ctx, inner, lower, ip, now); err != nil {
+		return false, fmt.Errorf("PromoteTOTPSecret: %w", err)
+	}
+	return true, nil
 }
 
 func (s *Store) ConfirmTOTPSecret(ctx context.Context, userID int64, counter, now int64, lower, ip string, digests []string) (bool, error) {
-	applied := false
+	var applied bool
 	err := s.Write(ctx, func(tx *WriteTx) error {
-		inner, lerr := tx.live()
-		if lerr != nil {
-			return lerr
-		}
-		cres, cerr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET last_counter = ? WHERE user_id = ? AND last_counter < ?`,
-			counter, userID, counter)
-		if cerr != nil {
-			return fmt.Errorf("ConfirmTOTPSecret: %w", mapErr(cerr))
-		}
-		affected, aerr := cres.RowsAffected()
-		if aerr != nil {
-			return fmt.Errorf("ConfirmTOTPSecret: %w", aerr)
-		}
-		if affected != 1 {
-			return nil
-		}
-		if _, verr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET verified_at = ? WHERE user_id = ?`,
-			now, userID); verr != nil {
-			return fmt.Errorf("ConfirmTOTPSecret: %w", mapErr(verr))
-		}
-		if _, uerr := inner.ExecContext(tx.ctx, `UPDATE users SET totp_enabled = 1, updated_at = ? WHERE id = ?`,
-			now, userID); uerr != nil {
-			return fmt.Errorf("ConfirmTOTPSecret: %w", mapErr(uerr))
-		}
-		if cerr := s.insertRecoveryCodes(tx.ctx, inner, userID, now, digests); cerr != nil {
-			return fmt.Errorf("ConfirmTOTPSecret: %w", cerr)
-		}
-		applied = true
-		return s.insertTOTPAttempt(tx.ctx, inner, lower, ip, now)
+		var applyErr error
+		applied, applyErr = tx.ConfirmTOTPSecret(userID, counter, now, lower, ip, digests)
+		return applyErr
 	})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("ConfirmTOTPSecret: %w", err)
 	}
 	return applied, nil
 }
 
+func (tx *WriteTx) ConfirmTOTPSecret(userID int64, counter, now int64, lower, ip string, digests []string) (bool, error) {
+	inner, lerr := tx.live()
+	if lerr != nil {
+		return false, fmt.Errorf("ConfirmTOTPSecret: %w", lerr)
+	}
+	cres, cerr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET last_counter = ? WHERE user_id = ? AND last_counter < ?`,
+		counter, userID, counter)
+	if cerr != nil {
+		return false, fmt.Errorf("ConfirmTOTPSecret: %w", mapErr(cerr))
+	}
+	affected, aerr := cres.RowsAffected()
+	if aerr != nil {
+		return false, fmt.Errorf("ConfirmTOTPSecret: %w", aerr)
+	}
+	if affected != 1 {
+		return false, nil
+	}
+	if _, verr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET verified_at = ? WHERE user_id = ?`,
+		now, userID); verr != nil {
+		return false, fmt.Errorf("ConfirmTOTPSecret: %w", mapErr(verr))
+	}
+	if _, uerr := inner.ExecContext(tx.ctx, `UPDATE users SET totp_enabled = 1, updated_at = ? WHERE id = ?`,
+		now, userID); uerr != nil {
+		return false, fmt.Errorf("ConfirmTOTPSecret: %w", mapErr(uerr))
+	}
+	if cerr := insertRecoveryCodes(tx.ctx, inner, userID, now, digests); cerr != nil {
+		return false, fmt.Errorf("ConfirmTOTPSecret: %w", cerr)
+	}
+	if err := insertTOTPAttempt(tx.ctx, inner, lower, ip, now); err != nil {
+		return false, fmt.Errorf("ConfirmTOTPSecret: %w", err)
+	}
+	return true, nil
+}
+
 func (s *Store) AdvanceTOTPCounter(ctx context.Context, userID int64, counter, now int64, lower, ip string) (bool, error) {
-	applied := false
+	var applied bool
 	err := s.Write(ctx, func(tx *WriteTx) error {
-		inner, lerr := tx.live()
-		if lerr != nil {
-			return lerr
-		}
-		cres, cerr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET last_counter = ? WHERE user_id = ? AND last_counter < ?`,
-			counter, userID, counter)
-		if cerr != nil {
-			return fmt.Errorf("AdvanceTOTPCounter: %w", mapErr(cerr))
-		}
-		affected, aerr := cres.RowsAffected()
-		if aerr != nil {
-			return fmt.Errorf("AdvanceTOTPCounter: %w", aerr)
-		}
-		if affected != 1 {
-			return nil
-		}
-		applied = true
-		return s.insertTOTPAttempt(tx.ctx, inner, lower, ip, now)
+		var applyErr error
+		applied, applyErr = tx.AdvanceTOTPCounter(userID, counter, now, lower, ip)
+		return applyErr
 	})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("AdvanceTOTPCounter: %w", err)
 	}
 	return applied, nil
+}
+
+func (tx *WriteTx) AdvanceTOTPCounter(userID int64, counter, now int64, lower, ip string) (bool, error) {
+	inner, lerr := tx.live()
+	if lerr != nil {
+		return false, fmt.Errorf("AdvanceTOTPCounter: %w", lerr)
+	}
+	cres, cerr := inner.ExecContext(tx.ctx, `UPDATE user_totp SET last_counter = ? WHERE user_id = ? AND last_counter < ?`,
+		counter, userID, counter)
+	if cerr != nil {
+		return false, fmt.Errorf("AdvanceTOTPCounter: %w", mapErr(cerr))
+	}
+	affected, aerr := cres.RowsAffected()
+	if aerr != nil {
+		return false, fmt.Errorf("AdvanceTOTPCounter: %w", aerr)
+	}
+	if affected != 1 {
+		return false, nil
+	}
+	if err := insertTOTPAttempt(tx.ctx, inner, lower, ip, now); err != nil {
+		return false, fmt.Errorf("AdvanceTOTPCounter: %w", err)
+	}
+	return true, nil
 }
 
 func (s *Store) ClearTOTP(ctx context.Context, userID int64, now int64) error {
@@ -293,7 +332,7 @@ func (s *Store) ReplaceRecoveryCodes(ctx context.Context, userID int64, now int6
 		if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM recovery_codes WHERE user_id = ?`, userID); derr != nil {
 			return fmt.Errorf("ReplaceRecoveryCodes: %w", derr)
 		}
-		if cerr := s.insertRecoveryCodes(tx.ctx, inner, userID, now, digests); cerr != nil {
+		if cerr := insertRecoveryCodes(tx.ctx, inner, userID, now, digests); cerr != nil {
 			return fmt.Errorf("ReplaceRecoveryCodes: %w", cerr)
 		}
 		return nil

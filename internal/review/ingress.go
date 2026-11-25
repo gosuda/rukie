@@ -25,7 +25,6 @@ func IngressTarget(ref string) (string, string, bool) {
 
 // Ingress carries one diverted push into a change create or update.
 type Ingress struct {
-	Spans    map[string][]Span
 	Branch   string
 	Topic    string
 	HeadOid  string
@@ -43,9 +42,8 @@ var ErrIngressForbidden = errors.New("change.edit is required to update this cha
 
 // IngressChange creates or updates the change for a diverted push inside the
 // hook budget. The change commits synchronously: the caller answers ok only
-// when this returns nil. Comments anchored to the previous head remap
-// through the unchanged spans of each path; paths without spans fall to the
-// fallback bucket. Whole-change comments bump heads without remapping.
+// when this returns nil. Comment anchors stay on their published heads until
+// RemapPublished observes the landed patchset.
 func IngressChange(tx *store.WriteTx, now time.Time, in Ingress) (store.ChangeRow, string, error) {
 	key := in.Branch + "~" + in.Topic
 	if in.Topic == "" {
@@ -58,9 +56,6 @@ func IngressChange(tx *store.WriteTx, now time.Time, in Ingress) (store.ChangeRo
 		updated, aerr := tx.AppendPatchset(now, row.ID, in.HeadOid)
 		if aerr != nil {
 			return store.ChangeRow{}, "", aerr
-		}
-		if rerr := remapComments(tx, row, in.HeadOid, in.Spans); rerr != nil {
-			return store.ChangeRow{}, "", rerr
 		}
 		return updated, reviewRef(updated), nil
 	}
@@ -76,36 +71,4 @@ func IngressChange(tx *store.WriteTx, now time.Time, in Ingress) (store.ChangeRo
 
 func reviewRef(row store.ChangeRow) string {
 	return fmt.Sprintf("refs/changes/%d/patchset/%d", row.ID, row.PatchsetCount)
-}
-
-func remapComments(tx *store.WriteTx, row store.ChangeRow, newHead string, spans map[string][]Span) error {
-	comments, lerr := tx.ListCommentsAtHeadIncludingUnmatched(row.ID, row.HeadOid)
-	if lerr != nil {
-		return lerr
-	}
-	for _, comment := range comments {
-		if comment.Unmatched {
-			continue
-		}
-		if !comment.Path.Valid {
-			if rerr := tx.RemapComment(row.ID, comment.ID, row.HeadOid, newHead, comment.Line, false); rerr != nil {
-				return rerr
-			}
-			continue
-		}
-		line := int64(0)
-		if comment.Line.Valid {
-			line = comment.Line.Int64
-		}
-		mapped, ok := RemapLine(uint32(line), spans[comment.Path.String])
-		remapped := comment.Line
-		if ok {
-			remapped.Valid = true
-			remapped.Int64 = int64(mapped)
-		}
-		if rerr := tx.RemapComment(row.ID, comment.ID, row.HeadOid, newHead, remapped, !ok); rerr != nil {
-			return rerr
-		}
-	}
-	return nil
 }

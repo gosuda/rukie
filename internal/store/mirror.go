@@ -115,6 +115,7 @@ type MirrorRunRow struct {
 	Trigger         string
 	PlanDigest      string
 	ConfirmedDigest string
+	RetryDigest     string
 	RukPlan         string
 	OutcomeClass    string
 	OutcomeSummary  string
@@ -181,7 +182,7 @@ event_cursor, created_at, updated_at`
 
 const sqlRunColumns = `id, public_id, mirror_id, kind, state, trigger, dry_run, plan_digest,
 confirmed_digest, attempt_no, ruk_plan, outcome_class, outcome_summary, counts_json,
-started_at, finished_at, created_at, updated_at`
+started_at, finished_at, created_at, updated_at, retry_digest`
 
 const sqlRefStateColumns = `mirror_id, ref, local_oid, remote_oid, status, reason, reason_class,
 first_failed_at, last_attempt_at, last_success_at, consecutive_failures`
@@ -255,6 +256,7 @@ func scanRunRow(scan func(dest ...any) error) (MirrorRunRow, error) {
 		&dryRun, &row.PlanDigest, &row.ConfirmedDigest, &row.AttemptNo, &row.RukPlan,
 		&row.OutcomeClass, &row.OutcomeSummary, &row.Counts,
 		&row.StartedAt, &row.FinishedAt, &row.CreatedAt, &row.UpdatedAt,
+		&row.RetryDigest,
 	)
 	if err != nil {
 		return MirrorRunRow{}, err
@@ -663,12 +665,12 @@ func (tx *WriteTx) InsertRun(now time.Time, r MirrorRunRow) (MirrorRunRow, error
 	res, ierr := inner.ExecContext(tx.ctx, `INSERT INTO mirror_runs
 (public_id, mirror_id, kind, state, trigger, dry_run, plan_digest, confirmed_digest,
 attempt_no, ruk_plan, outcome_class, outcome_summary, counts_json,
-started_at, finished_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+started_at, finished_at, created_at, updated_at, retry_digest)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.PublicID, r.MirrorID, r.Kind, r.State, r.Trigger, boolInt(r.DryRun),
 		r.PlanDigest, r.ConfirmedDigest, r.AttemptNo, r.RukPlan,
 		r.OutcomeClass, r.OutcomeSummary, counts,
-		r.StartedAt, r.FinishedAt, at, at)
+		r.StartedAt, r.FinishedAt, at, at, r.RetryDigest)
 	if ierr != nil {
 		return MirrorRunRow{}, fmt.Errorf("InsertRun: %w", mapErr(ierr))
 	}
@@ -701,10 +703,10 @@ func (tx *WriteTx) UpdateRun(now time.Time, id int64, r MirrorRunRow) error {
 	moved, merr := execAffected(tx.ctx, inner, `UPDATE mirror_runs SET
 kind = ?, state = ?, trigger = ?, dry_run = ?, plan_digest = ?, confirmed_digest = ?,
 attempt_no = ?, ruk_plan = ?, outcome_class = ?, outcome_summary = ?, counts_json = ?,
-started_at = ?, finished_at = ?, updated_at = ? WHERE id = ?`,
+started_at = ?, finished_at = ?, updated_at = ?, retry_digest = ? WHERE id = ?`,
 		r.Kind, r.State, r.Trigger, boolInt(r.DryRun), r.PlanDigest, r.ConfirmedDigest,
 		r.AttemptNo, r.RukPlan, r.OutcomeClass, r.OutcomeSummary, r.Counts,
-		r.StartedAt, r.FinishedAt, msOf(now), id)
+		r.StartedAt, r.FinishedAt, msOf(now), r.RetryDigest, id)
 	if merr != nil {
 		return fmt.Errorf("UpdateRun: %w", mapErr(merr))
 	}
@@ -880,30 +882,33 @@ func (tx *ReadTx) ListMirrors(repoID int64, after string, limit int) ([]MirrorRo
 // DueMirrors lists enabled mirrors needing a run after their scheduled time.
 // Dirty markers only make a mirror eligible when next_run_at is set and due;
 // queued work is already represented by the queue and must not be duplicated.
-func (tx *ReadTx) DueMirrors(nowMs int64, limit int) ([]MirrorRow, error) {
-	inner, err := tx.live()
+func (c *txCore) DueMirrors(nowMs int64, limit int) ([]MirrorRow, error) {
+	inner, err := c.live()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("DueMirrors: %w", err)
 	}
 	limit = clampMirrorLimit(limit)
-	rows, qerr := inner.QueryContext(tx.ctx, `SELECT `+sqlMirrorColumns+` FROM mirrors
+	rows, qerr := inner.QueryContext(c.ctx, `SELECT `+sqlMirrorColumns+` FROM mirrors
 WHERE enabled = 1 AND next_run_at <> 0 AND next_run_at <= ? AND NOT EXISTS (
     SELECT 1 FROM mirror_runs r WHERE r.mirror_id = mirrors.id AND r.state = 'queued'
 )
 ORDER BY next_run_at, id LIMIT ?`, nowMs, limit)
 	if qerr != nil {
-		return nil, qerr
+		return nil, fmt.Errorf("DueMirrors: %w", qerr)
 	}
 	defer func() { _ = rows.Close() }()
 	var out []MirrorRow
 	for rows.Next() {
 		row, serr := scanMirrorRow(rows.Scan)
 		if serr != nil {
-			return nil, serr
+			return nil, fmt.Errorf("DueMirrors: %w", serr)
 		}
 		out = append(out, row)
 	}
-	return out, rows.Err()
+	if rerr := rows.Err(); rerr != nil {
+		return nil, fmt.Errorf("DueMirrors: %w", rerr)
+	}
+	return out, nil
 }
 
 // GetCredential loads one mirror's sealed credential for reads.
@@ -932,6 +937,23 @@ func (tx *ReadTx) GetRunByPublicID(pub string) (MirrorRunRow, error) {
 		return MirrorRunRow{}, fmt.Errorf("GetRunByPublicID: %w: %s", ErrNotFound, pub)
 	}
 	return row, serr
+}
+
+// LatestMirrorRun returns the newest run of one mirror, or ErrNotFound.
+func (c *txCore) LatestMirrorRun(mirrorID int64) (MirrorRunRow, error) {
+	inner, err := c.live()
+	if err != nil {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w", err)
+	}
+	row, serr := scanRunRow(inner.QueryRowContext(c.ctx,
+		`SELECT `+sqlRunColumns+` FROM mirror_runs WHERE mirror_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, mirrorID).Scan)
+	if errors.Is(serr, sql.ErrNoRows) {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w: mirror %d has no runs", ErrNotFound, mirrorID)
+	}
+	if serr != nil {
+		return MirrorRunRow{}, fmt.Errorf("LatestMirrorRun: %w", serr)
+	}
+	return row, nil
 }
 
 // ListRuns lists one mirror's runs, oldest first, with a next cursor. A

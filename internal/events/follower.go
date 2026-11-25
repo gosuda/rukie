@@ -164,6 +164,9 @@ func (f *Follower) Ingest(ctx context.Context, events []ruk.RefEvent) error {
 				return fmt.Errorf("Ingest: %w: event seq %d misses its name", store.ErrInvalid, event.Seq)
 			}
 			current := event.New.Hex()
+			if err := enqueueReviewRemap(tx, now, f.repoID, event.Name, current); err != nil {
+				return fmt.Errorf("Ingest: %w", err)
+			}
 			if tips[event.Name] == current {
 				if int64(event.Seq) > front {
 					front = int64(event.Seq)
@@ -262,7 +265,21 @@ func (f *Follower) resnapshot(ctx context.Context) error {
 		}
 		tips[ref.Name] = target
 	}
+	if asOf > math.MaxInt64 {
+		return fmt.Errorf("resnapshot: %w: as_of overflows int64", store.ErrInvalid)
+	}
+	snapshotCursor := int64(asOf)
 	return f.store.Write(ctx, func(tx *store.WriteTx) error {
+		cursor, cerr := tx.Outbox().Cursor(eventConsumer(f.repoID))
+		if cerr != nil {
+			return cerr
+		}
+		if cursor < 0 {
+			return fmt.Errorf("resnapshot: stored cursor %d is negative", cursor)
+		}
+		if snapshotCursor < cursor {
+			return nil
+		}
 		before, berr := tx.WriteTips(f.repoID)
 		if berr != nil {
 			return berr
@@ -271,6 +288,9 @@ func (f *Follower) resnapshot(ctx context.Context) error {
 			return rerr
 		}
 		for name, target := range tips {
+			if err := enqueueReviewRemap(tx, now, f.repoID, name, target); err != nil {
+				return fmt.Errorf("resnapshot: %w", err)
+			}
 			if before[name] == target {
 				continue
 			}
@@ -286,17 +306,10 @@ func (f *Follower) resnapshot(ctx context.Context) error {
 				return serr
 			}
 		}
-		cursor, cerr := tx.Outbox().Cursor(eventConsumer(f.repoID))
-		if cerr != nil {
-			return cerr
-		}
-		if asOf > math.MaxInt64 {
-			return fmt.Errorf("resnapshot: %w: as_of overflows int64", store.ErrInvalid)
-		}
-		if int64(asOf) <= cursor {
+		if snapshotCursor == cursor {
 			return nil
 		}
-		return tx.Outbox().Advance(eventConsumer(f.repoID), cursor, int64(asOf))
+		return tx.Outbox().Advance(eventConsumer(f.repoID), cursor, snapshotCursor)
 	})
 }
 

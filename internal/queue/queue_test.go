@@ -34,9 +34,9 @@ func testCtx(t *testing.T) context.Context {
 	return ctx
 }
 
-func TestKindSetHoldsSeven(t *testing.T) {
-	if len(AllKinds()) != 7 {
-		t.Fatalf("kinds = %d, want 7", len(AllKinds()))
+func TestKindSetHoldsEight(t *testing.T) {
+	if len(AllKinds()) != 8 {
+		t.Fatalf("kinds = %d, want 8", len(AllKinds()))
 	}
 	for _, kind := range AllKinds() {
 		if !ValidKind(kind) {

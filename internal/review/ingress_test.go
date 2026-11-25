@@ -1,6 +1,7 @@
 package review
 
 import (
+	"math"
 	"testing"
 )
 
@@ -37,13 +38,16 @@ func TestSpansFromPatch(t *testing.T) {
 -old11
 +new10
 `
-	spans := SpansFromPatch(map[string]string{"a.txt": patch})
+	spans, err := SpansFromPatch(map[string]string{"a.txt": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, ok := spans["a.txt"]
 	if !ok {
 		t.Fatal("no spans for a.txt")
 	}
-	if len(got) != 3 {
-		t.Fatalf("spans = %+v, want two context runs plus the inter-hunk gap", got)
+	if len(got) != 4 {
+		t.Fatalf("spans = %+v, want context runs, the inter-hunk gap, and the final tail", got)
 	}
 	if got[0] != (Span{OldStart: 1, NewStart: 1, Lines: 1}) {
 		t.Fatalf("span 0 = %+v, want old 1 to new 1", got[0])
@@ -64,7 +68,7 @@ func TestSpansFromPatch(t *testing.T) {
 		t.Fatal("removed line 10 remaps")
 	}
 	if _, ok := RemapLine(11, got); ok {
-		t.Fatal("line past the last hunk remaps")
+		t.Fatal("second removed line remaps")
 	}
 }
 
@@ -75,19 +79,25 @@ func TestSpansFromPureInsertion(t *testing.T) {
 +new3
 +new4
 `
-	spans := SpansFromPatch(map[string]string{"a.txt": patch})
+	spans, err := SpansFromPatch(map[string]string{"a.txt": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, ok := spans["a.txt"]
 	if !ok {
 		t.Fatal("no spans for a.txt")
 	}
-	if len(got) != 1 {
-		t.Fatalf("spans = %+v, want only the leading run", got)
+	if len(got) != 2 {
+		t.Fatalf("spans = %+v, want the leading run and shifted tail", got)
 	}
-	if got[0] != (Span{OldStart: 1, NewStart: 1, Lines: 1}) {
-		t.Fatalf("span 0 = %+v, want old 1 to new 1", got[0])
+	if got[0] != (Span{OldStart: 1, NewStart: 1, Lines: 2}) {
+		t.Fatalf("span 0 = %+v, want old 1..2 to new 1..2", got[0])
 	}
-	if _, ok := RemapLine(2, got); ok {
-		t.Fatal("old line 2 at the insertion point remaps by guess")
+	if mapped, ok := RemapLine(2, got); !ok || mapped != 2 {
+		t.Fatalf("line before insertion maps to (%d, %v)", mapped, ok)
+	}
+	if mapped, ok := RemapLine(3, got); !ok || mapped != 5 {
+		t.Fatalf("line after insertion maps to (%d, %v)", mapped, ok)
 	}
 	if mapped, ok := RemapLine(1, got); !ok || mapped != 1 {
 		t.Fatalf("old line 1 maps to (%d, %v), want (1, true)", mapped, ok)
@@ -95,11 +105,194 @@ func TestSpansFromPureInsertion(t *testing.T) {
 }
 
 func TestSpansFromPatchEmpty(t *testing.T) {
-	if spans := SpansFromPatch(nil); len(spans) != 0 {
-		t.Fatalf("nil patches yield %d spans", len(spans))
+	if spans, err := SpansFromPatch(nil); err != nil || len(spans) != 0 {
+		t.Fatalf("nil patches = (%v, %v)", spans, err)
 	}
-	spans := SpansFromPatch(map[string]string{"a.txt": "not a patch\n"})
-	if len(spans) != 0 {
-		t.Fatalf("hunkless patch yields %+v", spans)
+	for _, patch := range []string{"", "--- a/a.txt\n+++ b/a.txt\n"} {
+		spans, err := SpansFromPatch(map[string]string{"a.txt": patch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mapped, ok := RemapLine(math.MaxUint32, spans["a.txt"]); !ok || mapped != math.MaxUint32 {
+			t.Fatalf("unchanged file maps last line to (%d, %v)", mapped, ok)
+		}
+	}
+	if _, err := SpansFromPatch(map[string]string{"a.txt": "not a patch\n"}); err == nil {
+		t.Fatal("malformed patch accepted")
+	}
+}
+
+func TestSpansFromPatchPreservesTail(t *testing.T) {
+	patch := "@@ -1,2 +1,3 @@\n first\n+inserted\n second\n"
+	spans, err := SpansFromPatch(map[string]string{"a.txt": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for old, want := range map[uint32]uint32{2: 3, 3: 4, 100: 101, math.MaxUint32 - 1: math.MaxUint32} {
+		if got, ok := RemapLine(old, spans["a.txt"]); !ok || got != want {
+			t.Fatalf("tail line %d = (%d, %v), want %d", old, got, ok, want)
+		}
+	}
+	if got, ok := RemapLine(math.MaxUint32, spans["a.txt"]); ok || got != 0 {
+		t.Fatalf("overflowing tail mapped to (%d, %v)", got, ok)
+	}
+}
+
+func TestSpansFromPatchTreatsHeaderLikeContentAsLines(t *testing.T) {
+	patch := "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n--- removed\n+++ added\n kept\n"
+	spans, err := SpansFromPatch(map[string]string{"a.txt": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := RemapLine(2, spans["a.txt"]); !ok || got != 2 {
+		t.Fatalf("line after header-like content = (%d, %v)", got, ok)
+	}
+	if _, ok := RemapLine(1, spans["a.txt"]); ok {
+		t.Fatal("replaced header-like content remapped")
+	}
+}
+
+func TestSpansFromPatchRejectsTruncationAndOverflow(t *testing.T) {
+	for _, patch := range []string{
+		"@@ -1,2 +1,2 @@\n one\n",
+		"@@ -1 +1 @@\n one\n extra\n",
+		"@@ -4294967295,2 +4294967295,2 @@\n one\n two\n",
+		"@@ -9223372036854775807,1 +1,1 @@\n one\n",
+		"@@ -1 +2 @@\n one\n",
+		"--- \n+++ \n",
+		"--- a/a.txt\n",
+		"--- a/a.txt\n+++ b/other.txt\n",
+		"--- /dev/null\n+++ /dev/null\n",
+		"--- a/a.txt\n@@ -1 +1 @@\n one\n",
+	} {
+		if _, err := SpansFromPatch(map[string]string{"a.txt": patch}); err == nil {
+			t.Fatalf("invalid patch accepted: %q", patch)
+		}
+	}
+}
+
+func TestSpansFromPatchDoesNotInventDeletedFileTail(t *testing.T) {
+	patch := "--- a/a.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n"
+	spans, err := SpansFromPatch(map[string]string{"a.txt": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spans["a.txt"]) != 0 {
+		t.Fatalf("deleted file has spans: %v", spans)
+	}
+}
+
+func TestSpansFromPatchPreservesRawPathLabels(t *testing.T) {
+	for _, path := range []string{"odd\nname.txt", "odd\xffname.txt", "odd\n@@ -99 +99 @@\n+++ marker.txt"} {
+		header := "--- a/" + path + "\n+++ b/" + path + "\n"
+		spans, err := SpansFromPatch(map[string]string{path: header + "@@ -1 +1,2 @@\n+inserted\n kept\n"})
+		if err != nil {
+			t.Fatalf("path %q: %v", path, err)
+		}
+		if got, ok := RemapLine(1, spans[path]); !ok || got != 2 {
+			t.Fatalf("path %q line = (%d, %v), want (2, true)", path, got, ok)
+		}
+		spans, err = SpansFromPatch(map[string]string{path: header})
+		if err != nil {
+			t.Fatalf("unchanged path %q: %v", path, err)
+		}
+		if got, ok := RemapLine(math.MaxUint32, spans[path]); !ok || got != math.MaxUint32 {
+			t.Fatalf("unchanged path %q last line = (%d, %v)", path, got, ok)
+		}
+	}
+}
+
+func TestSpansFromPatchHandlesRawAddedAndDeletedPaths(t *testing.T) {
+	path := "odd\n\xffname.txt"
+	for _, patch := range []string{
+		"--- /dev/null\n+++ b/" + path + "\n@@ -0,0 +1 @@\n+new\n",
+		"--- a/" + path + "\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
+	} {
+		spans, err := SpansFromPatch(map[string]string{path: patch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(spans[path]) != 0 {
+			t.Fatalf("added or deleted file has spans: %v", spans)
+		}
+	}
+}
+
+func TestSpansFromPatchRejectsMismatchedRawPathLabels(t *testing.T) {
+	path := "odd\n\xffname.txt"
+	for _, patch := range []string{
+		"--- a/" + path + "\n+++ b/other.txt\n",
+		"--- a/" + path + "\n+++ b/" + path,
+		"--- a/odd\n\ufffdname.txt\n+++ b/odd\n\ufffdname.txt\n",
+	} {
+		if _, err := SpansFromPatch(map[string]string{path: patch}); err == nil {
+			t.Fatalf("mismatched file headers accepted: %q", patch)
+		}
+	}
+}
+
+func TestSpansFromLegacyEmptyFilePatches(t *testing.T) {
+	for _, path := range []string{"a.txt", "odd\n\xffname.txt"} {
+		oldHeader := "--- a/" + path + "\n"
+		newHeader := "+++ b/" + path + "\n"
+		for name, patch := range map[string]string{
+			"added":         "--- /dev/null\n" + newHeader + "@@ -1,0 +1,2 @@\n+first\n+last\n",
+			"deleted":       oldHeader + "+++ /dev/null\n@@ -1,2 +1,0 @@\n-first\n-last\n",
+			"empty-filled":  oldHeader + newHeader + "@@ -1,0 +1,1 @@\n+filled\n",
+			"filled-empty":  oldHeader + newHeader + "@@ -1,1 +1,0 @@\n-filled\n",
+			"unterminated":  oldHeader + newHeader + "@@ -1,1 +1,0 @@\n-filled\n\\ No newline at end of file\n",
+			"added-empty":   "--- /dev/null\n" + newHeader,
+			"deleted-empty": oldHeader + "+++ /dev/null\n",
+		} {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				spans, err := SpansFromPatch(map[string]string{path: patch})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(spans[path]) != 0 {
+					t.Fatalf("empty-file transition invented unchanged lines: %+v", spans[path])
+				}
+			})
+		}
+	}
+}
+
+func TestSpansFromLegacyEmptyFileRejectsMalformedNeighbors(t *testing.T) {
+	const header = "--- a/a.txt\n+++ b/a.txt\n"
+	for name, patch := range map[string]string{
+		"no-headers":      "@@ -1,0 +1,1 @@\n+added\n",
+		"wrong-old-start": header + "@@ -2,0 +1,1 @@\n+added\n",
+		"wrong-new-start": header + "@@ -1,0 +3,1 @@\n+added\n",
+		"implicit-count":  header + "@@ -1,0 +1 @@\n+added\n",
+		"leading-zero":    header + "@@ -1,00 +1,1 @@\n+added\n",
+		"hunk-label":      header + "@@ -1,0 +1,1 @@ function\n+added\n",
+		"truncated-add":   header + "@@ -1,0 +1,2 @@\n+added\n",
+		"truncated-drop":  header + "@@ -1,2 +1,0 @@\n-dropped\n",
+		"extra-line":      header + "@@ -1,0 +1,1 @@\n+added\n+extra\n",
+		"wrong-prefix":    header + "@@ -1,0 +1,1 @@\n context\n",
+		"second-hunk":     header + "@@ -1,0 +1,1 @@\n+added\n@@ -1,1 +2,1 @@\n context\n",
+		"later-empty":     header + "@@ -1,1 +1,1 @@\n context\n@@ -1,0 +1,1 @@\n+added\n",
+		"deleted-adds":    "--- a/a.txt\n+++ /dev/null\n@@ -1,0 +1,1 @@\n+added\n",
+		"added-deletes":   "--- /dev/null\n+++ b/a.txt\n@@ -1,1 +1,0 @@\n-deleted\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := SpansFromPatch(map[string]string{"a.txt": patch}); err == nil {
+				t.Fatalf("invalid legacy neighbor accepted: %q", patch)
+			}
+		})
+	}
+}
+
+func TestSpansFromStandardZeroRangePreservesExistingLine(t *testing.T) {
+	patch := "--- a/a.txt\n+++ b/a.txt\n@@ -1,0 +2,1 @@\n+added\n"
+	spans, err := SpansFromPatch(map[string]string{"a.txt": patch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := RemapLine(1, spans["a.txt"]); !ok || got != 1 {
+		t.Fatalf("line before standard insertion = (%d, %v)", got, ok)
+	}
+	if got, ok := RemapLine(2, spans["a.txt"]); !ok || got != 3 {
+		t.Fatalf("line after standard insertion = (%d, %v)", got, ok)
 	}
 }

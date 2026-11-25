@@ -32,15 +32,6 @@ type conn struct {
 	broken     bool
 }
 
-func dialConn(ctx context.Context, id uint64, socketPath, profile string, timeouts Timeouts, hooks Hooks) (*conn, error) {
-	c, err := dialRawConn(ctx, id, socketPath, profile, timeouts, hooks)
-	if err != nil {
-		return nil, err
-	}
-	go c.readLoop()
-	return c, nil
-}
-
 func dialRawConn(ctx context.Context, id uint64, socketPath, profile string, timeouts Timeouts, hooks Hooks) (*conn, error) {
 	dialer := net.Dialer{Timeout: timeouts.Dial}
 	nc, err := dialer.DialContext(ctx, "unix", socketPath)
@@ -57,8 +48,14 @@ func dialRawConn(ctx context.Context, id uint64, socketPath, profile string, tim
 		readerDone: make(chan struct{}),
 		hooks:      hooks,
 	}
-	if err := c.handshake(ctx, profile, timeouts.Handshake); err != nil {
+	stop := context.AfterFunc(ctx, func() { _ = nc.Close() })
+	err = c.handshake(ctx, profile, timeouts.Handshake)
+	stopped := stop()
+	if err != nil || !stopped {
 		_ = nc.Close()
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("dialRawConn: %w: %w", ctx.Err(), context.Cause(ctx))
+		}
 		return nil, err
 	}
 	return c, nil
@@ -167,14 +164,25 @@ func (c *conn) writeKind(kind Kind, stream uint64, payload []byte) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	if err := c.nc.SetWriteDeadline(time.Now().Add(c.writeEvery)); err != nil {
-		return fmt.Errorf("writeKind: %w", err)
+		c.fail(fmt.Errorf("writeKind: %w", err))
+		return fmt.Errorf("writeKind: %w", c.cause())
 	}
 	err := writeFrame(c.nc, kind, stream, payload)
 	_ = c.nc.SetWriteDeadline(time.Time{})
 	if err != nil {
-		return fmt.Errorf("writeKind: %w", err)
+		c.fail(fmt.Errorf("writeKind: %w", err))
+		return fmt.Errorf("writeKind: %w", c.cause())
 	}
 	return nil
+}
+
+func (c *conn) readFrame() (Frame, error) {
+	frame, err := readFrame(c.nc)
+	if err != nil {
+		c.fail(fmt.Errorf("readFrame: %w", err))
+		return Frame{}, fmt.Errorf("readFrame: %w", c.cause())
+	}
+	return frame, nil
 }
 
 func (c *conn) fail(err error) {
@@ -185,6 +193,7 @@ func (c *conn) fail(err error) {
 	}
 	c.broken = true
 	c.firstErr = err
+	freed := c.onFree
 	live := make([]*stream, 0, len(c.streams))
 	for _, s := range c.streams {
 		live = append(live, s)
@@ -198,6 +207,9 @@ func (c *conn) fail(err error) {
 			close(s.done)
 		}
 		s.mu.Unlock()
+	}
+	if freed != nil {
+		freed()
 	}
 }
 
@@ -217,9 +229,8 @@ func (c *conn) lookup(id uint64) (*stream, bool) {
 func (c *conn) readLoop() {
 	defer close(c.readerDone)
 	for {
-		frame, err := readFrame(c.nc)
+		frame, err := c.readFrame()
 		if err != nil {
-			c.fail(fmt.Errorf("read: %w", err))
 			return
 		}
 		if frame.Stream == ControlStream {

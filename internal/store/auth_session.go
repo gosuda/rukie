@@ -72,21 +72,28 @@ func (s *Store) CreateSession(ctx context.Context, in SessionCreate) error {
 func (s *Store) GetSessionByHash(ctx context.Context, hash string) (SessionRecord, error) {
 	var out SessionRecord
 	err := s.Read(ctx, func(tx *ReadTx) error {
-		inner, lerr := tx.live()
-		if lerr != nil {
-			return lerr
-		}
-		if serr := scanSessionRecord(inner.QueryRowContext(tx.ctx,
-			`SELECT `+sqlSessionColumns+` FROM sessions WHERE id_hash = ?`, hash), &out); serr != nil {
-			if errors.Is(serr, sql.ErrNoRows) {
-				return fmt.Errorf("GetSessionByHash: %w", ErrNotFound)
-			}
-			return fmt.Errorf("GetSessionByHash: %w", serr)
-		}
-		return nil
+		var readErr error
+		out, readErr = tx.GetSessionByHash(hash)
+		return readErr
 	})
 	if err != nil {
-		return SessionRecord{}, err
+		return SessionRecord{}, fmt.Errorf("GetSessionByHash: %w", err)
+	}
+	return out, nil
+}
+
+func (c *txCore) GetSessionByHash(hash string) (SessionRecord, error) {
+	var out SessionRecord
+	inner, lerr := c.live()
+	if lerr != nil {
+		return SessionRecord{}, fmt.Errorf("GetSessionByHash: %w", lerr)
+	}
+	if serr := scanSessionRecord(inner.QueryRowContext(c.ctx,
+		`SELECT `+sqlSessionColumns+` FROM sessions WHERE id_hash = ?`, hash), &out); serr != nil {
+		if errors.Is(serr, sql.ErrNoRows) {
+			return SessionRecord{}, fmt.Errorf("GetSessionByHash: %w", ErrNotFound)
+		}
+		return SessionRecord{}, fmt.Errorf("GetSessionByHash: %w", serr)
 	}
 	return out, nil
 }
@@ -245,23 +252,35 @@ func (s *Store) TouchSession(ctx context.Context, hash string, now int64) error 
 }
 
 func (s *Store) RotateSession(ctx context.Context, oldHash string, next SessionCreate) error {
-	return s.Write(ctx, func(tx *WriteTx) error {
-		inner, lerr := tx.live()
-		if lerr != nil {
-			return lerr
-		}
-		if _, derr := inner.ExecContext(tx.ctx, `DELETE FROM sessions WHERE id_hash = ?`, oldHash); derr != nil {
-			return fmt.Errorf("RotateSession: %w", derr)
-		}
-		totp := boolToInt64(next.TOTPOk)
-		_, ierr := inner.ExecContext(tx.ctx, `INSERT INTO sessions
-			(id_hash, user_id, csrf_token, auth_level, authed_at, totp_ok, created_at, last_seen_at, absolute_expires_at, created_ip, user_agent)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			next.IDHash, next.UserID, next.CSRF, next.AuthLevel, next.AuthedAt, totp,
-			next.CreatedAt, next.LastSeenAt, next.AbsoluteExpiresAt, next.IP, next.UserAgent)
-		if ierr != nil {
-			return fmt.Errorf("RotateSession: %w", mapErr(ierr))
-		}
-		return nil
-	})
+	if err := s.Write(ctx, func(tx *WriteTx) error {
+		return tx.RotateSession(oldHash, next)
+	}); err != nil {
+		return fmt.Errorf("RotateSession: %w", err)
+	}
+	return nil
+}
+
+func (tx *WriteTx) RotateSession(oldHash string, next SessionCreate) error {
+	inner, lerr := tx.live()
+	if lerr != nil {
+		return fmt.Errorf("RotateSession: %w", lerr)
+	}
+	moved, derr := execAffected(tx.ctx, inner,
+		`DELETE FROM sessions WHERE id_hash = ? AND user_id = ?`, oldHash, next.UserID)
+	if derr != nil {
+		return fmt.Errorf("RotateSession: %w", derr)
+	}
+	if moved == 0 {
+		return fmt.Errorf("RotateSession: %w", ErrNotFound)
+	}
+	totp := boolToInt64(next.TOTPOk)
+	_, ierr := inner.ExecContext(tx.ctx, `INSERT INTO sessions
+		(id_hash, user_id, csrf_token, auth_level, authed_at, totp_ok, created_at, last_seen_at, absolute_expires_at, created_ip, user_agent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		next.IDHash, next.UserID, next.CSRF, next.AuthLevel, next.AuthedAt, totp,
+		next.CreatedAt, next.LastSeenAt, next.AbsoluteExpiresAt, next.IP, next.UserAgent)
+	if ierr != nil {
+		return fmt.Errorf("RotateSession: %w", mapErr(ierr))
+	}
+	return nil
 }

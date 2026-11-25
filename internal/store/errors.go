@@ -11,6 +11,8 @@ import (
 var (
 	// ErrClosed reports a call on a store that has begun Close.
 	ErrClosed = errors.New("store: closed")
+	// ErrReadOnly reports a write attempted on a read-only store.
+	ErrReadOnly = errors.New("store: read-only")
 	// ErrAlreadyOpen reports a second Open of a path in this process.
 	ErrAlreadyOpen = errors.New("store: path already open in this process")
 	// ErrNotFound reports a missing row.
@@ -43,6 +45,8 @@ var (
 	ErrAppIDMismatch = errors.New("store: file application_id is not rukie's")
 	// ErrSchemaTooNew reports a database migrated past this binary.
 	ErrSchemaTooNew = errors.New("store: database schema is newer than this binary")
+	// ErrMigrationRequired reports a read-only open that requires a missing migration.
+	ErrMigrationRequired = errors.New("store: database requires migration before read-only use")
 	// ErrMigrationChanged reports an applied migration whose bytes changed.
 	ErrMigrationChanged = errors.New("store: applied migration checksum differs from embedded file")
 	// ErrMigrationFailed reports a migration whose transaction rolled back.

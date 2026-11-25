@@ -315,9 +315,25 @@ func (r *PushReply) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// PushReconcileCursor identifies the next page of one durable observation snapshot.
+type PushReconcileCursor struct {
+	Session string `json:"session"`
+	Request string `json:"request"`
+	Page    uint32 `json:"page"`
+}
+
+// OriginalSSHIdentity records an operator-verified historical SSH destination.
+type OriginalSSHIdentity struct {
+	User string `json:"user"`
+	Port uint16 `json:"port"`
+}
+
 // PushReconcileArgs observes one stored plan's remote refs.
 type PushReconcileArgs struct {
-	Plan string `json:"plan"`
+	OriginalRemote *string              `json:"original_remote,omitempty"`
+	OriginalSSH    *OriginalSSHIdentity `json:"original_ssh,omitempty"`
+	Cursor         *PushReconcileCursor `json:"cursor,omitempty"`
+	Plan           string               `json:"plan"`
 }
 
 // ReconcileObservation is what observation found for one ref; a nil
@@ -328,35 +344,72 @@ type ReconcileObservation struct {
 	Verdict   string  `json:"verdict"`
 }
 
-// PushReconcileReply answers push.reconcile: the plan, its state, and one
-// observation per ref.
-type PushReconcileReply struct {
-	Plan         string                 `json:"plan"`
-	State        string                 `json:"state"`
-	Observations []ReconcileObservation `json:"-"`
+// ReportedReconcileObservation compares one reported update with its observed tip.
+type ReportedReconcileObservation struct {
+	Old       *string `json:"old"`
+	New       *string `json:"new"`
+	Observed  *string `json:"observed"`
+	RemoteRef string  `json:"remote_ref"`
+	Verdict   string  `json:"verdict"`
 }
 
-// UnmarshalJSON reads a reconcile reply, flattening the observations
-// BoundedList envelope {items, total, truncated}.
+// PushReconcileReply carries requested observations and reported comparisons.
+// PushReconcile returns a complete snapshot with no continuation cursor.
+type PushReconcileReply struct {
+	Next                 *PushReconcileCursor           `json:"next,omitempty"`
+	Plan                 string                         `json:"plan"`
+	State                string                         `json:"state"`
+	Observations         []ReconcileObservation         `json:"-"`
+	ReportedObservations []ReportedReconcileObservation `json:"-"`
+	wireBytes            uint64
+	requestedBounds      reconcileBounds
+	reportedBounds       reconcileBounds
+	Rewritten            bool `json:"rewritten"`
+}
+
+// UnmarshalJSON reads one page without discarding observation bounds.
 func (r *PushReconcileReply) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Plan         string            `json:"plan"`
-		State        string            `json:"state"`
-		Observations jsonv1.RawMessage `json:"observations"`
+		Next                 *PushReconcileCursor `json:"next"`
+		Plan                 string               `json:"plan"`
+		State                string               `json:"state"`
+		Observations         jsonv1.RawMessage    `json:"observations"`
+		ReportedObservations jsonv1.RawMessage    `json:"reported_observations"`
+		Rewritten            jsonv1.RawMessage    `json:"rewritten"`
 	}
 	if err := jsonv2.Unmarshal(data, &raw, jsonv1.DefaultOptionsV1()); err != nil {
+		return fmt.Errorf("PushReconcileReply: %w", err)
+	}
+	rewritten, err := decodeReconcileFlag(raw.Rewritten, "rewritten")
+	if err != nil {
 		return fmt.Errorf("PushReconcileReply: %w", err)
 	}
 	if len(raw.Observations) == 0 {
 		return fmt.Errorf("PushReconcileReply: missing observations")
 	}
-	var list boundedList[ReconcileObservation]
-	if err := jsonv2.Unmarshal(raw.Observations, &list, jsonv1.DefaultOptionsV1()); err != nil {
+	observations, requestedBounds, err := decodeReconcileList[ReconcileObservation](raw.Observations)
+	if err != nil {
 		return fmt.Errorf("PushReconcileReply: %w", err)
 	}
-	r.Plan = raw.Plan
-	r.State = raw.State
-	r.Observations = list.Items
+	var reported []ReportedReconcileObservation
+	var reportedBounds reconcileBounds
+	if len(raw.ReportedObservations) != 0 {
+		reported, reportedBounds, err = decodeReconcileList[ReportedReconcileObservation](raw.ReportedObservations)
+		if err != nil {
+			return fmt.Errorf("PushReconcileReply: %w", err)
+		}
+	}
+	*r = PushReconcileReply{
+		Next:                 raw.Next,
+		Plan:                 raw.Plan,
+		State:                raw.State,
+		Observations:         observations,
+		ReportedObservations: reported,
+		wireBytes:            uint64(len(data)),
+		requestedBounds:      requestedBounds,
+		reportedBounds:       reportedBounds,
+		Rewritten:            rewritten,
+	}
 	return nil
 }
 
@@ -365,13 +418,40 @@ func Push(ctx context.Context, c *Client, repo Repo, args PushArgs, auth wire.Tr
 	return CallAuth[PushArgs, PushReply](ctx, c, repo, wire.MethodPush, args, auth)
 }
 
-// PushReconcile observes the remote's current refs for an uncertain plan.
+// PushReconcile collects every page of one durable observation snapshot.
+// Args.Cursor must be nil; CallAuth remains available for individual pages.
+// Transport failures return no partial snapshot. Invalid snapshots require
+// operator attention through IncompleteReconciliationError.
 func PushReconcile(ctx context.Context, c *Client, repo Repo, args PushReconcileArgs, auth wire.TransportAuth) (PushReconcileReply, error) {
-	return CallAuth[PushReconcileArgs, PushReconcileReply](ctx, c, repo, wire.MethodPushReconcile, args, auth)
+	reply, err := collectPushReconcile(ctx, args, func(ctx context.Context, pageArgs PushReconcileArgs) (PushReconcileReply, error) {
+		return CallAuth[PushReconcileArgs, PushReconcileReply](ctx, c, repo, wire.MethodPushReconcile, pageArgs, auth)
+	})
+	if err != nil {
+		return PushReconcileReply{}, fmt.Errorf("PushReconcile: %w", err)
+	}
+	return reply, nil
 }
 
 type boundedList[T any] struct {
 	Items []T `json:"items"`
+}
+
+// PushDetailOf returns a typed push failure with a nonempty plan identity.
+func PushDetailOf(err error) (PushReply, bool) {
+	callErr, ok := errors.AsType[*Error](err)
+	if !ok || callErr == nil || len(callErr.Detail) == 0 {
+		return PushReply{}, false
+	}
+	var env struct {
+		Push *PushReply `json:"push"`
+	}
+	if err := jsonv2.Unmarshal(callErr.Detail, &env, jsonv1.DefaultOptionsV1()); err != nil {
+		return PushReply{}, false
+	}
+	if env.Push == nil || env.Push.Plan == "" {
+		return PushReply{}, false
+	}
+	return *env.Push, true
 }
 
 // HTTPDetail carries the facts behind one HTTP refusal: the status, the

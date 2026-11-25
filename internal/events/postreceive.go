@@ -198,6 +198,11 @@ func EnqueuePush(tx *store.WriteTx, rec PushRecord) error {
 		{Payload: string(mustScanPayload(rec.InvocationID, rec.RepoID)), ID: "mirror-run:" + rec.InvocationID, Kind: "mirror_run", RepoID: rec.RepoID, At: at},
 		{Payload: string(mustScanPayload(rec.InvocationID, rec.RepoID)), ID: "ci-plan:" + rec.InvocationID, Kind: "ci_plan", RepoID: rec.RepoID, At: at},
 	}
+	for _, ref := range rec.Landed {
+		if err := enqueueReviewRemap(tx, at, rec.RepoID, ref.Name, ref.New); err != nil {
+			return fmt.Errorf("EnqueuePush: %w", err)
+		}
+	}
 	for _, spec := range jobs {
 		if _, jerr = tx.EnqueueJob(spec); jerr != nil {
 			return jerr

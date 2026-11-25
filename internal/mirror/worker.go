@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -153,49 +154,57 @@ func (w Worker) drain(ctx context.Context, owner string) error {
 }
 
 func (w Worker) scheduleOnce(ctx context.Context) error {
-	now := w.now()
-	var due []store.MirrorRow
-	if rerr := w.Store.Read(ctx, func(tx *store.ReadTx) error {
+	if werr := w.Store.Write(ctx, func(tx *store.WriteTx) error {
+		now := w.now()
 		rows, derr := tx.DueMirrors(now.UnixMilli(), MaxMirrorWorkers*4)
 		if derr != nil {
 			return derr
 		}
-		due = rows
-		return nil
-	}); rerr != nil {
-		return fmt.Errorf("scheduleOnce: %w", rerr)
-	}
-	for _, row := range due {
-		if !row.Enabled {
-			continue
-		}
-		pub := string(store.NewID(now))
-		mirrorID := row.ID
-		if werr := w.Store.Write(ctx, func(tx *store.WriteTx) error {
+		for _, row := range rows {
+			confirmation := ""
+			if row.State == "failing" {
+				latest, lerr := tx.LatestMirrorRun(row.ID)
+				if lerr != nil && !errors.Is(lerr, store.ErrNotFound) {
+					return lerr
+				}
+				if lerr == nil && latest.State == "failed" {
+					confirmation = latest.ConfirmedDigest
+					if latest.RetryDigest != "" {
+						confirmation = latest.RetryDigest
+					}
+				}
+			}
+			pub := string(store.NewID(now))
+			mirrorID := row.ID
 			_, ierr := tx.InsertRun(now, store.MirrorRunRow{
-				PublicID: pub,
-				MirrorID: row.ID,
-				Kind:     "reconcile",
-				State:    "queued",
-				Trigger:  "schedule",
-				Counts:   "{}",
+				PublicID:        pub,
+				MirrorID:        row.ID,
+				Kind:            "reconcile",
+				State:           "queued",
+				Trigger:         "schedule",
+				Counts:          "{}",
+				ConfirmedDigest: confirmation,
 			})
-			return ierr
-		}); werr != nil {
-			return fmt.Errorf("scheduleOnce: %w", werr)
+			if ierr != nil {
+				return ierr
+			}
+			payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
+			if merr != nil {
+				return merr
+			}
+			if _, eerr := tx.EnqueueJob(store.JobSpec{
+				Payload: string(payload),
+				ID:      "mirror-run:" + pub,
+				Kind:    string(queue.KindMirrorRun),
+				RepoID:  row.RepoID,
+				At:      now,
+			}); eerr != nil {
+				return eerr
+			}
 		}
-		payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
-		if merr != nil {
-			return fmt.Errorf("scheduleOnce: %w", merr)
-		}
-		if _, eerr := w.Queue.Enqueue(ctx, queue.EnqueueSpec{
-			Payload: string(payload),
-			ID:      "mirror-run:" + pub,
-			Kind:    queue.KindMirrorRun,
-			RepoID:  row.RepoID,
-		}); eerr != nil {
-			return fmt.Errorf("scheduleOnce: %w", eerr)
-		}
+		return nil
+	}); werr != nil {
+		return fmt.Errorf("scheduleOnce: %w", werr)
 	}
 	return nil
 }
@@ -291,22 +300,23 @@ type trackedRef struct {
 }
 
 type execution struct {
-	start         time.Time
-	priorDiverged map[string]string
-	auth          wire.TransportAuth
-	repo          ruk.Repo
-	remoteDefault string
-	username      string
-	owner         string
-	plans         []string
-	token         []byte
-	tracked       []*trackedRef
-	worker        Worker
-	cfg           Mirror
-	job           store.Job
-	loaded        loadedRun
-	reqSeq        int
-	observed      bool
+	start             time.Time
+	priorDiverged     map[string]string
+	auth              wire.TransportAuth
+	repo              ruk.Repo
+	remoteDefault     string
+	recoveredApproval string
+	username          string
+	owner             string
+	plans             []string
+	token             []byte
+	tracked           []*trackedRef
+	worker            Worker
+	cfg               Mirror
+	job               store.Job
+	loaded            loadedRun
+	reqSeq            int
+	observed          bool
 }
 
 type loadedRun struct {
@@ -322,7 +332,6 @@ type runOutcome struct {
 	mirror   string
 	http     int64
 	delay    time.Duration
-	requeue  bool
 }
 
 func (e *execution) run(ctx context.Context, runPub string) error {
@@ -494,10 +503,11 @@ func (e *execution) sync(ctx context.Context) (bool, error) {
 		return e.finishCall(ctx, rerr, nil, nil)
 	}
 	e.remoteDefault = remote.defaultBranch
-	if rerr := e.reconcilePriorUncertain(ctx, remote.refs); rerr != nil {
+	prior, rerr := e.reconcilePriorUncertain(ctx, remote.refs)
+	if rerr != nil {
 		return e.finishCall(ctx, rerr, nil, &remote.count)
 	}
-	plan, perr := ComputePlan(local, remote.refs, e.cfg, e.loaded.repo.DefaultBranch, remote.defaultBranch, e.loaded.run.ConfirmedDigest)
+	plan, perr := e.computeApprovedPlan(local, remote, prior)
 	if perr != nil {
 		if errors.Is(perr, ErrNeedsConfirmation) {
 			count := remote.count
@@ -663,7 +673,7 @@ func dfBlockerFor(rp RefPlan, deletes []RefPlan) string {
 	return ""
 }
 
-func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[string]string) error {
+func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[string]string) (map[string]string, error) {
 	var rows []store.RefStateRow
 	if rerr := e.worker.Store.Read(ctx, func(tx *store.ReadTx) error {
 		after := ""
@@ -679,24 +689,38 @@ func (e *execution) reconcilePriorUncertain(ctx context.Context, remote map[stri
 			after = next
 		}
 	}); rerr != nil {
-		return fmt.Errorf("reconcilePriorUncertain: %w", rerr)
+		return nil, fmt.Errorf("reconcilePriorUncertain: %w", rerr)
 	}
 	e.priorDiverged = map[string]string{}
+	var prior map[string]string
 	for _, row := range rows {
-		if row.Status != "uncertain" {
+		if row.Status != "uncertain" && row.Status != "" {
 			continue
 		}
 		observed, ok := remote[row.Ref]
 		want := row.LocalOid
 		switch {
-		case !ok && want == "":
-		case ok && want != "" && observed == want:
+		case !ok && want == "", ok && want != "" && observed == want:
+			if row.RemoteOid == want {
+				continue
+			}
+			if prior == nil {
+				prior = make(map[string]string, len(remote))
+				maps.Copy(prior, remote)
+			}
+			if row.RemoteOid == "" {
+				delete(prior, row.Ref)
+			} else {
+				prior[row.Ref] = row.RemoteOid
+			}
 		case (ok && observed == row.RemoteOid) || (!ok && want != ""):
 		default:
-			e.priorDiverged[row.Ref] = "remote moved since the uncertain push"
+			if row.Status == "uncertain" {
+				e.priorDiverged[row.Ref] = "remote moved since the uncertain push"
+			}
 		}
 	}
-	return nil
+	return prior, nil
 }
 
 func orDefault(value, fallback string) string {
@@ -806,7 +830,79 @@ func (e *execution) resolveDFGated(t *trackedRef, upserts *[]ruk.PushUpdate, ups
 }
 
 func (e *execution) transmitPush(ctx context.Context, requestID string, updates []ruk.PushUpdate) (ruk.PushReply, error) {
-	return ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, requestID, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: updates}, e.auth)
+	send := func(ctx context.Context, id string, batch []ruk.PushUpdate) (ruk.PushReply, error) {
+		return ruk.RetryAuth[ruk.PushArgs, ruk.PushReply](ctx, e.worker.Ruk, e.repo, wire.MethodPush, id, ruk.PushArgs{RemoteURL: e.cfg.TargetURL, Updates: batch}, e.auth)
+	}
+	reconcile := func(ctx context.Context, plan string) (ruk.PushReconcileReply, error) {
+		return ruk.PushReconcile(ctx, e.worker.Ruk, e.repo, ruk.PushReconcileArgs{Plan: plan}, e.auth)
+	}
+	observe := func(ctx context.Context) (map[string]string, error) {
+		remote, err := e.collectRemote(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("transmitPush: %w", err)
+		}
+		return remote.refs, nil
+	}
+	reply, err := e.pushWithReconciliation(ctx, requestID, updates, send, reconcile, observe)
+	if err != nil {
+		return ruk.PushReply{}, fmt.Errorf("transmitPush: %w", err)
+	}
+	return reply, nil
+}
+
+func (e *execution) pushWithReconciliation(
+	ctx context.Context,
+	requestID string,
+	updates []ruk.PushUpdate,
+	send func(context.Context, string, []ruk.PushUpdate) (ruk.PushReply, error),
+	reconcile func(context.Context, string) (ruk.PushReconcileReply, error),
+	observe func(context.Context) (map[string]string, error),
+) (ruk.PushReply, error) {
+	pending := updates
+	var confirmed []ruk.PushRefOutcome
+	reconciled := map[string]struct{}{}
+	for {
+		if err := ctx.Err(); err != nil {
+			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", err)
+		}
+		reply, err := send(ctx, requestID, pending)
+		if err == nil {
+			reply.Refs = append(reply.Refs, confirmed...)
+			return reply, nil
+		}
+		detail, ok := ruk.PushDetailOf(err)
+		_, seen := reconciled[detail.Plan]
+		if !errors.Is(err, &ruk.Error{Code: wire.CodePushUncertain}) || !ok || detail.State != "uncertain" || seen || len(reconciled) >= len(updates) {
+			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", err)
+		}
+		reconciled[detail.Plan] = struct{}{}
+		observations, reconcileErr := reconcile(ctx, detail.Plan)
+		if checkErr := checkReconcilePlan(detail.Plan, observations, reconcileErr); checkErr != nil {
+			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", &blockedPlanReconcileError{plan: detail.Plan, err: checkErr})
+		}
+		remote, err := observe(ctx)
+		if err != nil {
+			return ruk.PushReply{}, fmt.Errorf("pushWithReconciliation: %w", err)
+		}
+		remaining := make([]ruk.PushUpdate, 0, len(pending))
+		for _, update := range pending {
+			actual, exists := remote[update.RemoteRef]
+			matches := !exists && update.Source.IsDelete()
+			if update.Source.Commit != nil {
+				matches = exists && actual == *update.Source.Commit
+			}
+			if matches {
+				confirmed = append(confirmed, ruk.PushRefOutcome{RemoteRef: update.RemoteRef, Status: ruk.ConfirmedStatus(update.Source.Commit)})
+			} else {
+				remaining = append(remaining, update)
+			}
+		}
+		if len(remaining) == 0 {
+			return ruk.PushReply{Plan: detail.Plan, State: "confirmed", Refs: confirmed}, nil
+		}
+		pending = remaining
+		requestID = e.nextRequestID()
+	}
 }
 
 func (e *execution) pushDeletesFirst(ctx context.Context, send func(ctx context.Context, requestID string, updates []ruk.PushUpdate) (ruk.PushReply, error)) error {
@@ -876,12 +972,7 @@ func (e *execution) pushDeletesFirst(ctx context.Context, send func(ctx context.
 				t.class = string(ClassOK)
 				t.reason = ""
 			case "rejected":
-				t.status = "rejected"
-				t.class = string(Classify("", 0, "", outcome.Status.Reason).Class)
-				if t.class == string(ClassOK) {
-					t.class = string(ClassRefOther)
-				}
-				t.reason = outcome.Status.Reason
+				t.reject(outcome.Status.Reason)
 			default:
 				t.status = "uncertain"
 				t.class = string(ClassUncertain)
@@ -902,6 +993,20 @@ func (e *execution) pushDeletesFirst(ctx context.Context, send func(ctx context.
 }
 
 func (e *execution) resolveUncertain(ctx context.Context) error {
+	reconcile := func(ctx context.Context, plan string) (ruk.PushReconcileReply, error) {
+		return ruk.PushReconcile(ctx, e.worker.Ruk, e.repo, ruk.PushReconcileArgs{Plan: plan}, e.auth)
+	}
+	if err := e.resolveUncertainWith(ctx, reconcile, e.resendOnce); err != nil {
+		return fmt.Errorf("resolveUncertain: %w", err)
+	}
+	return nil
+}
+
+func (e *execution) resolveUncertainWith(
+	ctx context.Context,
+	reconcile func(context.Context, string) (ruk.PushReconcileReply, error),
+	sendRemaining func(context.Context, []*trackedRef) error,
+) error {
 	byPlan := map[string][]*trackedRef{}
 	for _, t := range e.tracked {
 		if t.status == "uncertain" {
@@ -909,9 +1014,9 @@ func (e *execution) resolveUncertain(ctx context.Context) error {
 		}
 	}
 	for planID, refs := range byPlan {
-		reply, rerr := ruk.CallAuth[ruk.PushReconcileArgs, ruk.PushReconcileReply](ctx, e.worker.Ruk, e.repo, wire.MethodPushReconcile, ruk.PushReconcileArgs{Plan: planID}, e.auth)
-		if rerr != nil {
-			return rerr
+		reply, reconcileErr := reconcile(ctx, planID)
+		if err := checkReconcilePlan(planID, reply, reconcileErr); err != nil {
+			return fmt.Errorf("resolveUncertainWith: %w", err)
 		}
 		observed := make(map[string]ruk.ReconcileObservation, len(reply.Observations))
 		for _, ob := range reply.Observations {
@@ -949,8 +1054,8 @@ func (e *execution) resolveUncertain(ctx context.Context) error {
 			}
 		}
 		if len(resend) > 0 {
-			if rerr := e.resendOnce(ctx, resend); rerr != nil {
-				return rerr
+			if rerr := sendRemaining(ctx, resend); rerr != nil {
+				return fmt.Errorf("resolveUncertainWith: %w", rerr)
 			}
 		}
 	}
@@ -986,15 +1091,22 @@ func (e *execution) resendOnce(ctx context.Context, refs []*trackedRef) error {
 			t.class = string(ClassOK)
 			t.reason = ""
 		case "rejected":
-			t.status = "rejected"
-			t.class = string(Classify("", 0, "", outcome.Status.Reason).Class)
-			if t.class == string(ClassOK) {
-				t.class = string(ClassRefOther)
-			}
-			t.reason = outcome.Status.Reason
+			t.reject(outcome.Status.Reason)
 		}
 	}
 	return nil
+}
+
+func (t *trackedRef) reject(reason string) {
+	t.status = "rejected"
+	t.class = string(Classify("", 0, "", reason).Class)
+	t.reason = reason
+	switch t.class {
+	case string(ClassDiverged):
+		t.status = "diverged"
+	case string(ClassOK):
+		t.class = string(ClassRefOther)
+	}
 }
 
 func countUncertain(tracked []*trackedRef) int {
@@ -1024,6 +1136,12 @@ func summarizeTracked(tracked []*trackedRef) runOutcome {
 }
 
 func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, remoteCount *int) (bool, error) {
+	if _, ok := errors.AsType[*reconcileNeedsAttentionError](callErr); ok {
+		return e.finish(ctx, runOutcome{
+			runState: "failed", class: "needs_attention", summary: e.scrub(callErr.Error()),
+			mirror: "needs_attention",
+		}, plan, remoteCount)
+	}
 	if outcome, ok := sendUncertainOutcome(callErr); ok {
 		outcome.summary = e.scrub(callErr.Error())
 		outcome.delay = BackoffDelay(int(e.loaded.mirror.ConsecutiveFailures)+1, BaseBackoff, MaxBackoff, jitterFraction())
@@ -1031,6 +1149,16 @@ func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, r
 	}
 	code, detail, reason := describeCallError(callErr)
 	verdict := Classify(code, int(detail.Status), retryAfterString(detail), reason)
+	if _, blocked := errors.AsType[*blockedPlanReconcileError](callErr); blocked {
+		delay := BackoffDelay(int(e.loaded.mirror.ConsecutiveFailures)+1, BaseBackoff, MaxBackoff, jitterFraction())
+		if verdict.Class == ClassRateLimited {
+			delay = RateLimitDelay(retryAfterDuration(detail), retryAfterPresent(detail), jitterFraction())
+		}
+		return e.finish(ctx, runOutcome{
+			runState: "failed", class: string(ClassUncertain), summary: e.scrub(callErr.Error()),
+			mirror: "failing", http: int64(detail.Status), delay: delay,
+		}, plan, remoteCount)
+	}
 	if (detail.Status == 401 || detail.Status == 403) && verdict.Class != ClassRateLimited {
 		verdict = Verdict{Class: ClassAuth, Retry: false, State: "auth_failed"}
 	}
@@ -1045,8 +1173,8 @@ func (e *execution) finishCall(ctx context.Context, callErr error, plan *Plan, r
 	case ClassRateLimited:
 		delay := RateLimitDelay(retryAfterDuration(detail), retryAfterPresent(detail), jitterFraction())
 		return e.finish(ctx, runOutcome{
-			runState: "failing", class: string(verdict.Class), summary: summary,
-			mirror: "failing", http: int64(detail.Status), delay: delay, requeue: true,
+			runState: "failed", class: string(verdict.Class), summary: summary,
+			mirror: "failing", http: int64(detail.Status), delay: delay,
 		}, plan, remoteCount)
 	case ClassRepoMissing, ClassServer, ClassNetwork, ClassUncertain, ClassRefHidden,
 		ClassRefProtected, ClassRefHook, ClassRefOther, ClassProtocol, ClassDiverged,
@@ -1072,6 +1200,17 @@ func protectedRepeat(row store.MirrorRow, verdict Verdict) int {
 	}
 	return 0
 }
+
+type blockedPlanReconcileError struct {
+	err  error
+	plan string
+}
+
+func (e *blockedPlanReconcileError) Error() string {
+	return fmt.Sprintf("transmitPush: reconcile blocking plan %s: %v", e.plan, e.err)
+}
+
+func (e *blockedPlanReconcileError) Unwrap() error { return e.err }
 
 type sendUncertainError struct{ err error }
 
@@ -1158,8 +1297,12 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	run.AttemptNo = attemptNo
 	run.StartedAt = e.start.UnixMilli()
 	run.FinishedAt = endMs
+	run.RetryDigest = ""
 	if plan != nil {
 		run.PlanDigest = plan.Digest
+		if outcome.runState == "failed" && outcome.mirror == "failing" {
+			run.RetryDigest = e.remainingApprovedDigest(*plan)
+		}
 	}
 	if len(e.plans) > 0 {
 		run.RukPlan = strings.Join(e.plans, ",")
@@ -1190,7 +1333,7 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	if remoteCount != nil {
 		eventCursor = int64(*remoteCount)
 	}
-	confirmed := plan != nil && e.loaded.run.ConfirmedDigest != "" && e.loaded.run.ConfirmedDigest == plan.Digest
+	confirmed := plan != nil && e.approvedDigest() != "" && e.approvedDigest() == plan.Digest
 	if plan != nil && plan.TargetNonEmpty && (e.cfg.AdoptExistingRefs || confirmed) {
 		adopted = true
 	}
@@ -1252,11 +1395,6 @@ func (e *execution) finish(ctx context.Context, outcome runOutcome, plan *Plan, 
 	}); werr != nil {
 		return false, fmt.Errorf("finish: %w", werr)
 	}
-	if outcome.requeue {
-		if rerr := e.requeue(persist, now, run, attemptNo+1, outcome.delay); rerr != nil {
-			return false, rerr
-		}
-	}
 	return true, e.worker.complete(persist, e.owner, e.job)
 }
 
@@ -1265,36 +1403,6 @@ func (e *execution) scrub(s string) string {
 		return scrubSecrets(s, e.username, string(e.token))
 	}
 	return scrubSecrets(s, e.username)
-}
-
-func (e *execution) requeue(ctx context.Context, now time.Time, run store.MirrorRunRow, nextAttempt int64, delay time.Duration) error {
-	pub := run.PublicID
-	mirrorID := run.MirrorID
-	payload, merr := jsonv2.Marshal(jobPayload{Run: &pub, Mirror: &mirrorID}, jsonv1.DefaultOptionsV1())
-	if merr != nil {
-		return fmt.Errorf("requeue: %w", merr)
-	}
-	at := now.Add(delay)
-	if werr := e.worker.Store.Write(ctx, func(tx *store.WriteTx) error {
-		_, eerr := tx.EnqueueJob(store.JobSpec{
-			Payload: string(payload),
-			ID:      "mirror-run:" + pub + ":" + strconv.FormatInt(nextAttempt, 10),
-			Kind:    string(queue.KindMirrorRun),
-			RepoID:  e.loaded.mirror.RepoID,
-			At:      at,
-		})
-		return eerr
-	}); werr != nil {
-		return fmt.Errorf("requeue: %w", werr)
-	}
-	updated := run
-	updated.AttemptNo = nextAttempt
-	if werr := e.worker.Store.Write(ctx, func(tx *store.WriteTx) error {
-		return tx.UpdateRun(now, run.ID, updated)
-	}); werr != nil {
-		return fmt.Errorf("requeue: %w", werr)
-	}
-	return nil
 }
 
 func refStatesOf(mirrorID, nowMs int64, tracked []*trackedRef) []store.RefStateRow {

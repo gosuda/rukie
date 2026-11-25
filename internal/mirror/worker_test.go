@@ -362,6 +362,28 @@ func TestSendUncertainOutcome(t *testing.T) {
 	}
 }
 
+func TestPushRefusalRecordsDivergence(t *testing.T) {
+	e := &execution{
+		cfg: Mirror{Mode: ModeFastForward},
+		tracked: []*trackedRef{{plan: RefPlan{
+			Ref: "refs/heads/main", Old: "old", New: "new", Action: ActionUpdate,
+		}}},
+	}
+	err := e.pushDeletesFirst(t.Context(), func(context.Context, string, []ruk.PushUpdate) (ruk.PushReply, error) {
+		return ruk.PushReply{Plan: "plan", Refs: []ruk.PushRefOutcome{{
+			RemoteRef: "refs/heads/main",
+			Status:    ruk.RejectedStatus("rejected refs/heads/main (non-fast-forward)"),
+		}}}, nil
+	})
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	got := e.tracked[0]
+	if got.status != "diverged" || got.class != string(ClassDiverged) {
+		t.Fatalf("ref status = %q, class = %q, want divergence", got.status, got.class)
+	}
+}
+
 func TestDriveMalformedPayloadCompletes(t *testing.T) {
 	w, _, q, _ := openWorker(t)
 	enqueueMirrorJob(t, q, "mirror-run:malformed", 1, `[1,2]`)
@@ -736,7 +758,7 @@ func TestReconcilePriorUncertain(t *testing.T) {
 		"refs/heads/moved":   "third-party",
 	}
 	e := &execution{worker: *w, loaded: loadedRun{mirror: m}}
-	if err := e.reconcilePriorUncertain(testCtx(t), remote); err != nil {
+	if _, err := e.reconcilePriorUncertain(testCtx(t), remote); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if len(e.priorDiverged) != 1 {

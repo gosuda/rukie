@@ -39,14 +39,14 @@ func RunCommandStream(ctx context.Context, c *Client, cmd StreamCommand) (wire.C
 	if err != nil {
 		return zero, nil, fmt.Errorf("RunCommandStream: %w", err)
 	}
-	pc, err := dialRawConn(ctx, c.pool.nextID(), c.socket, c.profile, c.timeouts, c.hooks)
+	pc, err := c.pool.openDedicated(ctx)
 	if err != nil {
 		return zero, nil, err
 	}
 	closed := make(chan struct{})
 	defer func() {
 		close(closed)
-		_ = pc.nc.Close()
+		c.pool.releaseDedicated(pc)
 	}()
 	s, ok := pc.reserve()
 	if !ok {
@@ -174,7 +174,7 @@ func (d *streamDriver) readAbortable(ctx context.Context) (Frame, error) {
 	}
 	box := make(chan result, 1)
 	go func() {
-		frame, err := readFrame(d.pc.nc)
+		frame, err := d.pc.readFrame()
 		box <- result{frame: frame, err: err}
 	}()
 	select {
@@ -414,7 +414,7 @@ func (d *streamDriver) decodeExit(payload []byte) (wire.CommandExitReport, bool,
 }
 
 func (d *streamDriver) awaitRefusedExit() error {
-	frame, err := readFrame(d.pc.nc)
+	frame, err := d.pc.readFrame()
 	if err != nil {
 		return fmt.Errorf("RunCommandStream: %w: %w", err, ErrOutcomeUnknown)
 	}
