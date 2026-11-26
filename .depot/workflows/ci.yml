@@ -45,7 +45,14 @@ jobs:
           podman_version=$(apt-cache madison podman | awk 'NR==1 {print $3}')
           [ -n "$podman_version" ] || { echo "E_NO_PODMAN_CANDIDATE"; exit 1; }
           $SUDO apt-get install -y --no-install-recommends "podman=${podman_version}"
-          podman --version
+          mkdir -p "$HOME/.config/containers" "$RUNNER_TEMP/podman-run" "$RUNNER_TEMP/podman-root"
+          cat > "$HOME/.config/containers/storage.conf" <<EOF
+          [storage]
+          driver = "vfs"
+          runroot = "$RUNNER_TEMP/podman-run"
+          graphroot = "$RUNNER_TEMP/podman-root"
+          EOF
+          podman --storage-driver vfs version --format json
       - run: |
           make check
 
