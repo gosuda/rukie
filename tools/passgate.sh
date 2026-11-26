@@ -11,13 +11,13 @@ passgate() {
       cmd+=("$a")
     fi
   done
-  local out s n diagnostic
+  local out s n diagnostic nested=${RUKIE_PASSGATE_ACTIVE:-0}
   out=$(mktemp) || return 1
-  if "${cmd[@]}" >"$out" 2>&1; then s=0; else s=$?; fi
+  if RUKIE_PASSGATE_ACTIVE=1 "${cmd[@]}" >"$out" 2>&1; then s=0; else s=$?; fi
   cat "$out"
   if [ "$s" -ne 0 ]; then
     echo "passgate: exit $s" >&2
-    if [ "${GITHUB_ACTIONS:-}" = true ] && ! grep -q '^::error title=Required check failed::' "$out"; then
+    if [ "${GITHUB_ACTIONS:-}" = true ] && [ "$nested" = 0 ]; then
       if ! diagnostic=$(grep -E -A8 '(^FAIL|--- FAIL:|\.go:[0-9]+:|^[Ee]rror|^make.*\*\*\*)' "$out" | tail -c 60000); then
         diagnostic=$(tail -c 60000 "$out")
       fi
