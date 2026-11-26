@@ -4,6 +4,8 @@
 name: ci
 
 on:
+  push:
+    branches: [main]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -12,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -34,36 +36,15 @@ jobs:
           [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        id: go
         with:
           go-version: ${{ steps.go_toolchain.outputs.version }}
-          cache: false
-      - name: Provide podman for the sandbox probe
+          cache: true
+      - name: Provide supported Podman for the sandbox probe
+        run: bash tools/ci-podman.sh
+      - name: Verify Rukie, including the live sandbox
         run: |
-          command -v apt-get || { echo "E_NO_APT: Depot image has no apt-get"; exit 1; }
-          if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo -n"; fi
-          $SUDO apt-get update
-          podman_version=$(apt-cache madison podman | awk 'NR==1 {print $3}')
-          [ -n "$podman_version" ] || { echo "E_NO_PODMAN_CANDIDATE"; exit 1; }
-          $SUDO apt-get install -y --no-install-recommends "podman=${podman_version}"
-          USER_NAME=$(id -un); USER_GID=$(id -g)
-          echo "user=$USER_NAME uid=$(id -u) gid=$USER_GID groups=$(id -G)"
-          grep -q "^$USER_NAME:" /etc/subuid || echo "$USER_NAME:165536:65536" | $SUDO tee -a /etc/subuid
-          grep -q "^$USER_NAME:" /etc/subgid || echo "$USER_NAME:165536:65536" | $SUDO tee -a /etc/subgid
-          PASSWD_GID=$(awk -F: -v u="$USER_NAME" '$1==u {print $4}' /etc/passwd)
-          if [ "$PASSWD_GID" != "$USER_GID" ]; then
-            $SUDO sed -i -E "s/^($USER_NAME:[^:]*:[0-9]+:)[0-9]+:/\1$USER_GID:/" /etc/passwd
-          fi
-          grep "^$USER_NAME:" /etc/passwd /etc/subuid /etc/subgid
-          mkdir -p "$HOME/.config/containers" "$RUNNER_TEMP/podman-run" "$RUNNER_TEMP/podman-root"
-          cat > "$HOME/.config/containers/storage.conf" <<EOF
-          [storage]
-          driver = "vfs"
-          runroot = "$RUNNER_TEMP/podman-run"
-          graphroot = "$RUNNER_TEMP/podman-root"
-          EOF
-          podman --storage-driver vfs version --format json
-      - run: |
-          make check
+          tools/passgate.sh '--- PASS: TestSandboxP11LiveProbe (' -- make check
   ruk-integration:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: depot-ubuntu-24.04
@@ -79,10 +60,12 @@ jobs:
           [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        id: go
         with:
           go-version: ${{ steps.go_toolchain.outputs.version }}
-          cache: false
+          cache: true
       - name: Check out pinned Ruk
+        id: source
         run: |
           ruk_revision=$(<tools/ruk.pin)
           [[ "$ruk_revision" =~ ^[0-9a-f]{40}$ ]]
@@ -90,40 +73,57 @@ jobs:
           git -C ruk remote add origin https://github.com/gosuda/ruk.git
           git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
           git -C ruk checkout --detach FETCH_HEAD
-      - run: |
+      - id: rust
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
+        with:
+          workspaces: ruk -> target
+          cache-workspace-crates: true
+          cache-bin: false
+          save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
         id: nextest
+        if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
         with:
           tool: cargo-nextest@0.9.148
           fallback: none
-      - run: |
+      - if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
+        run: |
           cargo fmt --all -- --check
         working-directory: ruk
-      - run: |
+      - if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
+        run: |
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-        if: ${{ !cancelled() }}
         working-directory: ruk
       - run: |
           cargo nextest run --workspace --locked --no-fail-fast
         working-directory: ruk
         if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
-      - run: |
+      - if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
+        run: |
           cargo test --workspace --locked --doc --no-fail-fast
         working-directory: ruk
-        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
-      - run: |
+      - id: build
+        if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
+        run: |
           cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
       - name: Export the pinned Ruk model
+        id: model
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           ruk/target/debug/ruk model --format json > "$RUNNER_TEMP/ruk-model.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() && steps.model.outcome == 'success' }}
         with:
           name: ruk-model-${{ github.sha }}
           path: ${{ runner.temp }}/ruk-model.json
           if-no-files-found: error
           retention-days: 7
       - name: Test the daemon, SSH, and application startup
+        if: ${{ !cancelled() && steps.go.outcome == 'success' && steps.build.outcome == 'success' }}
         run: |
           tools/passgate.sh \
             '--- PASS: TestDaemonLifecycle (' \
@@ -136,6 +136,7 @@ jobs:
             go test -race -count=1 -v -timeout 30m -tags integration \
             ./internal/ruk/... ./internal/gitssh/... ./internal/sysops/... ./cmd/rukie/...
       - name: Test Git and agent workflows against the daemon
+        if: ${{ !cancelled() && steps.go.outcome == 'success' && steps.build.outcome == 'success' }}
         run: |
           tools/passgate.sh \
             '--- PASS: TestGitPushFetchRoundTrip (' \
