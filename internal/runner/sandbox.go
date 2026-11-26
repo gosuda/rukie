@@ -127,7 +127,7 @@ func BuildPodmanArgs(podman string, run SandboxRun) []string {
 	}
 	args = append(args, "--", run.Image)
 	if run.Probe {
-		args = append(args, "--probe")
+		args = append(args, "job-exec", "--probe")
 		return args
 	}
 	args = append(args, "job-exec", "--steps", "/.rukie/steps.json", "--log-dir", "/log")

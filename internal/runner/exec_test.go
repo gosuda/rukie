@@ -89,6 +89,52 @@ func TestInContainerProbeFindings(t *testing.T) {
 	}
 }
 
+func TestUIDMapCoversKeepID(t *testing.T) {
+	for _, tc := range []struct {
+		name, mapping string
+		uid           int
+		want          bool
+	}{
+		{name: "keep-id", uid: 1000, mapping: "0 1 1000\n1000 0 1\n1001 1001 64536\n", want: true},
+		{name: "nonzero parent", uid: 1000, mapping: "1000 2000 1\n", want: true},
+		{name: "subordinate range", uid: 1000, mapping: "0 100000 65536\n", want: true},
+		{name: "host identity", uid: 1000, mapping: "0 0 4294967295\n"},
+		{name: "root", uid: 0, mapping: "0 1000 1\n"},
+		{name: "unmapped", uid: 1000, mapping: "0 100000 1000\n"},
+		{name: "zero length", uid: 1000, mapping: "1000 0 0\n"},
+		{name: "invalid number", uid: 1000, mapping: "1000 broken 1\n"},
+		{name: "invalid count", uid: 1000, mapping: "1000 0 broken\n"},
+		{name: "range overflow", uid: 1000, mapping: "0 4294967295 65536\n"},
+		{name: "empty", uid: 1000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := uidMapCovers(tc.uid, tc.mapping); got != tc.want {
+				t.Fatalf("uid map covers %d = %t, want %t", tc.uid, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNetDevLoopbackOnly(t *testing.T) {
+	const header = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n"
+	const loopback = "    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"
+	for _, tc := range []struct {
+		name, devices string
+		want          bool
+	}{
+		{name: "loopback with headers", devices: header + loopback, want: true},
+		{name: "external interface", devices: header + loopback + "  eth0: 1 1 0 0 0 0 0 0 1 1 0 0 0 0 0 0\n"},
+		{name: "headers only", devices: header},
+		{name: "empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := netDevLoopbackOnly(tc.devices); got != tc.want {
+				t.Fatalf("loopback only = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseProbeOutput(t *testing.T) {
 	findings, rerr := parseProbeOutput("pass uid uid=1000\npass no_caps CapEff is zero\n")
 	if rerr != nil || len(findings) != 2 {

@@ -1,12 +1,18 @@
 package runner
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	jsonv2 "encoding/json/v2"
 )
 
 func gitCmd(dir string, args ...string) *exec.Cmd {
@@ -40,11 +46,14 @@ func versionEnv(version string) ProbeEnv {
 	env := passingEnv()
 	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		switch {
 		case strings.Contains(joined, "version --format json"):
 			return []byte(version), nil, nil
 		case strings.Contains(joined, "info --format json"):
-			return []byte(`{"host":{"security":{"rootless":true}}}`), nil, nil
+			return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":true}}}`), nil, nil
 		case strings.Contains(joined, "image exists"):
 			return []byte(""), nil, nil
 		case name == "git":
@@ -96,33 +105,56 @@ func TestSandboxP04CgroupV2(t *testing.T) {
 }
 
 func TestSandboxP05ControllersDelegated(t *testing.T) {
-	env := passingEnv()
-	env.ReadFile = func(path string) ([]byte, error) {
-		switch {
-		case strings.HasSuffix(path, "cgroup.controllers"):
-			return []byte("cpu memory pids"), nil
-		case path == "/proc/self/cgroup":
-			return []byte("0::/user.slice/user-1000.slice/session-9.scope\n"), nil
-		case strings.HasSuffix(path, "cgroup.subtree_control"):
-			return []byte("cpu memory"), nil
-		}
-		return []byte("runner:100000:65536\n"), nil
-	}
-	cfg := DefaultConfig(t.TempDir())
-	if _, rerr := RunProbe(cfg, env); rerr == nil || rerr.Code != "CGROUP_NOT_DELEGATED" {
-		t.Fatalf("missing pids = %v, want E_CGROUP_NOT_DELEGATED", rerr)
-	}
-	env.ReadFile = func(path string) ([]byte, error) {
-		if path == "/proc/self/cgroup" {
-			return nil, os.ErrNotExist
-		}
-		if strings.HasSuffix(path, "cgroup.controllers") {
-			return []byte("cpu memory pids"), nil
-		}
-		return []byte("runner:100000:65536\n"), nil
-	}
-	if _, rerr := RunProbe(cfg, env); rerr == nil || rerr.Code != "CGROUP_NOT_DELEGATED" {
-		t.Fatalf("unreadable cgroup = %v, want E_CGROUP_NOT_DELEGATED", rerr)
+	for _, tc := range []struct {
+		name, manager, state, controllers string
+		unreadable                        bool
+		want                              bool
+	}{
+		{name: "delegated user manager", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpu memory pids", want: true},
+		{name: "missing pids", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpu memory"},
+		{name: "cpuset does not supply cpu", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpuset memory pids"},
+		{name: "unreadable controllers", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", unreadable: true},
+		{name: "delegation disabled", manager: "systemd", state: "ActiveState=active\nDelegate=no\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpu memory pids"},
+		{name: "inactive user manager", manager: "systemd", state: "ActiveState=inactive\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpu memory pids"},
+		{name: "missing path", manager: "systemd", state: "ActiveState=active\nDelegate=yes\n", controllers: "cpu memory pids"},
+		{name: "root path", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/\n", controllers: "cpu memory pids"},
+		{name: "relative path", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=user.slice\n", controllers: "cpu memory pids"},
+		{name: "parent traversal", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/../../tmp\n", controllers: "cpu memory pids"},
+		{name: "rootless cgroupfs", manager: "cgroupfs", controllers: "cpu memory pids"},
+		{name: "missing manager", controllers: "cpu memory pids"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := passingEnv()
+			env.Run = func(name string, args ...string) ([]byte, []byte, error) {
+				if name != "systemctl" || strings.Join(args, " ") != "show user@1000.service --property=ControlGroup --property=Delegate --property=ActiveState --no-pager" {
+					t.Fatalf("unexpected P05 command: %s %v", name, args)
+				}
+				return []byte(tc.state), nil, nil
+			}
+			env.ReadFile = func(path string) ([]byte, error) {
+				switch path {
+				case "/proc/self/cgroup":
+					return []byte("0::/system.slice/actions-runner.service\n"), nil
+				case "/sys/fs/cgroup/system.slice/actions-runner.service/cgroup.subtree_control":
+					return []byte{}, nil
+				case "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/cgroup.controllers":
+					if tc.unreadable {
+						return nil, os.ErrPermission
+					}
+					return []byte(tc.controllers), nil
+				default:
+					return nil, os.ErrNotExist
+				}
+			}
+			c := &probeCtx{env: env, cgroupManager: tc.manager}
+			err := probeP05(c)
+			if (err == nil) != tc.want {
+				t.Fatalf("P05 = %v, want pass %t", err, tc.want)
+			}
+			if err != nil && err.Code != "CGROUP_NOT_DELEGATED" {
+				t.Fatalf("P05 = %v, want E_CGROUP_NOT_DELEGATED", err)
+			}
+		})
 	}
 }
 
@@ -171,13 +203,16 @@ func TestSandboxP09GitPresent(t *testing.T) {
 	env := passingEnv()
 	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		switch {
 		case name == "git":
 			return []byte("git version 2.31.0"), nil, nil
 		case strings.Contains(joined, "version"):
 			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
 		case strings.Contains(joined, "info"):
-			return []byte(`{"host":{"security":{"rootless":"true"}}}`), nil, nil
+			return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":"true"}}}`), nil, nil
 		}
 		return []byte(""), nil, nil
 	}
@@ -187,21 +222,62 @@ func TestSandboxP09GitPresent(t *testing.T) {
 	}
 }
 
-func TestSandboxP10ProbeImage(t *testing.T) {
-	env := passingEnv()
-	env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
-		joined := strings.Join(args, " ")
-		if strings.Contains(joined, "image exists") {
-			return nil, nil, os.ErrNotExist
-		}
-		if strings.Contains(joined, "pull") {
-			return nil, nil, os.ErrPermission
-		}
-		return []byte(""), nil, nil
+func TestSandboxP10DefaultImageDigest(t *testing.T) {
+	image := DefaultConfig(t.TempDir()).ProbeImage
+	name, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || name != "docker.io/library/alpine" {
+		t.Fatalf("probe image must pin the official Alpine digest: %q", image)
 	}
-	c := &probeCtx{cfg: DefaultConfig(t.TempDir()), env: env, podman: "/usr/bin/podman"}
-	if rerr := probeP10Pull(c); rerr == nil || rerr.Code != "PROBE_IMAGE" || rerr.Exit != 75 {
-		t.Fatalf("unpullable image = %v, want E_PROBE_IMAGE/75", rerr)
+	raw, err := hex.DecodeString(digest)
+	if err != nil || len(raw) != sha256.Size {
+		t.Fatalf("probe image has an invalid SHA-256 digest: %q: %v", image, err)
+	}
+}
+
+func TestSandboxP10ProbeImage(t *testing.T) {
+	for _, tc := range []struct {
+		name, stderr, want string
+	}{
+		{name: "text", stderr: "manifest unknown\n", want: "manifest unknown"},
+		{name: "invalid UTF-8", stderr: "manifest \xff unknown\n", want: "manifest \uFFFD unknown"},
+		{name: "truncated sequence", stderr: "manifest \xe2\x82 broken\n", want: "manifest \uFFFD broken"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := passingEnv()
+			env.Run = func(name string, args ...string) ([]byte, []byte, error) {
+				joined := strings.Join(args, " ")
+				if name == "systemctl" {
+					return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+				}
+				if strings.Contains(joined, "image exists") {
+					return nil, nil, os.ErrNotExist
+				}
+				if strings.Contains(joined, "pull") {
+					return nil, []byte(tc.stderr), os.ErrPermission
+				}
+				return []byte(""), nil, nil
+			}
+			c := &probeCtx{cfg: DefaultConfig(t.TempDir()), env: env, podman: "/usr/bin/podman"}
+			rerr := probeP10Pull(c)
+			if rerr == nil || rerr.Code != "PROBE_IMAGE" || rerr.Exit != 75 || !strings.Contains(rerr.Msg, tc.want) {
+				t.Fatalf("unpullable image = %v, want E_PROBE_IMAGE/75", rerr)
+			}
+			var line map[string]string
+			if err := jsonv2.Unmarshal([]byte(rerr.LogLine()), &line); err != nil || line["code"] != "E_PROBE_IMAGE" || !strings.Contains(line["msg"], tc.want) {
+				t.Fatalf("probe diagnostic = %q, error = %v", rerr.LogLine(), err)
+			}
+			if err := WriteProbeReport(c.cfg.StateDir, c.report); err != nil {
+				t.Fatalf("write probe report: %v", err)
+			}
+			raw, err := os.ReadFile(filepath.Join(c.cfg.StateDir, "probe.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report ProbeReport
+			if err := jsonv2.Unmarshal(raw, &report); err != nil || len(report.Failures) != 1 || report.Failures[0].Code != "E_PROBE_IMAGE" || !strings.Contains(report.Failures[0].Msg, tc.want) {
+				t.Fatalf("probe report = %s, error = %v", raw, err)
+			}
+		})
 	}
 }
 
@@ -212,12 +288,33 @@ func TestSandboxP11LiveProbe(t *testing.T) {
 		t.Skip("podman unavailable on this host: the probe exits 78 E_PODMAN_MISSING")
 	}
 	cfg := DefaultConfig(t.TempDir())
-	report, rerr := FullProbe(cfg, LiveProbeEnv())
+	if err := os.Chmod(cfg.StateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, rerr := RunProbe(cfg, LiveProbeEnv())
 	if rerr != nil && rerr.Code == "PODMAN_VERSION" && belowFloorPattern.MatchString(rerr.Msg) {
 		t.Skipf("host podman is below the supported floor: %s", rerr.Msg)
 	}
 	if rerr != nil {
 		t.Fatalf("live sandbox probe: %v", rerr)
+	}
+	binary := filepath.Join(t.TempDir(), "rukie")
+	build := exec.CommandContext(t.Context(), "go", "build", "-trimpath", "-o", binary, "../../cmd/rukie")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build static Rukie: %v\n%s", err, output)
+	}
+	probe := exec.CommandContext(t.Context(), binary, "runner", "probe", "--state-dir", cfg.StateDir)
+	if output, err := probe.CombinedOutput(); err != nil {
+		t.Fatalf("live sandbox probe: %v\n%s", err, output)
+	}
+	raw, err := os.ReadFile(filepath.Join(cfg.StateDir, "probe.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report ProbeReport
+	if err := jsonv2.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
 	}
 	seen := false
 	for _, check := range report.Checks {
@@ -227,6 +324,39 @@ func TestSandboxP11LiveProbe(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("live probe skipped P11")
+	}
+}
+
+func TestSandboxFullProbeRetainsSuccessfulChecks(t *testing.T) {
+	for _, egress := range []bool{false, true} {
+		t.Run(strconv.FormatBool(egress), func(t *testing.T) {
+			env := passingEnv()
+			run := env.Run
+			env.Run = func(name string, args ...string) ([]byte, []byte, error) {
+				if name == "/usr/bin/podman" && len(args) > 0 && args[0] == "run" {
+					return []byte("pass uid uid=1000\n"), nil, nil
+				}
+				return run(name, args...)
+			}
+			cfg := DefaultConfig(t.TempDir())
+			cfg.Egress = egress
+			report, rerr := FullProbe(cfg, env)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			var checks []string
+			for _, check := range report.Checks {
+				if check.Name == "P10" || check.Name == "P11" || check.Name == "P12" {
+					checks = append(checks, check.Name)
+					if check.Code != "" {
+						t.Fatalf("successful check contains a failure: %+v", check)
+					}
+				}
+			}
+			if !slices.Equal(checks, []string{"P10", "P11", "P12"}) || report.Egress != egress {
+				t.Fatalf("checks=%v egress=%v, want P10/P11/P12 and egress=%v", checks, report.Egress, egress)
+			}
+		})
 	}
 }
 
@@ -380,8 +510,7 @@ func TestSandboxBuilderInheritsNetwork(t *testing.T) {
 
 func TestSandboxBuilderProbeCommand(t *testing.T) {
 	args := BuildPodmanArgs("/usr/bin/podman", SandboxRun{Image: "i", RukieDir: "/s/rukie", Probe: true})
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--probe") || strings.Contains(joined, "job-exec") {
+	if !slices.Equal(args[len(args)-4:], []string{"--", "i", "job-exec", "--probe"}) {
 		t.Fatalf("probe command is wrong: %v", args)
 	}
 }
