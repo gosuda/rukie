@@ -419,8 +419,8 @@ func probeP10Pull(c *probeCtx) *Failure {
 		c.pass("P10")
 		return nil
 	}
-	if _, _, err := c.env.Run(c.podman, "pull", "--quiet", c.cfg.ProbeImage); err != nil {
-		return c.fail("P10", "PROBE_IMAGE", "the probe image did not pull", ExitDrainAbandoned)
+	if _, stderr, err := c.env.Run(c.podman, "pull", "--quiet", c.cfg.ProbeImage); err != nil {
+		return c.fail("P10", "PROBE_IMAGE", fmt.Sprintf("probeP10Pull: pull probe image: %v: %s", err, strings.TrimSpace(string(stderr))), ExitDrainAbandoned)
 	}
 	c.pass("P10")
 	return nil

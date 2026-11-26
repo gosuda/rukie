@@ -199,12 +199,12 @@ func TestSandboxP10ProbeImage(t *testing.T) {
 			return nil, nil, os.ErrNotExist
 		}
 		if strings.Contains(joined, "pull") {
-			return nil, nil, os.ErrPermission
+			return nil, []byte("manifest unknown\n"), os.ErrPermission
 		}
 		return []byte(""), nil, nil
 	}
 	c := &probeCtx{cfg: DefaultConfig(t.TempDir()), env: env, podman: "/usr/bin/podman"}
-	if rerr := probeP10Pull(c); rerr == nil || rerr.Code != "PROBE_IMAGE" || rerr.Exit != 75 {
+	if rerr := probeP10Pull(c); rerr == nil || rerr.Code != "PROBE_IMAGE" || rerr.Exit != 75 || !strings.Contains(rerr.Msg, "manifest unknown") {
 		t.Fatalf("unpullable image = %v, want E_PROBE_IMAGE/75", rerr)
 	}
 }
