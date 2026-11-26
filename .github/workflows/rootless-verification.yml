@@ -1,0 +1,30 @@
+name: Verify rootless sandbox setup
+on:
+  push:
+    branches: [ci/verify-rootless-rukie-20261126]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  verify:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 69d9ac18adb29316eb77de2cc81113c74ebde36a
+          persist-credentials: false
+      - name: Check exact source and init
+        run: |
+          test "$(git rev-parse HEAD)" = 69d9ac18adb29316eb77de2cc81113c74ebde36a
+          ps -p 1 -o comm=
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: 1.27.4
+          cache: false
+      - name: Provision rootless Podman
+        run: tools/passgate.sh -- bash -x tools/ci-podman.sh
+      - name: Verify all Rukie gates and mandatory live probe
+        run: tools/passgate.sh '--- PASS: TestSandboxP11LiveProbe (' -- make check
