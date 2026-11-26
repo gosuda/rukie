@@ -659,3 +659,7 @@ func TestSandboxDigestGolden(t *testing.T) {
 		t.Fatalf("digest = %s", got)
 	}
 }
+
+func TestPlantProbeFails(t *testing.T) {
+	t.Fatal("plant")
+}
