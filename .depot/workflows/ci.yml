@@ -4,9 +4,8 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -21,6 +20,7 @@ env:
 
 jobs:
   rukie:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 60
     steps:
@@ -64,10 +64,10 @@ jobs:
           podman --storage-driver vfs version --format json
       - run: |
           make check
-
   ruk-integration:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -91,7 +91,27 @@ jobs:
           git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
           git -C ruk checkout --detach FETCH_HEAD
       - run: |
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
+        id: nextest
+        with:
+          tool: cargo-nextest@0.9.148
+          fallback: none
+      - run: |
+          cargo fmt --all -- --check
+        working-directory: ruk
+      - run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        if: ${{ !cancelled() }}
+        working-directory: ruk
+      - run: |
+          cargo nextest run --workspace --locked --no-fail-fast
+        working-directory: ruk
+        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
+      - run: |
+          cargo test --workspace --locked --doc --no-fail-fast
+        working-directory: ruk
+        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
       - run: |
           cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
       - name: Export the pinned Ruk model
@@ -125,41 +145,3 @@ jobs:
             '--- PASS: TestAgentFlow/change (' -- \
             env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
             go test -race -count=1 -v -timeout 30m -tags e2e ./tests/e2e/...
-
-  ruk:
-    runs-on: depot-ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - name: Check out pinned Ruk
-        run: |
-          ruk_revision=$(<tools/ruk.pin)
-          [[ "$ruk_revision" =~ ^[0-9a-f]{40}$ ]]
-          git init ruk
-          git -C ruk remote add origin https://github.com/gosuda/ruk.git
-          git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
-          git -C ruk checkout --detach FETCH_HEAD
-      - run: |
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
-      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
-        id: nextest
-        with:
-          tool: cargo-nextest@0.9.148
-          fallback: none
-      - run: |
-          cargo fmt --all -- --check
-        working-directory: ruk
-      - run: |
-          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-        if: ${{ !cancelled() }}
-        working-directory: ruk
-      - run: |
-          cargo nextest run --workspace --locked --no-fail-fast
-        working-directory: ruk
-        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
-      - run: |
-          cargo test --workspace --locked --doc --no-fail-fast
-        working-directory: ruk
-        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
