@@ -82,7 +82,7 @@ func DefaultConfig(stateDir string) Config {
 		MaxJobs:     1,
 		CPUs:        2,
 		MemoryBytes: 4 << 30,
-		ProbeImage:  "docker.io/library/alpine@sha256:21a3deaa0d32a8057914f36584b5288d2e5ecc984380bc01133930a3a19e4fcd76d",
+		ProbeImage:  "docker.io/library/alpine@sha256:469c9ea410b9215eaee7976ba6c0639039b444be8e5d638f7abbada189971eb2",
 		StateDir:    stateDir,
 	}
 }

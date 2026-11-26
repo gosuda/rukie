@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -188,6 +190,18 @@ func TestSandboxP09GitPresent(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	if _, rerr := RunProbe(cfg, env); rerr != nil {
 		t.Fatalf("git 2.31 fails P09: %v", rerr)
+	}
+}
+
+func TestSandboxP10DefaultImageDigest(t *testing.T) {
+	image := DefaultConfig(t.TempDir()).ProbeImage
+	name, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || name != "docker.io/library/alpine" {
+		t.Fatalf("probe image must pin the official Alpine digest: %q", image)
+	}
+	raw, err := hex.DecodeString(digest)
+	if err != nil || len(raw) != sha256.Size {
+		t.Fatalf("probe image has an invalid SHA-256 digest: %q: %v", image, err)
 	}
 }
 
