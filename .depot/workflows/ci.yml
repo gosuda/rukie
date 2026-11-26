@@ -40,6 +40,9 @@ jobs:
         with:
           go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: true
+          cache-dependency-path: |
+            go.sum
+            Makefile
       - name: Provide supported Podman for the sandbox probe
         run: bash tools/ci-podman.sh
       - name: Verify Rukie, including the live sandbox
@@ -64,6 +67,9 @@ jobs:
         with:
           go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: true
+          cache-dependency-path: |
+            go.sum
+            tools/ruk.pin
       - name: Check out pinned Ruk
         id: source
         run: |

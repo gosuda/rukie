@@ -61,6 +61,9 @@ jobs:
         with:
           go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
+          cache-dependency-path: |
+            go.sum
+            tools/ruk.pin
       - name: Check out pinned Ruk
         id: source
         run: |
