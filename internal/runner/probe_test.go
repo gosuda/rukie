@@ -28,11 +28,14 @@ func passingEnv() ProbeEnv {
 	env := fixtureEnv()
 	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		switch {
 		case strings.Contains(joined, "version --format json"):
 			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
 		case strings.Contains(joined, "info --format json"):
-			return []byte(`{"host":{"security":{"rootless":true}}}`), nil, nil
+			return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":true}}}`), nil, nil
 		case strings.Contains(joined, "image exists"):
 			return []byte(""), nil, nil
 		case name == "git":
@@ -46,7 +49,7 @@ func passingEnv() ProbeEnv {
 			return []byte("cpuset cpu io memory hugetlb pids"), nil
 		case "/proc/self/cgroup":
 			return []byte("0::/user.slice/user-1000.slice/session-9.scope\n"), nil
-		case "/sys/fs/cgroup/user.slice/user-1000.slice/session-9.scope/cgroup.subtree_control":
+		case "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/cgroup.controllers":
 			return []byte("cpu memory pids"), nil
 		case "/etc/subuid", "/etc/subgid":
 			return []byte("runner:100000:65536\n"), nil
@@ -139,6 +142,9 @@ func TestProbeAcceptsGitWithBuildSuffix(t *testing.T) {
 	env := passingEnv()
 	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		if strings.HasPrefix(name, "git") {
 			return []byte("git version 2.39.5 (Apple Git-154)"), nil, nil
 		}
@@ -146,7 +152,7 @@ func TestProbeAcceptsGitWithBuildSuffix(t *testing.T) {
 			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
 		}
 		if strings.Contains(joined, "info") {
-			return []byte(`{"host":{"security":{"rootless":"true"}}}`), nil, nil
+			return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":"true"}}}`), nil, nil
 		}
 		return []byte(""), nil, nil
 	}
@@ -160,6 +166,9 @@ func TestProbeRejectsOldGitWithBuildSuffix(t *testing.T) {
 	env := passingEnv()
 	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		if strings.HasPrefix(name, "git") {
 			return []byte("git version 2.30.9 (Apple Git-130)"), nil, nil
 		}
@@ -167,7 +176,7 @@ func TestProbeRejectsOldGitWithBuildSuffix(t *testing.T) {
 			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
 		}
 		if strings.Contains(joined, "info") {
-			return []byte(`{"host":{"security":{"rootless":"true"}}}`), nil, nil
+			return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":"true"}}}`), nil, nil
 		}
 		return []byte(""), nil, nil
 	}
@@ -180,12 +189,15 @@ func TestProbeRejectsOldGitWithBuildSuffix(t *testing.T) {
 
 func TestProbeRejectsRootfulRuntime(t *testing.T) {
 	env := passingEnv()
-	env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
+	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		if strings.Contains(joined, "version") {
 			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
 		}
-		return []byte(`{"host":{"security":{"rootless":"false"}}}`), nil, nil
+		return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":"false"}}}`), nil, nil
 	}
 	cfg := DefaultConfig(t.TempDir())
 	_, rerr := RunProbe(cfg, env)
@@ -259,6 +271,9 @@ func TestProbeRejectsOldGit(t *testing.T) {
 	env := passingEnv()
 	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		if strings.HasPrefix(name, "git") {
 			return []byte("git version 2.30.0"), nil, nil
 		}
@@ -266,7 +281,7 @@ func TestProbeRejectsOldGit(t *testing.T) {
 			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
 		}
 		if strings.Contains(joined, "info") {
-			return []byte(`{"host":{"security":{"rootless":"true"}}}`), nil, nil
+			return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":"true"}}}`), nil, nil
 		}
 		return []byte(""), nil, nil
 	}
