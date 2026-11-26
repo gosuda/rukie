@@ -37,6 +37,15 @@ jobs:
         with:
           go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: false
+      - name: Provide podman for the sandbox probe
+        run: |
+          command -v apt-get || { echo "E_NO_APT: Depot image has no apt-get"; exit 1; }
+          if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo -n"; fi
+          $SUDO apt-get update
+          podman_version=$(apt-cache madison podman | awk 'NR==1 {print $3}')
+          [ -n "$podman_version" ] || { echo "E_NO_PODMAN_CANDIDATE"; exit 1; }
+          $SUDO apt-get install -y --no-install-recommends "podman=${podman_version}"
+          podman --version
       - run: |
           make check
 
