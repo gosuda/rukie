@@ -68,9 +68,11 @@ func readProc(path string) string {
 }
 
 func uidMapCovers(uid int, mapping string) bool {
-	if uid <= 0 {
+	id := int64(uid)
+	if id < 1 || id > 1<<32-1 {
 		return false
 	}
+	target := uint64(id)
 	for line := range strings.SplitSeq(mapping, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
@@ -85,7 +87,7 @@ func uidMapCovers(uid int, mapping string) bool {
 		if innerErr != nil || outerErr != nil || countErr != nil || count == 0 || inner+count > 1<<32 || outer+count > 1<<32 {
 			return false
 		}
-		if inner <= uint64(uid) && uint64(uid)-inner < count && (outer != 0 || (inner == uint64(uid) && count == 1)) {
+		if inner <= target && target-inner < count && (outer != 0 || (inner == target && count == 1)) {
 			return true
 		}
 	}

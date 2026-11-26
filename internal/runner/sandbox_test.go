@@ -46,11 +46,14 @@ func versionEnv(version string) ProbeEnv {
 	env := passingEnv()
 	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		switch {
 		case strings.Contains(joined, "version --format json"):
 			return []byte(version), nil, nil
 		case strings.Contains(joined, "info --format json"):
-			return []byte(`{"host":{"security":{"rootless":true}}}`), nil, nil
+			return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":true}}}`), nil, nil
 		case strings.Contains(joined, "image exists"):
 			return []byte(""), nil, nil
 		case name == "git":
@@ -102,33 +105,56 @@ func TestSandboxP04CgroupV2(t *testing.T) {
 }
 
 func TestSandboxP05ControllersDelegated(t *testing.T) {
-	env := passingEnv()
-	env.ReadFile = func(path string) ([]byte, error) {
-		switch {
-		case strings.HasSuffix(path, "cgroup.controllers"):
-			return []byte("cpu memory pids"), nil
-		case path == "/proc/self/cgroup":
-			return []byte("0::/user.slice/user-1000.slice/session-9.scope\n"), nil
-		case strings.HasSuffix(path, "cgroup.subtree_control"):
-			return []byte("cpu memory"), nil
-		}
-		return []byte("runner:100000:65536\n"), nil
-	}
-	cfg := DefaultConfig(t.TempDir())
-	if _, rerr := RunProbe(cfg, env); rerr == nil || rerr.Code != "CGROUP_NOT_DELEGATED" {
-		t.Fatalf("missing pids = %v, want E_CGROUP_NOT_DELEGATED", rerr)
-	}
-	env.ReadFile = func(path string) ([]byte, error) {
-		if path == "/proc/self/cgroup" {
-			return nil, os.ErrNotExist
-		}
-		if strings.HasSuffix(path, "cgroup.controllers") {
-			return []byte("cpu memory pids"), nil
-		}
-		return []byte("runner:100000:65536\n"), nil
-	}
-	if _, rerr := RunProbe(cfg, env); rerr == nil || rerr.Code != "CGROUP_NOT_DELEGATED" {
-		t.Fatalf("unreadable cgroup = %v, want E_CGROUP_NOT_DELEGATED", rerr)
+	for _, tc := range []struct {
+		name, manager, state, controllers string
+		unreadable                        bool
+		want                              bool
+	}{
+		{name: "delegated user manager", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpu memory pids", want: true},
+		{name: "missing pids", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpu memory"},
+		{name: "cpuset does not supply cpu", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpuset memory pids"},
+		{name: "unreadable controllers", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", unreadable: true},
+		{name: "delegation disabled", manager: "systemd", state: "ActiveState=active\nDelegate=no\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpu memory pids"},
+		{name: "inactive user manager", manager: "systemd", state: "ActiveState=inactive\nDelegate=yes\nControlGroup=/user.slice/user-1000.slice/user@1000.service\n", controllers: "cpu memory pids"},
+		{name: "missing path", manager: "systemd", state: "ActiveState=active\nDelegate=yes\n", controllers: "cpu memory pids"},
+		{name: "root path", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/\n", controllers: "cpu memory pids"},
+		{name: "relative path", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=user.slice\n", controllers: "cpu memory pids"},
+		{name: "parent traversal", manager: "systemd", state: "ActiveState=active\nDelegate=yes\nControlGroup=/user.slice/../../tmp\n", controllers: "cpu memory pids"},
+		{name: "rootless cgroupfs", manager: "cgroupfs", controllers: "cpu memory pids"},
+		{name: "missing manager", controllers: "cpu memory pids"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := passingEnv()
+			env.Run = func(name string, args ...string) ([]byte, []byte, error) {
+				if name != "systemctl" || strings.Join(args, " ") != "show user@1000.service --property=ControlGroup --property=Delegate --property=ActiveState --no-pager" {
+					t.Fatalf("unexpected P05 command: %s %v", name, args)
+				}
+				return []byte(tc.state), nil, nil
+			}
+			env.ReadFile = func(path string) ([]byte, error) {
+				switch path {
+				case "/proc/self/cgroup":
+					return []byte("0::/system.slice/actions-runner.service\n"), nil
+				case "/sys/fs/cgroup/system.slice/actions-runner.service/cgroup.subtree_control":
+					return []byte{}, nil
+				case "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/cgroup.controllers":
+					if tc.unreadable {
+						return nil, os.ErrPermission
+					}
+					return []byte(tc.controllers), nil
+				default:
+					return nil, os.ErrNotExist
+				}
+			}
+			c := &probeCtx{env: env, cgroupManager: tc.manager}
+			err := probeP05(c)
+			if (err == nil) != tc.want {
+				t.Fatalf("P05 = %v, want pass %t", err, tc.want)
+			}
+			if err != nil && err.Code != "CGROUP_NOT_DELEGATED" {
+				t.Fatalf("P05 = %v, want E_CGROUP_NOT_DELEGATED", err)
+			}
+		})
 	}
 }
 
@@ -177,13 +203,16 @@ func TestSandboxP09GitPresent(t *testing.T) {
 	env := passingEnv()
 	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 		joined := strings.Join(args, " ")
+		if name == "systemctl" {
+			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+		}
 		switch {
 		case name == "git":
 			return []byte("git version 2.31.0"), nil, nil
 		case strings.Contains(joined, "version"):
 			return []byte(`{"Client":{"Version":"6.1.4"}}`), nil, nil
 		case strings.Contains(joined, "info"):
-			return []byte(`{"host":{"security":{"rootless":"true"}}}`), nil, nil
+			return []byte(`{"host":{"cgroupManager":"systemd","security":{"rootless":"true"}}}`), nil, nil
 		}
 		return []byte(""), nil, nil
 	}
@@ -215,8 +244,11 @@ func TestSandboxP10ProbeImage(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := passingEnv()
-			env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
+			env.Run = func(name string, args ...string) ([]byte, []byte, error) {
 				joined := strings.Join(args, " ")
+				if name == "systemctl" {
+					return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
+				}
 				if strings.Contains(joined, "image exists") {
 					return nil, nil, os.ErrNotExist
 				}

@@ -93,10 +93,11 @@ func flockFile(path string) (func(), error) {
 }
 
 type probeCtx struct {
-	env    ProbeEnv
-	podman string
-	report ProbeReport
-	cfg    Config
+	env           ProbeEnv
+	podman        string
+	cgroupManager string
+	report        ProbeReport
+	cfg           Config
 }
 
 func (c *probeCtx) fail(name, code, msg string, exit int) *Failure {
@@ -254,6 +255,8 @@ func probeP03(c *probeCtx) *Failure {
 	if !rootlessTrue || c.env.UID() == 0 {
 		return c.fail("P03", "PODMAN_ROOTFUL", "the runner must run rootless podman as a non-root user", ExitConfigUnavailable)
 	}
+	manager, _ := nestedMap(decoded, "host", "cgroupManager")
+	c.cgroupManager, _ = manager.(string)
 	c.pass("P03")
 	return nil
 }
@@ -268,22 +271,29 @@ func probeP04(c *probeCtx) *Failure {
 }
 
 func probeP05(c *probeCtx) *Failure {
-	self, err := c.env.ReadFile("/proc/self/cgroup")
-	if err != nil {
-		return c.fail("P05", "CGROUP_NOT_DELEGATED", "the runner cgroup is not readable", ExitConfigUnavailable)
+	if c.cgroupManager != "systemd" {
+		return c.fail("P05", "CGROUP_NOT_DELEGATED", "rootless podman must use the systemd cgroup manager", ExitConfigUnavailable)
 	}
-	rel := ""
-	for line := range strings.SplitSeq(string(self), "\n") {
-		hierarchy, rest, _ := strings.Cut(line, ":")
-		_, path, _ := strings.Cut(rest, ":")
-		if strings.TrimSpace(hierarchy) == "0" {
-			rel = strings.TrimSpace(path)
+	unit := "user@" + strconv.Itoa(c.env.UID()) + ".service"
+	state, _, err := c.env.Run("systemctl", "show", unit, "--property=ControlGroup", "--property=Delegate", "--property=ActiveState", "--no-pager")
+	if err != nil {
+		return c.fail("P05", "CGROUP_NOT_DELEGATED", "the systemd user manager state is not readable", ExitConfigUnavailable)
+	}
+	properties := make(map[string]string, 3)
+	for line := range strings.SplitSeq(string(state), "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if found {
+			properties[key] = value
 		}
 	}
-	if rel == "" {
-		return c.fail("P05", "CGROUP_NOT_DELEGATED", "the runner is not in a v2 cgroup", ExitConfigUnavailable)
+	if properties["ActiveState"] != "active" || properties["Delegate"] != "yes" {
+		return c.fail("P05", "CGROUP_NOT_DELEGATED", "the systemd user manager has no active cgroup delegation", ExitConfigUnavailable)
 	}
-	raw, err := c.env.ReadFile("/sys/fs/cgroup" + rel + "/cgroup.subtree_control")
+	rel := properties["ControlGroup"]
+	if !filepath.IsAbs(rel) || rel == "/" || filepath.Clean(rel) != rel {
+		return c.fail("P05", "CGROUP_NOT_DELEGATED", "the systemd user manager cgroup path is invalid", ExitConfigUnavailable)
+	}
+	raw, err := c.env.ReadFile("/sys/fs/cgroup" + rel + "/cgroup.controllers")
 	if err != nil {
 		return c.fail("P05", "CGROUP_NOT_DELEGATED", "the delegating cgroup controllers are not readable", ExitConfigUnavailable)
 	}

@@ -1,7 +1,10 @@
 name: ci
 
 on:
+  push:
+    branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -16,7 +19,7 @@ env:
 
 jobs:
   rukie:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
+    name: ci / rukie
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 60
     steps:

@@ -1,6 +1,6 @@
-# Native Depot copy of .github/workflows/ci.yml. Fork pull requests
-# do not start Depot workflows, so .github/workflows/ci.yml stays
-# their CI path.
+# Ruk integration runs here for repository branches. GitHub Actions on
+# Depot runs the sandbox job because it requires a systemd user session.
+# Fork pull requests use the GitHub Actions integration job.
 name: ci
 
 on:
@@ -21,33 +21,6 @@ env:
   RUSTUP_TOOLCHAIN: 1.99.1
 
 jobs:
-  rukie:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: depot-ubuntu-24.04-4
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - name: Read the Go toolchain
-        id: go_toolchain
-        run: |
-          go_version=$(sed -n 's/^toolchain go//p' go.mod)
-          [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        id: go
-        with:
-          go-version: ${{ steps.go_toolchain.outputs.version }}
-          cache: true
-          cache-dependency-path: |
-            go.sum
-            Makefile
-      - name: Provide supported Podman for the sandbox probe
-        run: bash tools/ci-podman.sh
-      - name: Verify Rukie, including the live sandbox
-        run: |
-          tools/passgate.sh '--- PASS: TestSandboxP11LiveProbe (' -- make check
   ruk-integration:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: depot-ubuntu-24.04
