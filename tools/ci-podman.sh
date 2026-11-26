@@ -3,6 +3,9 @@ set -euo pipefail
 
 test "$(uname -m)" = x86_64
 test "$(id -u)" -ne 0 || { echo 'The sandbox probe requires a non-root runner' >&2; exit 1; }
+export XDG_RUNTIME_DIR="$RUNNER_TEMP/rukie-runtime"
+install -d -m 0700 "$XDG_RUNTIME_DIR"
+printf 'XDG_RUNTIME_DIR=%s\n' "$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
 sudo -n apt-get update
 sudo -n apt-get install -y --no-install-recommends \
   build-essential pkg-config libseccomp-dev libsystemd-dev libbtrfs-dev \
