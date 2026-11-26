@@ -1,10 +1,7 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
   pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,10 +15,11 @@ env:
 
 jobs:
   rukie:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Read the Go toolchain
@@ -30,7 +28,7 @@ jobs:
           go_version=$(sed -n 's/^toolchain go//p' go.mod)
           [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
@@ -39,12 +37,12 @@ jobs:
             Makefile
       - run: |
           make check
-
   ruk-integration:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Read the Go toolchain
@@ -53,7 +51,7 @@ jobs:
           go_version=$(sed -n 's/^toolchain go//p' go.mod)
           [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           printf 'version=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ steps.go_toolchain.outputs.version }}
           cache: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
@@ -66,8 +64,8 @@ jobs:
           git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
           git -C ruk checkout --detach FETCH_HEAD
       - run: |
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ruk -> target
           key: ${{ hashFiles('tools/ruk.pin') }}
@@ -75,12 +73,31 @@ jobs:
           cache-workspace-crates: true
           cache-bin: false
           save-if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
+      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
+        id: nextest
+        with:
+          tool: cargo-nextest@0.9.148
+          fallback: none
+      - run: |
+          cargo fmt --all -- --check
+        working-directory: ruk
+      - run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        working-directory: ruk
+      - run: |
+          cargo nextest run --workspace --locked --no-fail-fast
+        working-directory: ruk
+        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
+      - run: |
+          cargo test --workspace --locked --doc --no-fail-fast
+        working-directory: ruk
+        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
       - run: |
           cargo build --manifest-path ruk/Cargo.toml --locked -p ruk
       - name: Export the pinned Ruk model
         run: |
           ruk/target/debug/ruk model --format json > "$RUNNER_TEMP/ruk-model.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ruk-model-${{ github.sha }}
           path: ${{ runner.temp }}/ruk-model.json
@@ -108,48 +125,3 @@ jobs:
             '--- PASS: TestAgentFlow/change (' -- \
             env RUK_BIN="$GITHUB_WORKSPACE/ruk/target/debug/ruk" RUK_COORDINATOR=off \
             go test -race -count=1 -v -timeout 30m -tags e2e ./tests/e2e/...
-
-  ruk:
-    runs-on: depot-ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - name: Check out pinned Ruk
-        run: |
-          ruk_revision=$(<tools/ruk.pin)
-          [[ "$ruk_revision" =~ ^[0-9a-f]{40}$ ]]
-          git init ruk
-          git -C ruk remote add origin https://github.com/gosuda/ruk.git
-          git -C ruk fetch --no-tags --depth 1 origin "$ruk_revision"
-          git -C ruk checkout --detach FETCH_HEAD
-      - run: |
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
-        with:
-          workspaces: ruk -> target
-          key: ${{ hashFiles('tools/ruk.pin') }}
-          env-vars: ImageOS
-          cache-workspace-crates: true
-          cache-bin: false
-          save-if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
-      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519
-        id: nextest
-        with:
-          tool: cargo-nextest@0.9.148
-          fallback: none
-      - run: |
-          cargo fmt --all -- --check
-        working-directory: ruk
-      - run: |
-          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-        working-directory: ruk
-      - run: |
-          cargo nextest run --workspace --locked --no-fail-fast
-        working-directory: ruk
-        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
-      - run: |
-          cargo test --workspace --locked --doc --no-fail-fast
-        working-directory: ruk
-        if: ${{ !cancelled() && steps.nextest.outcome == 'success' }}
