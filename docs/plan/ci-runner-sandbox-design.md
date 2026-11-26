@@ -137,7 +137,7 @@ Safety decisions use `CLOCK_BOOTTIME` (suspend-inclusive), read via a stdlib `sy
 |---|---|---|---|
 | Kernel | ≥ 5.19 for `memory.peak`. Native overlay needs ≥ 5.12 per podman rootless docs [V, search] | Accounting; storage | 7.0 (`linux 7.0.0-38-generic`) |
 | cgroup v2, unified | `/sys/fs/cgroup/cgroup.controllers` exists | Limits | Present. Root controllers: `cpuset cpu io memory hugetlb pids rdma misc dmem` |
-| Controllers delegated to the runner's user manager | `cpu memory pids` in `user@<uid>.service/cgroup.subtree_control` | `--cpus`, `--memory`, `--pids-limit` | `user@1000.service`: controllers `cpu memory pids`, subtree_control `cpu memory pids`. **`io` not delegated → no I/O limits in v1.** |
+| Controllers delegated to the runner's user manager | Active `user@<uid>.service` with `Delegate=yes`; `cpu memory pids` in its `cgroup.controllers` | `--cpus`, `--memory`, `--pids-limit` | `user@1000.service`: controllers `cpu memory pids`, subtree_control `cpu memory pids`. **`io` not delegated → no I/O limits in v1.** |
 | systemd user session, lingering | `loginctl enable-linger <user>` for a service | Runner survives logout | `/var/lib/systemd/linger/alpha` present |
 | `XDG_RUNTIME_DIR` set and a directory | Required by rootless podman | podman | Session-dependent [U] |
 | podman ≥ 5.0, rootless | 5.0 makes pasta the default rootless network [V, Debian podman-rootless(7)] | All sandboxing | **Absent**: `/usr/bin/podman` not found |
@@ -175,7 +175,7 @@ The probe runs at every `run` start and at `register` and `probe`. It is ordered
 | P2 | version ≥ 5.0.0 | `podman version --format json` (`Client.Version`) | `E_PODMAN_VERSION` | 78 |
 | P3 | rootless and not uid 0 | `podman info --format json` (`host.security.rootless`) [U key name] | `E_PODMAN_ROOTFUL` | 78 |
 | P4 | cgroup v2 | `/sys/fs/cgroup/cgroup.controllers` exists; `podman info` cgroup version = v2 [U key] | `E_CGROUP_V1` | 78 |
-| P5 | controllers delegated | `cpu`, `memory`, `pids` in the runner's delegating `cgroup.subtree_control`; the authoritative check is P11's limit read-back | `E_CGROUP_NOT_DELEGATED` | 78 |
+| P5 | controllers delegated | Podman uses systemd. `user@<uid>.service` is active with `Delegate=yes`. Its `ControlGroup` has `cpu`, `memory`, `pids` in `cgroup.controllers`. P11 verifies the applied limits. | `E_CGROUP_NOT_DELEGATED` | 78 |
 | P6 | `XDG_RUNTIME_DIR` | Set and a directory | `E_XDG_RUNTIME` | 78 |
 | P7 | subuid and subgid ranges | Parse `/etc/subuid`, `/etc/subgid` for the runner's user name | `E_SUBUID_MISSING` | 78 |
 | P8 | userns allowed | Probe container (P11) fails with a userns error. Diagnose: `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` = 1 and no profile for `podman_path`. Remedy text names the profile path. | `E_USERNS_DENIED` | 78 |
