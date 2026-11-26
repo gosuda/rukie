@@ -1,0 +1,77 @@
+name: Verify rootless sandbox review proofs
+on:
+  push:
+    branches: [ci/verify-rootless-rukie-20261126]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+    working-directory: candidate
+jobs:
+  verify:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 45
+    env:
+      GOMAXPROCS: '4'
+      GOFLAGS: '-p=4'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          path: probe
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 3911669b0f399472d5c436cff0819dbafae99c67
+          persist-credentials: false
+          path: candidate
+      - name: Apply the exact candidate
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          test "$(git rev-parse HEAD)" = 3911669b0f399472d5c436cff0819dbafae99c67
+          printf '%s  %s\n' 90c8f665a5be2906fc4866076213a89adb1847f8bcc719d8da9c192bc786ea13 ../probe/ci-tools/rukie-round10.patch | sha256sum --check --strict
+          git apply --index --whitespace=error ../probe/ci-tools/rukie-round10.patch
+          test "$(git write-tree)" = f7482e298874a77920a9542e2fbb2c7881c851c5
+          git diff --cached --check
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: 1.27.4
+          cache: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          enable-cache: false
+      - name: Record exact source identity
+        run: |
+          set -euo pipefail
+          export GOENV=off GOCACHEPROG=''
+          go version > "$GITHUB_WORKSPACE/evidence/go-version.txt"
+          uv run --no-project --python 3.13 ../probe/ci-tools/rukie-review-proofs.py identity
+      - name: Provision rootless Podman
+        run: |
+          set -euo pipefail
+          export GOENV=off GOCACHEPROG=''
+          tools/passgate.sh -- bash -x tools/ci-podman.sh 2>&1 | tee "$GITHUB_WORKSPACE/evidence/setup.log"
+      - name: Verify all Rukie gates and mandatory live probe
+        run: |
+          set -euo pipefail
+          export GOENV=off GOCACHEPROG=''
+          tools/passgate.sh '--- PASS: TestSandboxP11LiveProbe (' -- make check 2>&1 | tee "$GITHUB_WORKSPACE/evidence/check.log"
+      - name: Prove independent diagnostic recognition
+        run: |
+          set -euo pipefail
+          export GOENV=off GOCACHEPROG=''
+          uv run --no-project --python 3.13 ../probe/ci-tools/rukie-review-proofs.py proofs
+      - name: Recheck source identity
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = f7482e298874a77920a9542e2fbb2c7881c851c5
+          git diff --exit-code
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: rukie-rootless-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
