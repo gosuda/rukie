@@ -54,6 +54,7 @@ jobs:
             $SUDO sed -i -E "s/^($USER_NAME:[^:]*:[0-9]+:)[0-9]+:/\1$USER_GID:/" /etc/passwd
           fi
           grep "^$USER_NAME:" /etc/passwd /etc/subuid /etc/subgid
+          mkdir -p "$HOME/.config/containers" "$RUNNER_TEMP/podman-run" "$RUNNER_TEMP/podman-root"
           cat > "$HOME/.config/containers/storage.conf" <<EOF
           [storage]
           driver = "vfs"
