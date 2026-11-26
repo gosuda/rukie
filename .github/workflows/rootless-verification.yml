@@ -27,4 +27,5 @@ jobs:
       - name: Provision rootless Podman
         run: tools/passgate.sh -- bash -x tools/ci-podman.sh
       - name: Verify all Rukie gates and mandatory live probe
-        run: tools/passgate.sh '--- PASS: TestSandboxP11LiveProbe (' -- make check
+        run: |
+          tools/passgate.sh '--- PASS: TestSandboxP11LiveProbe (' -- make check
