@@ -10,13 +10,23 @@ import (
 )
 
 func TestPassgateReportsEveryNestedFailureOnce(t *testing.T) {
-	script, err := filepath.Abs("../../tools/passgate.sh")
+	body, err := os.ReadFile("../../tools/passgate.sh")
 	if err != nil {
-		t.Fatalf("passgate script path: %v", err)
+		t.Fatalf("read passgate script: %v", err)
 	}
-	inner := "bash " + script + " NEVER -- bash -c 'echo FAIL: nested boom; exit 2'"
-	outer := "echo '--- FAIL: TestAlpha (0.00s)'; " + inner + "; echo 'make: *** [lint] Error 1'; echo 'runner/foo.go:12: vet failed'; exit 3"
-	cmd := exec.Command("bash", script, "NEVER-MATCH", "--", "bash", "-c", outer)
+	dir := filepath.Join(t.TempDir(), "checkout with spaces")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatalf("create spaced checkout: %v", err)
+	}
+	script := filepath.Join(dir, "passgate.sh")
+	if err := os.WriteFile(script, body, 0o700); err != nil {
+		t.Fatalf("copy passgate script: %v", err)
+	}
+	inner := `bash "$1" NEVER -- bash -c 'echo FAIL: nested boom; exit 2'`
+	gap := strings.Repeat("echo context-gap; ", 10)
+	outer := "echo '--- FAIL: TestAlpha (0.00s)'; " + gap + inner + "; " + gap +
+		"echo 'make: *** [lint] Error 1'; " + gap + "echo 'runner/foo.go:12: vet failed'; exit 3"
+	cmd := exec.Command("bash", script, "NEVER-MATCH", "--", "bash", "-c", outer, "passgate-test", script)
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "RUKIE_PASSGATE_ACTIVE=") {
@@ -49,6 +59,9 @@ func TestPassgateReportsEveryNestedFailureOnce(t *testing.T) {
 	}
 	if !strings.Contains(annotation, "TestAlpha") {
 		t.Fatalf("aggregate annotation omits the test failure: %q", text)
+	}
+	if !strings.Contains(annotation, "nested boom") {
+		t.Fatalf("aggregate annotation omits the nested gate failure: %q", text)
 	}
 	if !strings.Contains(annotation, "[lint]") {
 		t.Fatalf("aggregate annotation omits the independent failure: %q", text)
