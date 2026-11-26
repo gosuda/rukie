@@ -5,8 +5,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	jsonv2 "encoding/json/v2"
 )
 
 func gitCmd(dir string, args ...string) *exec.Cmd {
@@ -212,12 +216,30 @@ func TestSandboxP11LiveProbe(t *testing.T) {
 		t.Skip("podman unavailable on this host: the probe exits 78 E_PODMAN_MISSING")
 	}
 	cfg := DefaultConfig(t.TempDir())
-	report, rerr := FullProbe(cfg, LiveProbeEnv())
+	_, rerr := RunProbe(cfg, LiveProbeEnv())
 	if rerr != nil && rerr.Code == "PODMAN_VERSION" && belowFloorPattern.MatchString(rerr.Msg) {
 		t.Skipf("host podman is below the supported floor: %s", rerr.Msg)
 	}
 	if rerr != nil {
 		t.Fatalf("live sandbox probe: %v", rerr)
+	}
+	binary := filepath.Join(t.TempDir(), "rukie")
+	build := exec.CommandContext(t.Context(), "go", "build", "-trimpath", "-o", binary, "../../cmd/rukie")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build static Rukie: %v\n%s", err, output)
+	}
+	probe := exec.CommandContext(t.Context(), binary, "runner", "probe", "--state-dir", cfg.StateDir)
+	if output, err := probe.CombinedOutput(); err != nil {
+		t.Fatalf("live sandbox probe: %v\n%s", err, output)
+	}
+	raw, err := os.ReadFile(filepath.Join(cfg.StateDir, "probe.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report ProbeReport
+	if err := jsonv2.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
 	}
 	seen := false
 	for _, check := range report.Checks {
@@ -227,6 +249,39 @@ func TestSandboxP11LiveProbe(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("live probe skipped P11")
+	}
+}
+
+func TestSandboxFullProbeRetainsSuccessfulChecks(t *testing.T) {
+	for _, egress := range []bool{false, true} {
+		t.Run(strconv.FormatBool(egress), func(t *testing.T) {
+			env := passingEnv()
+			run := env.Run
+			env.Run = func(name string, args ...string) ([]byte, []byte, error) {
+				if name == "/usr/bin/podman" && len(args) > 0 && args[0] == "run" {
+					return []byte("pass uid uid=1000\n"), nil, nil
+				}
+				return run(name, args...)
+			}
+			cfg := DefaultConfig(t.TempDir())
+			cfg.Egress = egress
+			report, rerr := FullProbe(cfg, env)
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			var checks []string
+			for _, check := range report.Checks {
+				if check.Name == "P10" || check.Name == "P11" || check.Name == "P12" {
+					checks = append(checks, check.Name)
+					if check.Code != "" {
+						t.Fatalf("successful check contains a failure: %+v", check)
+					}
+				}
+			}
+			if !slices.Equal(checks, []string{"P10", "P11", "P12"}) || report.Egress != egress {
+				t.Fatalf("checks=%v egress=%v, want P10/P11/P12 and egress=%v", checks, report.Egress, egress)
+			}
+		})
 	}
 }
 
@@ -380,8 +435,7 @@ func TestSandboxBuilderInheritsNetwork(t *testing.T) {
 
 func TestSandboxBuilderProbeCommand(t *testing.T) {
 	args := BuildPodmanArgs("/usr/bin/podman", SandboxRun{Image: "i", RukieDir: "/s/rukie", Probe: true})
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--probe") || strings.Contains(joined, "job-exec") {
+	if !slices.Equal(args[len(args)-4:], []string{"--", "i", "job-exec", "--probe"}) {
 		t.Fatalf("probe command is wrong: %v", args)
 	}
 }

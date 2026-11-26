@@ -11,11 +11,24 @@ passgate() {
       cmd+=("$a")
     fi
   done
-  local out s n
+  local out s n diagnostic
   out=$(mktemp) || return 1
   if "${cmd[@]}" >"$out" 2>&1; then s=0; else s=$?; fi
   cat "$out"
-  if [ "$s" -ne 0 ]; then echo "passgate: exit $s" >&2; rm -f "$out"; return "$s"; fi
+  if [ "$s" -ne 0 ]; then
+    echo "passgate: exit $s" >&2
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+      if ! diagnostic=$(grep -E -A8 '(^FAIL|--- FAIL:|\.go:[0-9]+:|[Ee]rror|^make.*\*\*\*)' "$out" | tail -c 60000); then
+        diagnostic=$(tail -c 60000 "$out")
+      fi
+      diagnostic=${diagnostic//%/%25}
+      diagnostic=${diagnostic//$'\r'/%0D}
+      diagnostic=${diagnostic//$'\n'/%0A}
+      printf '::error title=Required check failed::%s\n' "$diagnostic"
+    fi
+    rm -f "$out"
+    return "$s"
+  fi
   for n in "${needles[@]}"; do
     if ! grep -Fq -- "$n" "$out"; then echo "passgate: no PASS line for: $n" >&2; rm -f "$out"; return 1; fi
   done

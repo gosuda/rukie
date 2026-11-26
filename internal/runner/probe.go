@@ -546,8 +546,8 @@ func FullProbe(cfg Config, env ProbeEnv) (ProbeReport, *Failure) {
 		report.Failures = append(report.Failures, ProbeCheck{Name: "P11", Code: "E_" + rerr.Code, Msg: rerr.Msg, Exit: rerr.Exit})
 		return report, rerr
 	}
-	report.Checks = append(report.Checks, ProbeCheck{Name: "P11"})
-	report.Egress = cfg.Egress
+	c.pass("P11")
+	c.report.Egress = cfg.Egress
 	if rerr := probeP12(c); rerr != nil {
 		report = c.report
 		return report, rerr

@@ -7,7 +7,7 @@ sudo -n apt-get update
 sudo -n apt-get install -y --no-install-recommends \
   build-essential pkg-config libseccomp-dev libsystemd-dev libbtrfs-dev \
   libgpgme-dev libassuan-dev libdevmapper-dev libglib2.0-dev libsqlite3-dev \
-  libapparmor-dev podman uidmap
+  libapparmor-dev podman uidmap catatonit
 
 podman_revision=464c15fec06f0074c916f9eff87c4806869c2833
 podman_source="$RUNNER_TEMP/podman-source"
