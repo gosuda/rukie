@@ -206,20 +206,45 @@ func TestSandboxP10DefaultImageDigest(t *testing.T) {
 }
 
 func TestSandboxP10ProbeImage(t *testing.T) {
-	env := passingEnv()
-	env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
-		joined := strings.Join(args, " ")
-		if strings.Contains(joined, "image exists") {
-			return nil, nil, os.ErrNotExist
-		}
-		if strings.Contains(joined, "pull") {
-			return nil, []byte("manifest unknown\n"), os.ErrPermission
-		}
-		return []byte(""), nil, nil
-	}
-	c := &probeCtx{cfg: DefaultConfig(t.TempDir()), env: env, podman: "/usr/bin/podman"}
-	if rerr := probeP10Pull(c); rerr == nil || rerr.Code != "PROBE_IMAGE" || rerr.Exit != 75 || !strings.Contains(rerr.Msg, "manifest unknown") {
-		t.Fatalf("unpullable image = %v, want E_PROBE_IMAGE/75", rerr)
+	for _, tc := range []struct {
+		name, stderr, want string
+	}{
+		{name: "text", stderr: "manifest unknown\n", want: "manifest unknown"},
+		{name: "invalid UTF-8", stderr: "manifest \xff unknown\n", want: "manifest \uFFFD unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := passingEnv()
+			env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
+				joined := strings.Join(args, " ")
+				if strings.Contains(joined, "image exists") {
+					return nil, nil, os.ErrNotExist
+				}
+				if strings.Contains(joined, "pull") {
+					return nil, []byte(tc.stderr), os.ErrPermission
+				}
+				return []byte(""), nil, nil
+			}
+			c := &probeCtx{cfg: DefaultConfig(t.TempDir()), env: env, podman: "/usr/bin/podman"}
+			rerr := probeP10Pull(c)
+			if rerr == nil || rerr.Code != "PROBE_IMAGE" || rerr.Exit != 75 || !strings.Contains(rerr.Msg, tc.want) {
+				t.Fatalf("unpullable image = %v, want E_PROBE_IMAGE/75", rerr)
+			}
+			var line map[string]string
+			if err := jsonv2.Unmarshal([]byte(rerr.LogLine()), &line); err != nil || line["code"] != "E_PROBE_IMAGE" || !strings.Contains(line["msg"], tc.want) {
+				t.Fatalf("probe diagnostic = %q, error = %v", rerr.LogLine(), err)
+			}
+			if err := WriteProbeReport(c.cfg.StateDir, c.report); err != nil {
+				t.Fatalf("write probe report: %v", err)
+			}
+			raw, err := os.ReadFile(filepath.Join(c.cfg.StateDir, "probe.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report ProbeReport
+			if err := jsonv2.Unmarshal(raw, &report); err != nil || len(report.Failures) != 1 || report.Failures[0].Code != "E_PROBE_IMAGE" || !strings.Contains(report.Failures[0].Msg, tc.want) {
+				t.Fatalf("probe report = %s, error = %v", raw, err)
+			}
+		})
 	}
 }
 

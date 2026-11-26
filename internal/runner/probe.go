@@ -420,7 +420,7 @@ func probeP10Pull(c *probeCtx) *Failure {
 		return nil
 	}
 	if _, stderr, err := c.env.Run(c.podman, "pull", "--quiet", c.cfg.ProbeImage); err != nil {
-		return c.fail("P10", "PROBE_IMAGE", fmt.Sprintf("probeP10Pull: pull probe image: %v: %s", err, strings.TrimSpace(string(stderr))), ExitDrainAbandoned)
+		return c.fail("P10", "PROBE_IMAGE", fmt.Sprintf("probeP10Pull: pull probe image: %v: %s", err, strings.TrimSpace(strings.ToValidUTF8(string(stderr), "\uFFFD"))), ExitDrainAbandoned)
 	}
 	c.pass("P10")
 	return nil
