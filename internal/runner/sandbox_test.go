@@ -211,6 +211,7 @@ func TestSandboxP10ProbeImage(t *testing.T) {
 	}{
 		{name: "text", stderr: "manifest unknown\n", want: "manifest unknown"},
 		{name: "invalid UTF-8", stderr: "manifest \xff unknown\n", want: "manifest \uFFFD unknown"},
+		{name: "truncated sequence", stderr: "manifest \xe2\x82 broken\n", want: "manifest \uFFFD"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := passingEnv()
