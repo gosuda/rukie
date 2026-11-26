@@ -45,7 +45,15 @@ jobs:
           podman_version=$(apt-cache madison podman | awk 'NR==1 {print $3}')
           [ -n "$podman_version" ] || { echo "E_NO_PODMAN_CANDIDATE"; exit 1; }
           $SUDO apt-get install -y --no-install-recommends "podman=${podman_version}"
-          mkdir -p "$HOME/.config/containers" "$RUNNER_TEMP/podman-run" "$RUNNER_TEMP/podman-root"
+          USER_NAME=$(id -un); USER_GID=$(id -g)
+          echo "user=$USER_NAME uid=$(id -u) gid=$USER_GID groups=$(id -G)"
+          grep -q "^$USER_NAME:" /etc/subuid || echo "$USER_NAME:165536:65536" | $SUDO tee -a /etc/subuid
+          grep -q "^$USER_NAME:" /etc/subgid || echo "$USER_NAME:165536:65536" | $SUDO tee -a /etc/subgid
+          PASSWD_GID=$(awk -F: -v u="$USER_NAME" '$1==u {print $4}' /etc/passwd)
+          if [ "$PASSWD_GID" != "$USER_GID" ]; then
+            $SUDO sed -i -E "s/^($USER_NAME:[^:]*:[0-9]+:)[0-9]+:/\1$USER_GID:/" /etc/passwd
+          fi
+          grep "^$USER_NAME:" /etc/passwd /etc/subuid /etc/subgid
           cat > "$HOME/.config/containers/storage.conf" <<EOF
           [storage]
           driver = "vfs"
