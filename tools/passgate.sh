@@ -17,8 +17,8 @@ passgate() {
   cat "$out"
   if [ "$s" -ne 0 ]; then
     echo "passgate: exit $s" >&2
-    if [ "${GITHUB_ACTIONS:-}" = true ]; then
-      if ! diagnostic=$(grep -E -A8 '(^FAIL|--- FAIL:|\.go:[0-9]+:|[Ee]rror|^make.*\*\*\*)' "$out" | tail -c 60000); then
+    if [ "${GITHUB_ACTIONS:-}" = true ] && ! grep -q '^::error title=Required check failed::' "$out"; then
+      if ! diagnostic=$(grep -E -A8 '(^FAIL|--- FAIL:|\.go:[0-9]+:|^[Ee]rror|^make.*\*\*\*)' "$out" | tail -c 60000); then
         diagnostic=$(tail -c 60000 "$out")
       fi
       diagnostic=${diagnostic//%/%25}

@@ -216,6 +216,9 @@ func TestSandboxP11LiveProbe(t *testing.T) {
 		t.Skip("podman unavailable on this host: the probe exits 78 E_PODMAN_MISSING")
 	}
 	cfg := DefaultConfig(t.TempDir())
+	if err := os.Chmod(cfg.StateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	_, rerr := RunProbe(cfg, LiveProbeEnv())
 	if rerr != nil && rerr.Code == "PODMAN_VERSION" && belowFloorPattern.MatchString(rerr.Msg) {
 		t.Skipf("host podman is below the supported floor: %s", rerr.Msg)

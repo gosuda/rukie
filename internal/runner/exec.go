@@ -48,13 +48,13 @@ func InContainerProbe() []ProbeFinding {
 	uid := os.Getuid()
 	findings := []ProbeFinding{
 		{Name: "uid", Pass: uid != 0, Info: "uid=" + strconv.Itoa(uid)},
-		{Name: "uid_map", Pass: uidMapCovers(uid), Info: "uid_map covers the runner uid"},
+		{Name: "uid_map", Pass: uidMapCovers(uid, readProc("/proc/self/uid_map")), Info: "uid_map covers the runner uid"},
 		{Name: "readonly_root", Pass: touchFails("/x-rukie-probe"), Info: "root filesystem is read-only"},
 		{Name: "no_caps", Pass: capEffZero(), Info: "CapEff is zero"},
 		{Name: "no_new_privs", Pass: noNewPrivs(), Info: "NoNewPrivs is set"},
 		{Name: "seccomp", Pass: seccompEnforcing(), Info: "seccomp is enforcing"},
 		{Name: "pid_namespace", Pass: os.Getppid() == 1 || ppidIsInit(), Info: "pid namespace is private"},
-		{Name: "no_network", Pass: netDevLoopbackOnly(), Info: "only loopback is present"},
+		{Name: "no_network", Pass: netDevLoopbackOnly(readProc("/proc/net/dev")), Info: "only loopback is present"},
 	}
 	return findings
 }
@@ -67,16 +67,26 @@ func readProc(path string) string {
 	return string(raw)
 }
 
-func uidMapCovers(uid int) bool {
-	for line := range strings.SplitSeq(readProc("/proc/self/uid_map"), "\n") {
+func uidMapCovers(uid int, mapping string) bool {
+	if uid <= 0 {
+		return false
+	}
+	for line := range strings.SplitSeq(mapping, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 3 && fields[2] != "1" {
-			inner, _ := strconv.Atoi(fields[0])
-			outer, _ := strconv.Atoi(fields[1])
-			count, _ := strconv.Atoi(fields[2])
-			if inner <= uid && uid < inner+count && outer != 0 {
-				return true
-			}
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 3 {
+			return false
+		}
+		inner, innerErr := strconv.ParseUint(fields[0], 10, 32)
+		outer, outerErr := strconv.ParseUint(fields[1], 10, 32)
+		count, countErr := strconv.ParseUint(fields[2], 10, 32)
+		if innerErr != nil || outerErr != nil || countErr != nil || count == 0 || inner+count > 1<<32 || outer+count > 1<<32 {
+			return false
+		}
+		if inner <= uint64(uid) && uint64(uid)-inner < count && (outer != 0 || (inner == uint64(uid) && count == 1)) {
+			return true
 		}
 	}
 	return false
@@ -127,14 +137,14 @@ func ppidIsInit() bool {
 	return strings.TrimSpace(raw) != ""
 }
 
-func netDevLoopbackOnly() bool {
+func netDevLoopbackOnly(devices string) bool {
 	found := false
-	for line := range strings.SplitSeq(readProc("/proc/net/dev"), "\n") {
-		name, _, _ := strings.Cut(strings.TrimSpace(line), ":")
-		name = strings.TrimSpace(name)
-		if name == "" || name == "Inter-" {
+	for line := range strings.SplitSeq(devices, "\n") {
+		name, _, ok := strings.Cut(line, ":")
+		if !ok {
 			continue
 		}
+		name = strings.TrimSpace(name)
 		found = true
 		if name != "lo" {
 			return false
