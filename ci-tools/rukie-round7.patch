@@ -168,7 +168,7 @@ index 724bfe517b..06d4f59dec 100644
  		return c.fail("P05", "CGROUP_NOT_DELEGATED", "the delegating cgroup controllers are not readable", ExitConfigUnavailable)
  	}
 diff --git a/internal/runner/probe_test.go b/internal/runner/probe_test.go
-index 1cedcbee55..04416241fd 100644
+index 1cedcbee55..ede99df21c 100644
 --- a/internal/runner/probe_test.go
 +++ b/internal/runner/probe_test.go
 @@ -28,11 +28,14 @@ func passingEnv() ProbeEnv {
@@ -234,9 +234,12 @@ index 1cedcbee55..04416241fd 100644
  		}
  		return []byte(""), nil, nil
  	}
-@@ -182,10 +191,13 @@ func TestProbeRejectsRootfulRuntime(t *testing.T) {
+@@ -180,12 +189,15 @@ func TestProbeRejectsOldGitWithBuildSuffix(t *testing.T) {
+ 
+ func TestProbeRejectsRootfulRuntime(t *testing.T) {
  	env := passingEnv()
- 	env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
+-	env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
++	env.Run = func(name string, args ...string) ([]byte, []byte, error) {
  		joined := strings.Join(args, " ")
 +		if name == "systemctl" {
 +			return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil
@@ -269,7 +272,7 @@ index 1cedcbee55..04416241fd 100644
  		return []byte(""), nil, nil
  	}
 diff --git a/internal/runner/sandbox_test.go b/internal/runner/sandbox_test.go
-index 08055b6622..acb38be9fe 100644
+index 08055b6622..609c73e7fa 100644
 --- a/internal/runner/sandbox_test.go
 +++ b/internal/runner/sandbox_test.go
 @@ -46,11 +46,14 @@ func versionEnv(version string) ProbeEnv {
@@ -390,9 +393,12 @@ index 08055b6622..acb38be9fe 100644
  		}
  		return []byte(""), nil, nil
  	}
-@@ -216,6 +245,9 @@ func TestSandboxP10ProbeImage(t *testing.T) {
+@@ -214,8 +243,11 @@ func TestSandboxP10ProbeImage(t *testing.T) {
+ 	} {
+ 		t.Run(tc.name, func(t *testing.T) {
  			env := passingEnv()
- 			env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
+-			env.Run = func(_ string, args ...string) ([]byte, []byte, error) {
++			env.Run = func(name string, args ...string) ([]byte, []byte, error) {
  				joined := strings.Join(args, " ")
 +				if name == "systemctl" {
 +					return []byte("ActiveState=active\nControlGroup=/user.slice/user-1000.slice/user@1000.service\nDelegate=yes\n"), nil, nil

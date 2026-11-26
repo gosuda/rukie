@@ -29,9 +29,9 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/evidence"
           test "$(git rev-parse HEAD)" = 69d9ac18adb29316eb77de2cc81113c74ebde36a
-          printf '%s  %s\n' ed41eaf21d103907f0de27266fa204efcb7e7e644562dd743d9c1705d11da987 ../probe/ci-tools/rukie-round7.patch | sha256sum --check --strict
+          printf '%s  %s\n' a53d7da52c2a336dd2b849e473b95a53e391c00c585fbcea79592808f04960c0 ../probe/ci-tools/rukie-round7.patch | sha256sum --check --strict
           git apply --index --whitespace=error ../probe/ci-tools/rukie-round7.patch
-          test "$(git write-tree)" = cfd2e7b4ae46efc24f9eb1c9133e34bb2caf13ae
+          test "$(git write-tree)" = a0538f03ecfac4a0fdcd51c168bc24ac22f57d75
           git rev-parse HEAD > "$GITHUB_WORKSPACE/evidence/source.txt"
           git write-tree >> "$GITHUB_WORKSPACE/evidence/source.txt"
           ps -p 1 -o comm=
@@ -52,7 +52,7 @@ jobs:
       - name: Recheck source identity
         if: ${{ !cancelled() }}
         run: |
-          test "$(git write-tree)" = cfd2e7b4ae46efc24f9eb1c9133e34bb2caf13ae
+          test "$(git write-tree)" = a0538f03ecfac4a0fdcd51c168bc24ac22f57d75
           git diff --exit-code
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: ${{ !cancelled() }}
